@@ -1,7 +1,8 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- This project is a modified version of JCEF, used in the MCEF Minecraft mod.
+- This project is a modified version of JCEF, used in the MCEF Minecraft mod, specifically Keksuccino's fork of MCEF (`/Volumes/STUFF/CODING/WORKSPACES/Java/Minecraft Mods/mcef-26.2.0`).
+- This project itself is not a Minecraft mod, but is used in a Minecraft mod.
 - Java sources are under `java/org/cef`, JNI/native sources are under `native`, and JUnit tests are under `java/tests/junittests`. `java/tests/simple` and `java/tests/detailed` contain sample applications and manual integration harnesses.
 - Native builds use CMake and must keep the build directory named `jcef_build` because repository scripts depend on that path. The build produces the JNI shared library, CEF helper subprocesses, and platform resources; Java compilation and packaging use `build.xml` and the helper scripts under `tools`.
 - `third_party` contains vendored or downloaded dependencies. `jcef_build`, `out`, `binary_distrib`, downloaded CEF directories, and `native/jcef_version.h` are generated artifacts and should not be edited or committed unless the task requires it.

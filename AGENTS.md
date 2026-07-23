@@ -23,7 +23,7 @@
 
 ## Native & JNI Guidelines
 - Treat Java native declarations, generated JNI headers, C++ implementations, hard-coded JNI descriptors, and their call sites as one API. Update them together.
-- Do not hand-edit headers marked as machine-generated. The existing header scripts use `javah`, which Java 17 no longer provides, so JNI signature changes require a verified `javac -h` replacement workflow.
+- Do not hand-edit headers marked as machine-generated.
 - Preserve CEF thread requirements, JVM attach/detach behavior, JNI local/global reference ownership, native reference counting, and Java `dispose()`/CEF shutdown order.
 - Add new native sources to the correct common or platform-specific list in `native/CMakeLists.txt`, and keep OS-specific behavior isolated.
 - Preserve the fork's MCEF-specific off-screen rendering, externally driven message pump, GLFW input, audio callbacks, and native-buffer paths. Trace changes through both the Java and native sides.

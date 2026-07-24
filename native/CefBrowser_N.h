@@ -15,6 +15,14 @@ extern "C" {
 #define org_cef_browser_CefBrowser_N_AUDIO_MUTE_QUERY_MUTED 1L
 /*
  * Class:     org_cef_browser_CefBrowser_N
+ * Method:    N_ConvertBrowserSettingsForTesting
+ * Signature: (Lorg/cef/CefBrowserSettings;ZZ)Ljava/util/Map;
+ */
+JNIEXPORT jobject JNICALL Java_org_cef_browser_CefBrowser_1N_N_1ConvertBrowserSettingsForTesting
+  (JNIEnv *, jclass, jobject, jboolean, jboolean);
+
+/*
+ * Class:     org_cef_browser_CefBrowser_N
  * Method:    N_CreateBrowser
  * Signature: (Lorg/cef/handler/CefClientHandler;JLjava/lang/String;ZZLjava/awt/Component;Lorg/cef/browser/CefRequestContext;Lorg/cef/CefBrowserSettings;)Z
  */

@@ -80,6 +80,8 @@ set(JCEF_SRCS
   CefValue_N.h
   browser_process_handler.cpp
   browser_process_handler.h
+  browser_settings.cpp
+  browser_settings.h
   client_app.cpp
   client_app.h
   client_handler.cpp

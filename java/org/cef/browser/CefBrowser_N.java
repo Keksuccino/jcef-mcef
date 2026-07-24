@@ -28,6 +28,7 @@ import java.awt.Point;
 import java.awt.Rectangle;
 import java.awt.Window;
 import java.awt.event.WindowEvent;
+import java.util.Map;
 import java.util.Vector;
 import java.util.concurrent.CompletableFuture;
 
@@ -73,6 +74,17 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
             settings_ = settings.clone();
         else
             settings_ = new CefBrowserSettings();
+    }
+
+    /**
+     * Clones and validates settings before a native-backed browser superclass is constructed.
+     * This ordering prevents Swing subclasses from deferring the exception to a later paint and
+     * prevents Java from finalizing a partially constructed native-backed object.
+     */
+    static CefBrowserSettings copyAndValidateSettings(CefBrowserSettings settings, boolean osr, boolean transparent) {
+        CefBrowserSettings snapshot = settings == null ? new CefBrowserSettings() : settings.clone();
+        snapshot.validate(osr, transparent);
+        return snapshot;
     }
 
     protected String getUrl() {
@@ -265,6 +277,7 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
      */
     protected void createBrowser(CefClientHandler clientHandler, long windowHandle, String url,
             boolean osr, boolean transparent, Component canvas, CefRequestContext context) {
+        settings_.validate(osr, transparent);
         if (!creationController_.begin(getNativeRef("CefBrowser") != 0, isClosing_ || isClosed_))
             return;
         if (!client_.onBrowserCreationStarted(this)) {
@@ -1104,6 +1117,7 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
         void onComplete(int value);
     }
 
+    private static native Map<String, Object> N_ConvertBrowserSettingsForTesting(CefBrowserSettings settings, boolean osr, boolean transparent);
     private final native boolean N_CreateBrowser(CefClientHandler clientHandler, long windowHandle,
             String url, boolean osr, boolean transparent, Component canvas,
             CefRequestContext context, CefBrowserSettings settings);

@@ -49,7 +49,7 @@ public class CefBrowserOsr extends CefBrowser_N implements CefRenderHandler {
     protected CefBrowserOsr(CefClient client, String url, boolean transparent,
             CefRequestContext context, CefBrowserOsr parent, Point inspectAt,
             CefBrowserSettings settings) {
-        super(client, url, context, parent, inspectAt, settings);
+        super(client, url, context, parent, inspectAt, copyAndValidateSettings(settings, true, transparent));
         isTransparent_ = transparent;
     }
 

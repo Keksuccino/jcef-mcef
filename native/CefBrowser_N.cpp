@@ -18,6 +18,7 @@
 #include "include/wrapper/cef_closure_task.h"
 
 #include "browser_process_handler.h"
+#include "browser_settings.h"
 #include "client_handler.h"
 #include "devtools_message_observer.h"
 #include "int_callback.h"
@@ -3080,6 +3081,17 @@ void NotifyBrowserCreationFailed(JNIEnv* env, jobject jbrowser) {
   JNI_CALL_VOID_METHOD(env, jbrowser, "notifyBrowserCreationFailed", "()V");
 }
 
+void LogAndClearBrowserSettingsFailure(JNIEnv* env, const std::string& error) {
+  LOG(ERROR) << "Browser creation rejected invalid CefBrowserSettings: "
+             << error;
+  // Conversion can run later on CEF's UI thread. Never let its Java exception
+  // suppress the lifecycle callback that releases the pending creation state.
+  if (env->ExceptionCheck()) {
+    env->ExceptionDescribe();
+    env->ExceptionClear();
+  }
+}
+
 void create(std::shared_ptr<JNIObjectsForCreate> objs,
             jlong windowHandle,
             jboolean osr,
@@ -3164,6 +3176,15 @@ void create(std::shared_ptr<JNIObjectsForCreate> objs,
     return;
   }
 
+  std::string settings_error;
+  if (!browser_settings::Convert(env, objs->jbrowserSettings, osr != JNI_FALSE, transparent != JNI_FALSE, &settings, &settings_error)) {
+    LogAndClearBrowserSettingsFailure(env, settings_error);
+    lifeSpanHandler->unregisterJBrowser(globalRef);
+    env->DeleteGlobalRef(globalRef);
+    NotifyBrowserCreationFailed(env, objs->jbrowser);
+    return;
+  }
+
   if (osr == JNI_FALSE) {
     CefRect rect = {};
     CefRefPtr<WindowHandler> windowHandler =
@@ -3199,18 +3220,6 @@ void create(std::shared_ptr<JNIObjectsForCreate> objs,
 #endif
   } else {
     windowInfo.SetAsWindowless((CefWindowHandle)windowHandle);
-  }
-
-  if (transparent == JNI_FALSE) {
-    // Specify an opaque background color (white) to disable transparency.
-    settings.background_color = CefColorSetARGB(255, 255, 255, 255);
-  }
-
-  ScopedJNIClass cefBrowserSettings(env, "org/cef/CefBrowserSettings");
-  if (cefBrowserSettings != nullptr &&
-      objs->jbrowserSettings != nullptr) {  // Dev-tools settings are null
-    GetJNIFieldInt(env, cefBrowserSettings, objs->jbrowserSettings,
-                   "windowless_frame_rate", &settings.windowless_frame_rate);
   }
 
   CefRefPtr<CefBrowser> browserObj;
@@ -3451,6 +3460,27 @@ class ScopedJNIRegistration : public ScopedJNIObject<CefRegistration> {
 };
 
 }  // namespace
+
+JNIEXPORT jobject JNICALL Java_org_cef_browser_CefBrowser_1N_N_1ConvertBrowserSettingsForTesting(JNIEnv* env, jclass, jobject jsettings, jboolean osr, jboolean transparent) {
+  CefBrowserSettings settings;
+  std::string error;
+  if (!browser_settings::Convert(env, jsettings, osr != JNI_FALSE, transparent != JNI_FALSE, &settings, &error)) {
+    if (!env->ExceptionCheck()) {
+      ScopedJNIClass exception_class(env, "java/lang/IllegalArgumentException");
+      if (exception_class)
+        env->ThrowNew(exception_class, error.c_str());
+    }
+    return nullptr;
+  }
+
+  jobject snapshot = browser_settings::NewSnapshot(env, settings);
+  if (!snapshot && !env->ExceptionCheck()) {
+    ScopedJNIClass exception_class(env, "java/lang/IllegalStateException");
+    if (exception_class)
+      env->ThrowNew(exception_class, "Failed to create CefBrowserSettings test snapshot");
+  }
+  return snapshot;
+}
 
 JNIEXPORT jboolean JNICALL
 Java_org_cef_browser_CefBrowser_1N_N_1CreateBrowser(JNIEnv* env,

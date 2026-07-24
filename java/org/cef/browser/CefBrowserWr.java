@@ -175,7 +175,7 @@ class CefBrowserWr extends CefBrowser_N {
     @SuppressWarnings("serial")
     private CefBrowserWr(CefClient client, String url, CefRequestContext context,
             CefBrowserWr parent, Point inspectAt, CefBrowserSettings settings) {
-        super(client, url, context, parent, inspectAt, settings);
+        super(client, url, context, parent, inspectAt, copyAndValidateSettings(settings, false, false));
         delayedUpdate_.setRepeats(false);
 
         // Disabling lightweight of popup menu is required because

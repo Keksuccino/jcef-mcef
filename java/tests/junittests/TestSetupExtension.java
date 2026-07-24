@@ -10,11 +10,14 @@ import org.cef.CefApp;
 import org.cef.CefApp.CefAppState;
 import org.cef.CefClient;
 import org.cef.CefSettings;
+import org.cef.OS;
+import org.cef.callback.CefCommandLine;
 import org.cef.handler.CefAppHandlerAdapter;
 import org.junit.jupiter.api.extension.BeforeAllCallback;
 import org.junit.jupiter.api.extension.ExtensionConfigurationException;
 import org.junit.jupiter.api.extension.ExtensionContext;
 
+import java.util.Locale;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -31,6 +34,8 @@ import java.util.concurrent.TimeUnit;
 //
 // This code is based on https://stackoverflow.com/a/51556718.
 public class TestSetupExtension implements BeforeAllCallback, AutoCloseable {
+    static final String WINDOWS_KEY_CREDENTIAL_TELEMETRY_FEATURE = "ReportKeyCredentialManagerSupportWin";
+    private static final String DISABLE_FEATURES_SWITCH = "disable-features";
     private static final long SHUTDOWN_TIMEOUT_SECONDS = 30;
     private static boolean initialized_ = false;
     private static Throwable initializationFailure_ = null;
@@ -81,6 +86,12 @@ public class TestSetupExtension implements BeforeAllCallback, AutoCloseable {
 
         CefApp.addAppHandler(new CefAppHandlerAdapter(null) {
             @Override
+            public void onBeforeCommandLineProcessing(String processType, CefCommandLine commandLine) {
+                super.onBeforeCommandLineProcessing(processType, commandLine);
+                configureCommandLine(processType, commandLine, OS.isWindows(), System.getProperty("os.arch", ""));
+            }
+
+            @Override
             public void stateHasChanged(org.cef.CefApp.CefAppState state) {
                 if (state == CefAppState.TERMINATED) {
                     // Signal completion of CEF shutdown.
@@ -99,6 +110,35 @@ public class TestSetupExtension implements BeforeAllCallback, AutoCloseable {
         if (CefApp.getState() != CefAppState.INITIALIZED) {
             throw new ExtensionConfigurationException("CEF initialization failed with state " + CefApp.getState());
         }
+    }
+
+    static void configureCommandLine(String processType, CefCommandLine commandLine, boolean windows, String architecture) {
+        if (!processType.isEmpty() || !windows || !isArm64Architecture(architecture)) return;
+
+        // Chromium 151 enables this metrics-only WinRT probe by default. On GitHub's native
+        // Windows ARM64 runners KeyCredentialManager.IsSupportedAsync can enter ngcksp.dll and
+        // terminate startup with NTE_BAD_KEYSET (0x80090016). Disable only the reporter in test
+        // processes; WebAuthn and Windows Hello remain enabled, and production command lines are
+        // unaffected because this handler belongs exclusively to the JUnit bootstrap.
+        String disabledFeatures = commandLine.getSwitchValue(DISABLE_FEATURES_SWITCH);
+        String updatedFeatures = appendCommaSeparatedValue(disabledFeatures, WINDOWS_KEY_CREDENTIAL_TELEMETRY_FEATURE);
+        if (updatedFeatures.equals(disabledFeatures)) return;
+        commandLine.removeSwitch(DISABLE_FEATURES_SWITCH);
+        commandLine.appendSwitchWithValue(DISABLE_FEATURES_SWITCH, updatedFeatures);
+    }
+
+    static boolean isArm64Architecture(String architecture) {
+        if (architecture == null) return false;
+        String normalizedArchitecture = architecture.trim().toLowerCase(Locale.ROOT);
+        return normalizedArchitecture.equals("aarch64") || normalizedArchitecture.equals("arm64");
+    }
+
+    static String appendCommaSeparatedValue(String values, String requiredValue) {
+        if (values == null || values.isBlank()) return requiredValue;
+        for (String value : values.split(",")) {
+            if (value.trim().equals(requiredValue)) return values;
+        }
+        return values.endsWith(",") ? values + requiredValue : values + "," + requiredValue;
     }
 
     // Executed after all tests have completed.

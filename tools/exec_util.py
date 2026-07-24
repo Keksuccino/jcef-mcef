@@ -12,7 +12,7 @@ def exec_cmd(cmd, path, input_string=None):
   out = ''
   err = ''
   ret = -1
-  parts = cmd.split()
+  parts = list(cmd) if isinstance(cmd, (list, tuple)) else cmd.split()
   try:
     if input_string is None:
       process = Popen(

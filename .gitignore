@@ -54,6 +54,10 @@ Thumbs.db
 /tools/buildtools/external_bin
 /tools/buildtools/linux64/clang-format
 /tools/buildtools/mac/clang-format
+# Misc working directories
+/tmp
+# JVM crash diagnostics
+/hs_err_pid*.log
 /tools/buildtools/win/clang-format.exe
 .idea
 *.iml

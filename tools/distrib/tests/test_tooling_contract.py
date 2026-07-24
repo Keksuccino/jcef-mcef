@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+# Copyright (c) 2026 The Chromium Embedded Framework Authors. All rights
+# reserved. Use of this source code is governed by a BSD-style license
+# that can be found in the LICENSE file.
+
+import os
+from pathlib import Path
+import re
+import subprocess
+import tempfile
+import unittest
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+TOOLS_ROOT = REPOSITORY_ROOT / 'tools'
+CANONICAL_TARGETS = ('linux_amd64', 'linux_arm64', 'macos_amd64', 'macos_arm64',
+                     'windows_amd64', 'windows_arm64')
+
+
+class Java17CheckTest(unittest.TestCase):
+
+  def run_check(self, version, tools):
+    with tempfile.TemporaryDirectory() as temporary_directory:
+      java_home = Path(temporary_directory) / 'jdk'
+      bin_directory = java_home / 'bin'
+      bin_directory.mkdir(parents=True)
+      (java_home / 'release').write_text(
+          'JAVA_VERSION="{}"\n'.format(version), encoding='ascii')
+      for tool in tools:
+        tool_path = bin_directory / tool
+        tool_path.write_text('#!/bin/sh\nexit 0\n', encoding='ascii')
+        tool_path.chmod(0o755)
+      environment = os.environ.copy()
+      environment['JAVA_HOME'] = str(java_home)
+      helper = TOOLS_ROOT / 'distrib' / 'java17_check.sh'
+      return subprocess.run(
+          [
+              '/bin/bash', '-c', 'source "$1"; shift; require_java17 "$@"',
+              'java17-test',
+              str(helper), *tools
+          ],
+          check=False,
+          capture_output=True,
+          text=True,
+          env=environment)
+
+  def test_exact_java_17_release_is_accepted(self):
+    self.assertEqual(0, self.run_check('17.0.15', ('java', 'javac')).returncode)
+
+  def test_non_17_release_is_rejected(self):
+    result = self.run_check('21.0.7', ('java',))
+    self.assertNotEqual(0, result.returncode)
+    self.assertIn('JDK 17 is required', result.stderr)
+
+  def test_missing_required_jdk_tool_is_rejected(self):
+    result = self.run_check('17.0.15', ('java', 'jar'))
+    self.assertEqual(0, result.returncode)
+    with tempfile.TemporaryDirectory() as temporary_directory:
+      java_home = Path(temporary_directory) / 'jdk'
+      java_home.mkdir()
+      (java_home / 'release').write_text(
+          'JAVA_VERSION="17.0.15"\n', encoding='ascii')
+      environment = os.environ.copy()
+      environment['JAVA_HOME'] = str(java_home)
+      helper = TOOLS_ROOT / 'distrib' / 'java17_check.sh'
+      missing_result = subprocess.run(
+          [
+              '/bin/bash', '-c', 'source "$1"; require_java17 java',
+              'java17-test',
+              str(helper)
+          ],
+          check=False,
+          capture_output=True,
+          text=True,
+          env=environment)
+      self.assertNotEqual(0, missing_result.returncode)
+      self.assertIn('java was not found', missing_result.stderr)
+
+
+class PlatformToolingContractTest(unittest.TestCase):
+
+  def test_public_tools_and_build_docs_use_only_canonical_target_names(self):
+    public_files = ('.github/workflows/build-jcef.yml', 'appveyor.yml',
+                    'README.md', 'docs/branches_and_building.md',
+                    'tools/compile.sh', 'tools/compile.bat', 'tools/run.sh',
+                    'tools/run.bat', 'tools/run_tests.sh',
+                    'tools/run_tests.bat', 'tools/make_jar.sh',
+                    'tools/make_jar.bat', 'tools/make_distrib.sh',
+                    'tools/make_distrib.bat', 'tools/make_readme.sh',
+                    'tools/make_readme.bat')
+    legacy_name = re.compile(
+        r'\b(?:linux32|linux64|linuxarm64|macosx64|macosarm64|win32|win64|'
+        r'windows32|windows64|windowsarm64)\b', re.IGNORECASE)
+    for relative_path in public_files:
+      contents = (REPOSITORY_ROOT / relative_path).read_text(encoding='utf-8')
+      self.assertIsNone(
+          legacy_name.search(contents),
+          '{} exposes a legacy target name'.format(relative_path))
+
+  def test_workflow_builds_and_packages_all_six_targets(self):
+    workflow = (
+        REPOSITORY_ROOT / '.github' / 'workflows' / 'build-jcef.yml').read_text(
+            encoding='utf-8')
+    for target in CANONICAL_TARGETS:
+      self.assertEqual(
+          1, len(re.findall(r'target:\s+{}\b'.format(target), workflow)))
+      self.assertIn("tools/make_distrib", workflow)
+      self.assertIn('binary_distrib/${{ matrix.target }}.tar.gz', workflow)
+      self.assertIn('binary_distrib/${{ matrix.target }}.tar.gz.sha256',
+                    workflow)
+
+  def test_every_workflow_architecture_runs_native_backed_suite(self):
+    workflow = (
+        REPOSITORY_ROOT / '.github' / 'workflows' / 'build-jcef.yml').read_text(
+            encoding='utf-8')
+    self.assertEqual(3, workflow.count('name: Run native-backed JUnit suite'))
+    self.assertEqual(3, workflow.count('--include-tag native-cef'))
+    self.assertNotIn("if: matrix.platform == 'amd64'", workflow)
+
+  def test_macos_headless_tests_do_not_use_first_thread_mode(self):
+    runner = (TOOLS_ROOT / 'run_tests.sh').read_text(encoding='utf-8')
+    self.assertIn('if [ "$HEADLESS" = false ]', runner)
+    self.assertIn('JAVA_OPTIONS=(-XstartOnFirstThread', runner)
+    self.assertIn('tests.junittests.MacJUnitLauncher', runner)
+    self.assertIn('-cp "${JUNIT_JAR}:${CLASS_PATH}"', runner)
+    launcher = (REPOSITORY_ROOT / 'java' / 'tests' / 'junittests' /
+                'MacJUnitLauncher.java').read_text(encoding='utf-8')
+    self.assertIn('ConsoleLauncher.run(', launcher)
+    self.assertIn('runLoop.invoke(null, mediator, true, false)', launcher)
+    workflow = (
+        REPOSITORY_ROOT / '.github' / 'workflows' / 'build-jcef.yml').read_text(
+            encoding='utf-8')
+    self.assertIn(
+        'Run native-independent JUnit suite without AppKit first-thread mode',
+        workflow)
+    self.assertIn('Release --headless --select-package', workflow)
+
+  def test_windows_java_check_uses_release_metadata_and_exact_prefix(self):
+    helper = (TOOLS_ROOT / 'distrib' / 'java17_check.bat').read_text(
+        encoding='utf-8')
+    self.assertIn('%JAVA_HOME%\\release', helper)
+    self.assertIn('if "%JAVA_VERSION%" == "17"', helper)
+    self.assertIn('if "%JAVA_VERSION:~0,3%" == "17."', helper)
+    self.assertNotIn('java.exe" -version', helper)
+
+  def test_github_actions_are_pinned_to_immutable_commits(self):
+    workflow = (
+        REPOSITORY_ROOT / '.github' / 'workflows' / 'build-jcef.yml').read_text(
+            encoding='utf-8')
+    action_uses = re.findall(r'uses:\s+[^@\s]+@([^\s#]+)', workflow)
+    self.assertGreater(len(action_uses), 0)
+    for revision in action_uses:
+      self.assertRegex(revision, r'^[0-9a-f]{40}$')
+
+
+if __name__ == '__main__':
+  unittest.main()

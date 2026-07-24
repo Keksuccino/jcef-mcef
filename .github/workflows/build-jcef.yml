@@ -1,108 +1,309 @@
-name: Build java-cef
+name: Build JCEF
 
 on:
   push:
     branches:
       - master
+  pull_request:
+    branches:
+      - master
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  java-cef-linux:
-    runs-on: [ubuntu-20.04]
+  linux:
+    name: Linux ${{ matrix.architecture }}
+    timeout-minutes: 120
     strategy:
+      fail-fast: false
       matrix:
-        platform: [amd64, arm64]
+        include:
+          - runner: ubuntu-24.04
+            target: linux_amd64
+            architecture: x86_64
+            runner_architecture: x86_64
+            java_architecture: x64
+          - runner: ubuntu-24.04-arm
+            target: linux_arm64
+            architecture: arm64
+            runner_architecture: aarch64
+            java_architecture: aarch64
+    runs-on: ${{ matrix.runner }}
     steps:
-      - name: Upload mask
-        run: echo "::add-mask::${{ secrets.UPLOAD_URL }}"
-      - uses: actions/checkout@v4
-      - name: Setup JDK
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Set up JDK 17
+        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
         with:
-          java-version: '8'
-          distribution: 'temurin'
-      - name: Install deps and build
+          distribution: temurin
+          java-version: '17'
+          architecture: ${{ matrix.java_architecture }}
+      - name: Assert runner architecture
         run: |
-          sudo apt update
-          sudo apt install build-essential g++ cmake ninja-build python3 libgtk2.0-dev s3cmd -y
-          mkdir jcef_build && cd jcef_build
-          cmake -G "Ninja" -DPROJECT_ARCH=${{ matrix.platform }} -DCMAKE_BUILD_TYPE=Release ..
-          ninja -j4
-          mv native/Release linux_${{ matrix.platform }}
-          strip linux_${{ matrix.platform }}/libcef.so
-          tar -czf linux_${{ matrix.platform }}.tar.gz linux_${{ matrix.platform }}
-          sha256sum linux_${{ matrix.platform }}.tar.gz > linux_${{ matrix.platform }}.tar.gz.sha256
-      - name: Copy s3cfg
-        run: echo "${{ secrets.S3_CFG }}" > ~/.s3cfg
-      - name: Upload java-cef build
+          actual_architecture="$(uname -m)"
+          if [ "$actual_architecture" != '${{ matrix.runner_architecture }}' ]; then
+            echo "Expected ${{ matrix.runner_architecture }} runner, found $actual_architecture" >&2
+            exit 1
+          fi
+      - name: Install build and test dependencies
         run: |
-          s3cmd put -P /home/runner/work/java-cef/java-cef/jcef_build/linux_${{ matrix.platform }}.tar.gz s3://mcef-us-1/java-cef-builds/${{ github.sha }}/linux_${{ matrix.platform }}.tar.gz
-          s3cmd put -P /home/runner/work/java-cef/java-cef/jcef_build/linux_${{ matrix.platform }}.tar.gz.sha256 s3://mcef-us-1/java-cef-builds/${{ github.sha }}/linux_${{ matrix.platform }}.tar.gz.sha256
-  java-cef-windows:
-    runs-on: [windows-2022]
+          sudo apt-get update
+          sudo apt-get install --yes ant build-essential cmake libgtk-3-dev ninja-build xauth xvfb
+      - name: Verify toolchain and generated JNI headers
+        run: |
+          source tools/distrib/java17_check.sh
+          require_java17 java javac jar javadoc
+          java -version
+          javac -version
+          ant -version
+          python3 tools/make_jni_headers.py --verify
+      - name: Compile Java and JUnit tests
+        run: tools/compile.sh '${{ matrix.target }}'
+      - name: Configure and build native artifacts
+        run: |
+          cmake -S . -B jcef_build -G Ninja -DPROJECT_ARCH='${{ matrix.architecture }}' -DCMAKE_BUILD_TYPE=Release
+          cmake --build jcef_build --parallel 4
+      - name: Run deterministic tooling tests
+        run: python3 -m unittest discover -s tools/distrib/tests -p 'test_*.py' -v
+      - name: Run native-independent JUnit suite
+        timeout-minutes: 15
+        run: xvfb-run --auto-servernum --server-args='-screen 0 1280x1024x24' tools/run_tests.sh '${{ matrix.target }}' Release --headless --select-package tests.junittests --exclude-tag native-cef
+      - name: Run native-backed JUnit suite
+        timeout-minutes: 20
+        run: xvfb-run --auto-servernum --server-args='-screen 0 1280x1024x24' tools/run_tests.sh '${{ matrix.target }}' Release --select-package tests.junittests --include-tag native-cef
+      - name: Package validated distribution
+        run: |
+          tools/make_distrib.sh '${{ matrix.target }}'
+          cd binary_distrib
+          sha256sum --check '${{ matrix.target }}.tar.gz.sha256'
+      - name: Publish tar.gz workflow artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: binary_distrib/${{ matrix.target }}.tar.gz
+          archive: false
+      - name: Publish SHA-256 workflow artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: binary_distrib/${{ matrix.target }}.tar.gz.sha256
+          archive: false
+      - name: Install S3 publisher
+        if: github.event_name == 'push'
+        run: sudo apt-get install --yes s3cmd
+      - name: Publish commit build to S3
+        if: github.event_name == 'push'
+        env:
+          S3_CFG: ${{ secrets.S3_CFG }}
+        run: |
+          if [ -z "$S3_CFG" ]; then
+            echo 'S3_CFG is required for master publication' >&2
+            exit 1
+          fi
+          printf '%s' "$S3_CFG" > ~/.s3cfg
+          s3cmd put -P 'binary_distrib/${{ matrix.target }}.tar.gz' 's3://mcef-us-1/java-cef-builds/${{ github.sha }}/${{ matrix.target }}.tar.gz'
+          s3cmd put -P 'binary_distrib/${{ matrix.target }}.tar.gz.sha256' 's3://mcef-us-1/java-cef-builds/${{ github.sha }}/${{ matrix.target }}.tar.gz.sha256'
+
+  windows:
+    name: Windows ${{ matrix.architecture }}
+    timeout-minutes: 120
     strategy:
+      fail-fast: false
       matrix:
-        platform: [amd64, arm64]
+        include:
+          - runner: windows-2022
+            target: windows_amd64
+            architecture: x86_64
+            runner_architecture: AMD64
+            msvc_architecture: x64
+            java_architecture: x64
+          - runner: windows-11-arm
+            target: windows_arm64
+            architecture: arm64
+            runner_architecture: ARM64
+            msvc_architecture: arm64
+            java_architecture: aarch64
+    runs-on: ${{ matrix.runner }}
     steps:
-      - name: Upload mask
-        run: echo "::add-mask::${{ secrets.UPLOAD_URL }}"
-      - uses: actions/checkout@v4
-      - name: Setup JDK
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Set up JDK 17
+        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
         with:
-          java-version: '8'
-          distribution: 'temurin'
-      - uses: ilammy/msvc-dev-cmd@v1
-      - name: Install s3cmd
+          distribution: microsoft
+          java-version: '17'
+          architecture: ${{ matrix.java_architecture }}
+      - name: Assert runner architecture
+        shell: pwsh
         run: |
-          pip install python-dateutil
-          Invoke-WebRequest -Uri "https://github.com/s3tools/s3cmd/archive/master.zip" -OutFile "D:\s3cmd.zip"
-          Expand-Archive -Path "D:\s3cmd.zip" -DestinationPath "D:\s3cmd"
-      - name: Build
+          if ($env:PROCESSOR_ARCHITECTURE -ne '${{ matrix.runner_architecture }}') {
+            throw "Expected ${{ matrix.runner_architecture }} runner, found $env:PROCESSOR_ARCHITECTURE"
+          }
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: ${{ matrix.msvc_architecture }}
+          vsversion: '2022'
+      - name: Set up Apache Ant 1.10.17
+        shell: pwsh
         run: |
-          mkdir jcef_build && cd jcef_build
-          cmake -G "Ninja" -DPROJECT_ARCH=${{ matrix.platform }} -DCMAKE_BUILD_TYPE=Release ..
-          ninja -j4
-          cd native
-          ren Release windows_${{ matrix.platform }}
-          cd ..
-          move native/windows_${{ matrix.platform }} windows_${{ matrix.platform }}
-          tar -czf windows_${{ matrix.platform }}.tar.gz windows_${{ matrix.platform }}
-          Get-FileHash -Algorithm SHA256 -Path "windows_${{ matrix.platform }}.tar.gz" | Out-File "windows_${{ matrix.platform }}.tar.gz.sha256"
-      - name: Copy s3cfg
-        run: echo "${{ secrets.S3_CFG }}" > "$HOME\AppData\Roaming\s3cmd.ini"
-      - name: Upload java-cef build
+          $antVersion = '1.10.17'
+          $antArchive = Join-Path $env:RUNNER_TEMP "apache-ant-$antVersion-bin.zip"
+          $antRoot = Join-Path $env:RUNNER_TEMP 'apache-ant'
+          Invoke-WebRequest -Uri "https://archive.apache.org/dist/ant/binaries/apache-ant-$antVersion-bin.zip" -OutFile $antArchive
+          $expectedHash = '5205a3c87902dd356a6bfcfc5d07659361d1c74627716662d7b31ab47817388dd1d985cfc27ca81a607827cb58d9e36d2d2fbf87a961a5dd4eeabfbde380aa71'
+          $actualHash = (Get-FileHash -Algorithm SHA512 -Path $antArchive).Hash.ToLowerInvariant()
+          if ($actualHash -ne $expectedHash) { throw "Apache Ant archive hash mismatch: $actualHash" }
+          Expand-Archive -Path $antArchive -DestinationPath $antRoot
+          $antHome = Join-Path $antRoot "apache-ant-$antVersion"
+          "ANT_HOME=$antHome" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "$antHome\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Verify toolchain and generated JNI headers
+        shell: cmd
         run: |
-          python D:\s3cmd\s3cmd-master\s3cmd put -P D:\a\java-cef\java-cef\jcef_build\windows_${{ matrix.platform }}.tar.gz s3://mcef-us-1/java-cef-builds/${{ github.sha }}/windows_${{ matrix.platform }}.tar.gz
-          python D:\s3cmd\s3cmd-master\s3cmd put -P D:\a\java-cef\java-cef\jcef_build\windows_${{ matrix.platform }}.tar.gz.sha256 s3://mcef-us-1/java-cef-builds/${{ github.sha }}/windows_${{ matrix.platform }}.tar.gz.sha256
-  java-cef-macos:
-    runs-on: [macos-12]
+          call tools\distrib\java17_check.bat java javac jar javadoc
+          java -version
+          javac -version
+          ant -version
+          python tools/make_jni_headers.py --verify
+      - name: Compile Java and JUnit tests
+        shell: cmd
+        run: tools\compile.bat ${{ matrix.target }}
+      - name: Configure and build native artifacts
+        shell: pwsh
+        run: |
+          cmake -S . -B jcef_build -G Ninja -DPROJECT_ARCH='${{ matrix.architecture }}' -DCMAKE_BUILD_TYPE=Release
+          cmake --build jcef_build --parallel 4
+      - name: Run deterministic tooling tests
+        shell: pwsh
+        run: python -m unittest discover -s tools/distrib/tests -p 'test_*.py' -v
+      - name: Run native-independent JUnit suite
+        timeout-minutes: 15
+        shell: cmd
+        run: tools\run_tests.bat ${{ matrix.target }} Release --headless --select-package tests.junittests --exclude-tag native-cef
+      - name: Run native-backed JUnit suite
+        timeout-minutes: 20
+        shell: cmd
+        run: tools\run_tests.bat ${{ matrix.target }} Release --select-package tests.junittests --include-tag native-cef
+      - name: Package validated distribution
+        shell: pwsh
+        run: |
+          & .\tools\make_distrib.bat '${{ matrix.target }}'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $archive = 'binary_distrib\${{ matrix.target }}.tar.gz'
+          $checksumPath = "$archive.sha256"
+          $expectedHash = ((Get-Content -Raw $checksumPath).Trim() -split '\s+')[0]
+          $actualHash = (Get-FileHash -Algorithm SHA256 -Path $archive).Hash.ToLowerInvariant()
+          if ($actualHash -ne $expectedHash) { throw "Distribution hash mismatch: $actualHash" }
+      - name: Publish tar.gz workflow artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: binary_distrib/${{ matrix.target }}.tar.gz
+          archive: false
+      - name: Publish SHA-256 workflow artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: binary_distrib/${{ matrix.target }}.tar.gz.sha256
+          archive: false
+      - name: Install S3 publisher
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: python -m pip install --disable-pip-version-check s3cmd==2.4.0
+      - name: Publish commit build to S3
+        if: github.event_name == 'push'
+        shell: pwsh
+        env:
+          S3_CFG: ${{ secrets.S3_CFG }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:S3_CFG)) { throw 'S3_CFG is required for master publication' }
+          New-Item -ItemType Directory -Force -Path $env:APPDATA | Out-Null
+          $env:S3_CFG | Set-Content -NoNewline (Join-Path $env:APPDATA 's3cmd.ini')
+          s3cmd put -P 'binary_distrib\${{ matrix.target }}.tar.gz' 's3://mcef-us-1/java-cef-builds/${{ github.sha }}/${{ matrix.target }}.tar.gz'
+          s3cmd put -P 'binary_distrib\${{ matrix.target }}.tar.gz.sha256' 's3://mcef-us-1/java-cef-builds/${{ github.sha }}/${{ matrix.target }}.tar.gz.sha256'
+
+  macos:
+    name: macOS ${{ matrix.architecture }}
+    timeout-minutes: 120
     strategy:
+      fail-fast: false
       matrix:
-        platform: [amd64, arm64]
+        include:
+          - runner: macos-15-intel
+            target: macos_amd64
+            architecture: x86_64
+            runner_architecture: x86_64
+            java_architecture: x64
+          - runner: macos-15
+            target: macos_arm64
+            architecture: arm64
+            runner_architecture: arm64
+            java_architecture: aarch64
+    runs-on: ${{ matrix.runner }}
     steps:
-      - name: Upload mask
-        run: echo "::add-mask::${{ secrets.UPLOAD_URL }}"
-      - uses: actions/checkout@v4
-      - name: Setup JDK
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Set up JDK 17
+        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
         with:
-          java-version: '8'
-          distribution: 'temurin'
-      - run: |
-          brew install ninja
-          brew install coreutils
-          brew install s3cmd
-          sudo xcode-select --switch /Applications/Xcode_13.1.app
-          mkdir jcef_build && cd jcef_build
-          cmake -G "Ninja" -DPROJECT_ARCH=${{ matrix.platform }} -DCMAKE_BUILD_TYPE=Release ..
-          ninja -j4
-          mv native/Release macos_${{ matrix.platform }}
-          tar -czf macos_${{ matrix.platform }}.tar.gz macos_${{ matrix.platform }}
-          sha256sum macos_${{ matrix.platform }}.tar.gz > macos_${{ matrix.platform }}.tar.gz.sha256
-      - name: Copy s3cfg
-        run: echo "${{ secrets.S3_CFG }}" > ~/.s3cfg
-      - name: Upload java-cef build
+          distribution: temurin
+          java-version: '17'
+          architecture: ${{ matrix.java_architecture }}
+      - name: Assert runner architecture
         run: |
-          s3cmd put -P /Users/runner/work/java-cef/java-cef/jcef_build/macos_${{ matrix.platform }}.tar.gz s3://mcef-us-1/java-cef-builds/${{ github.sha }}/macos_${{ matrix.platform }}.tar.gz
-          s3cmd put -P /Users/runner/work/java-cef/java-cef/jcef_build/macos_${{ matrix.platform }}.tar.gz.sha256 s3://mcef-us-1/java-cef-builds/${{ github.sha }}/macos_${{ matrix.platform }}.tar.gz.sha256
+          actual_architecture="$(uname -m)"
+          if [ "$actual_architecture" != '${{ matrix.runner_architecture }}' ]; then
+            echo "Expected ${{ matrix.runner_architecture }} runner, found $actual_architecture" >&2
+            exit 1
+          fi
+      - name: Install build dependencies
+        run: brew install ant ninja
+      - name: Verify toolchain and generated JNI headers
+        run: |
+          source tools/distrib/java17_check.sh
+          require_java17 java javac jar javadoc
+          java -version
+          javac -version
+          ant -version
+          python3 tools/make_jni_headers.py --verify
+      - name: Compile Java and JUnit tests
+        run: tools/compile.sh '${{ matrix.target }}'
+      - name: Configure and build native artifacts
+        env:
+          DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+        run: |
+          cmake -S . -B jcef_build -G Ninja -DPROJECT_ARCH='${{ matrix.architecture }}' -DCMAKE_BUILD_TYPE=Release
+          cmake --build jcef_build --parallel 4
+      - name: Run deterministic tooling tests
+        run: python3 -m unittest discover -s tools/distrib/tests -p 'test_*.py' -v
+      - name: Run native-independent JUnit suite without AppKit first-thread mode
+        timeout-minutes: 15
+        run: tools/run_tests.sh '${{ matrix.target }}' Release --headless --select-package tests.junittests --exclude-tag native-cef
+      - name: Run native-backed JUnit suite
+        timeout-minutes: 20
+        run: tools/run_tests.sh '${{ matrix.target }}' Release --select-package tests.junittests --include-tag native-cef
+      - name: Package validated distribution
+        run: |
+          tools/make_distrib.sh '${{ matrix.target }}'
+          cd binary_distrib
+          shasum -a 256 -c '${{ matrix.target }}.tar.gz.sha256'
+      - name: Publish tar.gz workflow artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: binary_distrib/${{ matrix.target }}.tar.gz
+          archive: false
+      - name: Publish SHA-256 workflow artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: binary_distrib/${{ matrix.target }}.tar.gz.sha256
+          archive: false
+      - name: Install S3 publisher
+        if: github.event_name == 'push'
+        run: brew install s3cmd
+      - name: Publish commit build to S3
+        if: github.event_name == 'push'
+        env:
+          S3_CFG: ${{ secrets.S3_CFG }}
+        run: |
+          if [ -z "$S3_CFG" ]; then
+            echo 'S3_CFG is required for master publication' >&2
+            exit 1
+          fi
+          printf '%s' "$S3_CFG" > ~/.s3cfg
+          s3cmd put -P 'binary_distrib/${{ matrix.target }}.tar.gz' 's3://mcef-us-1/java-cef-builds/${{ github.sha }}/${{ matrix.target }}.tar.gz'
+          s3cmd put -P 'binary_distrib/${{ matrix.target }}.tar.gz.sha256' 's3://mcef-us-1/java-cef-builds/${{ github.sha }}/${{ matrix.target }}.tar.gz.sha256'

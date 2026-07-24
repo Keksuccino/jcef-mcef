@@ -1,54 +1,50 @@
-# This is a configuration file for the continuous delivery service provided
-# by AppVeyor.com. Its purpose is to automatically build both the 32
-# and 64 bit versions of the Java Chromium Embedded Framework (JCEF).
-# Please refer to https://bitbucket.org/chromiumembedded/java-cef
-# for more information on JCEF.
+# AppVeyor provides an independent Windows x86_64 build. Windows ARM64 is
+# covered by the native windows-11-arm GitHub-hosted runner.
 
-os: Visual Studio 2015
+image: Visual Studio 2022
 
 clone_folder: c:\projects\java-cef\src
 
-platform:
-  - win32
-  - x64
-
-configuration:
-  - Release
+platform: x64
+configuration: Release
 
 environment:
-  matrix:
-  - buildType: win32
-    generatorName: Visual Studio 14
-    JAVA_HOME: C:\Program Files (x86)\Java\jdk1.8.0
-  - buildType: win64
-    generatorName: Visual Studio 14 Win64
-    JAVA_HOME: C:\Program Files\Java\jdk1.8.0
+  target: windows_amd64
+  JAVA_HOME: C:\Program Files\Java\jdk17
 
-matrix:
-  exclude:
-    - platform: x64
-      buildType: win32
-    - platform: win32
-      buildType: win64
+install:
+  - choco install ant --version=1.10.17 --no-progress --yes
+  - set PATH=%JAVA_HOME%\bin;%PATH%
+  - java -version
+  - javac -version
+  - ant -version
+  - call tools\distrib\java17_check.bat java javac
+  - python tools\make_jni_headers.py --verify
 
 before_build:
-  - SET PATH=%JAVA_HOME%;%PATH%
-  - echo "Running cmake..."
-  - cd c:\projects\java-cef\src
-  - mkdir jcef_build
-  - cd jcef_build
-  - cmake -G "%generatorName%" ..
-  - echo "Building the JCEF Java classes..."
-  - cd c:\projects\java-cef\src\tools
-  - compile.bat %buildType%
+  - if /I not "%PROCESSOR_ARCHITECTURE%" == "AMD64" (echo Expected AMD64 runner, found %PROCESSOR_ARCHITECTURE% & exit /B 1)
+  - cmake -S . -B jcef_build -G "Visual Studio 17 2022" -A x64 -DPROJECT_ARCH=x86_64
+  - call tools\compile.bat %target%
 
-after_build:
-  - echo "Making distribution..."
-  - cd c:\projects\java-cef\src\tools\
-  - make_distrib.bat %buildType%
-  - cd c:\projects\java-cef\src\binary_distrib
-  - 7z a jcef-%buildType%-distribution.zip %buildType%
+build_script:
+  - cmake --build jcef_build --config Release --parallel
+
+test_script:
+  - python -m unittest discover -s tools/distrib/tests -p "test_*.py" -v
+  - call tools\run_tests.bat %target% Release --headless --select-package tests.junittests --exclude-tag native-cef
+  - call tools\run_tests.bat %target% Release --select-package tests.junittests --include-tag native-cef
+
+after_test:
+  - call tools\make_distrib.bat %target%
+  - ps: |
+      $archive = 'binary_distrib\windows_amd64.tar.gz'
+      $checksumPath = "$archive.sha256"
+      $expectedHash = ((Get-Content -Raw $checksumPath).Trim() -split '\s+')[0]
+      $actualHash = (Get-FileHash -Algorithm SHA256 -Path $archive).Hash.ToLowerInvariant()
+      if ($actualHash -ne $expectedHash) { throw "Distribution hash mismatch: $actualHash" }
 
 artifacts:
-  - path: binary_distrib\jcef-%buildType%-distribution.zip
-    name: jcef-%buildType%-distribution
+  - path: binary_distrib\windows_amd64.tar.gz
+    name: windows_amd64.tar.gz
+  - path: binary_distrib\windows_amd64.tar.gz.sha256
+    name: windows_amd64.tar.gz.sha256

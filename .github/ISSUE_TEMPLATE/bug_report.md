@@ -25,7 +25,7 @@ If applicable, add screenshots to help explain your problem.
 
 **Versions (please complete the following information):**
  - OS: [e.g. Windows 10, MacOS 13.2, Ubuntu 22.10]
- - Java Version: [e.g. OpenJDK 14]
+ - Java Version: [e.g. OpenJDK 17]
  - JCEF Version: [e.g. 87476e9]
  - CEF Version: [e.g. 110.0.25]
 

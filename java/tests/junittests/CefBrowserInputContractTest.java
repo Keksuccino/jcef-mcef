@@ -122,9 +122,7 @@ class CefBrowserInputContractTest {
 
     @Test
     void keepsWindowsAwtNumpadOverrideAheadOfEncodedScanDetection() throws Exception {
-        Path sourcePath = Path.of(System.getProperty("user.dir"), "native", "CefBrowser_N.cpp");
-        assertTrue(Files.isRegularFile(sourcePath), "Run source contract tests from the repository root");
-        String source = Files.readString(sourcePath);
+        String source = readNativeBrowserSource();
         int functionStart = source.indexOf("bool IsWindowsExtendedKey(");
         assertTrue(functionStart >= 0);
         int numpadOverride =
@@ -145,9 +143,7 @@ class CefBrowserInputContractTest {
 
     @Test
     void keepsLinuxGlfwPrintableIdentityAheadOfCustomCharacterFallback() throws Exception {
-        Path sourcePath = Path.of(System.getProperty("user.dir"), "native", "CefBrowser_N.cpp");
-        assertTrue(Files.isRegularFile(sourcePath), "Run source contract tests from the repository root");
-        String source = Files.readString(sourcePath);
+        String source = readNativeBrowserSource();
         int functionStart = source.indexOf("unsigned int GetGlfwLinuxKeySym(");
         assertTrue(functionStart >= 0);
         int printableIdentity =
@@ -156,6 +152,42 @@ class CefBrowserInputContractTest {
         assertTrue(printableIdentity > functionStart && specialKeySwitch > printableIdentity);
         String identitySource = source.substring(printableIdentity, specialKeySwitch);
         assertTrue(identitySource.contains("return static_cast<unsigned int>(key_code)"));
+    }
+
+    @Test
+    void keepsWindowsAwtWheelInversionAndCloseCheckOnCefUiThread() throws Exception {
+        String source = readNativeBrowserSource();
+        int functionStart = source.indexOf("void SendWindowsAwtMouseWheelEvent(");
+        assertTrue(functionStart >= 0);
+        int uiGate = source.indexOf("if (!CefCurrentlyOn(TID_UI))", functionStart);
+        int postTask = source.indexOf("CefPostTask(TID_UI", uiGate);
+        int validityCheck = source.indexOf("!browser.get() || !browser->IsValid()", postTask);
+        int hostLookup = source.indexOf("browser->GetHost()", validityCheck);
+        int hostValidityCheck = source.indexOf("if (!host)", hostLookup);
+        int inversion = source.indexOf("GetWindowsCefWheelDelta(target_delta, horizontal)", hostValidityCheck);
+        int hostSend = source.indexOf("host->SendMouseWheelEvent(event, delta_x, delta_y)", inversion);
+        assertTrue(uiGate > functionStart && postTask > uiGate && validityCheck > postTask);
+        assertTrue(hostLookup > validityCheck && hostValidityCheck > hostLookup);
+        assertTrue(inversion > hostValidityCheck && hostSend > inversion);
+        String postSource = source.substring(postTask, validityCheck);
+        assertTrue(postSource.contains("browser, event, target_delta, horizontal"));
+        String functionSignature = source.substring(functionStart, uiGate);
+        assertTrue(functionSignature.contains("CefRefPtr<CefBrowser> browser"));
+        assertTrue(functionSignature.contains("CefMouseEvent event"));
+    }
+
+    @Test
+    void identifiesLiveWheelEventsWithoutDependingOnDroppedAxisOrdering() {
+        String page = CefBrowserOsrInputTest.createInputPage(new WindowsWheelTestSupport.Delivery(false, true));
+        assertTrue(page.contains("const expectVerticalWheelDelivery=false;"));
+        assertTrue(page.contains("const expectHorizontalWheelDelivery=true;"));
+        assertTrue(page.contains("e.clientX===90&&e.clientY===100"));
+        assertTrue(page.contains("e.clientX===110&&e.clientY===120"));
+        assertTrue(page.contains("e.clientX===130&&e.clientY===140"));
+        assertTrue(page.contains("e.clientX===150&&e.clientY===160"));
+        assertTrue(page.contains("e.clientX===170&&e.clientY===180"));
+        assertTrue(page.contains("e.clientX===190&&e.clientY===200"));
+        assertFalse(page.contains("wheelIndex"));
     }
 
     @Test
@@ -260,6 +292,12 @@ class CefBrowserInputContractTest {
         assertTrue(Modifier.isPrivate(method.getModifiers()));
         assertTrue(Modifier.isFinal(method.getModifiers()));
         assertTrue(Modifier.isNative(method.getModifiers()));
+    }
+
+    private static String readNativeBrowserSource() throws Exception {
+        Path sourcePath = Path.of(System.getProperty("user.dir"), "native", "CefBrowser_N.cpp");
+        assertTrue(Files.isRegularFile(sourcePath), "Run source contract tests from the repository root");
+        return Files.readString(sourcePath);
     }
 
     private static boolean updateRepeatTracker(Method update, Object tracker, KeyEvent event) throws Exception {

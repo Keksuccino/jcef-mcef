@@ -127,6 +127,8 @@ set(JCEF_SRCS
   keyboard_handler.h
   key_event_platform_util.cpp
   key_event_platform_util.h
+  mouse_wheel_platform_util.cpp
+  mouse_wheel_platform_util.h
   life_span_handler.cpp
   life_span_handler.h
   load_handler.cpp
@@ -186,6 +188,7 @@ set(JCEF_SRCS_WINDOWS
   critical_wait_win.cpp
   jni_util_win.cpp
   jcef_dll.rc
+  mouse_wheel_platform_util_win.cpp
   temp_window_win.cc
   temp_window_win.h
   util_win.cpp
@@ -252,6 +255,20 @@ function(SET_JCEF_CXX20_PROPERTIES target)
       )
   endif()
 endfunction()
+
+if(BUILD_TESTING)
+  # Keep test artifacts out of normal builds and distributions. CI explicitly
+  # builds this target before running CTest on every supported architecture.
+  add_executable(mouse_wheel_platform_util_test EXCLUDE_FROM_ALL
+    tests/mouse_wheel_platform_util_test.cpp
+    mouse_wheel_platform_util.cpp
+    mouse_wheel_platform_util.h
+    )
+  SET_EXECUTABLE_TARGET_PROPERTIES(mouse_wheel_platform_util_test)
+  SET_JCEF_CXX20_PROPERTIES(mouse_wheel_platform_util_test)
+  target_include_directories(mouse_wheel_platform_util_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  add_test(NAME mouse_wheel_platform_util_test COMMAND mouse_wheel_platform_util_test)
+endif()
 
 
 #

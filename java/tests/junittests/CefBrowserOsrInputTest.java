@@ -71,7 +71,8 @@ class CefBrowserOsrInputTest {
         AWT_KEY_M("jcef-awt-input-phase-awt-key-m"),
         AWT_TAB("jcef-awt-input-phase-awt-tab"),
         AWT_KEYS("jcef-awt-input-phase-awt-keys"),
-        AWT_MOUSE("jcef-awt-input-phase-awt-mouse"),
+        AWT_MOUSE_MIDDLE("jcef-awt-input-phase-awt-mouse-middle"),
+        AWT_MOUSE_RIGHT("jcef-awt-input-phase-awt-mouse"),
         AWT_WHEEL("jcef-awt-input-phase-awt-wheel"),
         LEGACY_KEYS("jcef-awt-input-phase-legacy-keys"),
         LEGACY_MOUSE(SUCCESS_TITLE);
@@ -105,6 +106,7 @@ class CefBrowserOsrInputTest {
         assertThrows(ClassNotFoundException.class, () -> Class.forName("org.lwjgl.glfw.GLFW", false, CefBrowserOsrInputTest.class.getClassLoader()));
 
         String testUrl = "http://test.com/osr-awt-input.html";
+        WindowsWheelTestSupport.Delivery wheelDelivery = WindowsWheelTestSupport.detectDelivery();
         AtomicBoolean pageInputComplete = new AtomicBoolean();
         AtomicBoolean postCloseInputSafe = new AtomicBoolean();
         CountDownLatch postCloseInputComplete = new CountDownLatch(1);
@@ -132,7 +134,7 @@ class CefBrowserOsrInputTest {
                     @Override
                     protected void setupTest() {
                         client_.addDisplayHandler(new InputDisplayHandler(() -> browser_, lastTitle, this::focusInputPage, this::startInputProbe, this::markInputReady, this::acknowledgeInputPhase));
-                        addResource(testUrl, createInputPage(), "text/html");
+                        addResource(testUrl, createInputPage(wheelDelivery), "text/html");
                         AwtInputBrowser browser = new AwtInputBrowser(client_, testUrl);
                         browser_ = browser;
                         inputComponent_ = browser.getUIComponent();
@@ -279,8 +281,11 @@ class CefBrowserOsrInputTest {
                                 case AWT_KEYS:
                                     dispatchRemainingAwtKeys(inputComponent_);
                                     break;
-                                case AWT_MOUSE:
-                                    dispatchAwtMouseSequence(inputComponent_);
+                                case AWT_MOUSE_MIDDLE:
+                                    dispatchAwtMouseMiddleSequence(inputComponent_);
+                                    break;
+                                case AWT_MOUSE_RIGHT:
+                                    dispatchAwtMouseRightSequence(inputComponent_);
                                     break;
                                 case AWT_WHEEL:
                                     dispatchAwtWheelSequence(inputComponent_);
@@ -464,7 +469,7 @@ class CefBrowserOsrInputTest {
             listener.keyReleased(keypadLeftReleased);
     }
 
-    private static void dispatchAwtMouseSequence(Component component) {
+    private static void dispatchAwtMouseMiddleSequence(Component component) {
         int allMouseModifiers = InputEvent.SHIFT_DOWN_MASK | InputEvent.CTRL_DOWN_MASK
                 | InputEvent.ALT_DOWN_MASK | InputEvent.META_DOWN_MASK
                 | InputEvent.BUTTON1_DOWN_MASK | InputEvent.BUTTON2_DOWN_MASK
@@ -474,6 +479,9 @@ class CefBrowserOsrInputTest {
             listener.mouseMoved(moved);
 
         dispatchMouseButton(component, 5L, 50, 60, MouseEvent.BUTTON2, InputEvent.BUTTON2_DOWN_MASK);
+    }
+
+    private static void dispatchAwtMouseRightSequence(Component component) {
         dispatchMouseButton(component, 7L, 70, 80, MouseEvent.BUTTON3, InputEvent.BUTTON3_DOWN_MASK);
     }
 
@@ -493,6 +501,12 @@ class CefBrowserOsrInputTest {
             listener.mouseWheelMoved(pageMagnitude);
         for (MouseWheelListener listener : component.getMouseWheelListeners())
             listener.mouseWheelMoved(minimum);
+
+        // Windows may intentionally drop an axis when its ambient setting is zero or
+        // WHEEL_PAGESCROLL. This distinct move stays ordered behind every posted wheel task and
+        // lets the renderer acknowledge the phase without weakening supported-axis assertions.
+        MouseEvent phaseBarrier = new MouseEvent(component, MouseEvent.MOUSE_MOVED, 15L, 0, 190, 200, 0, false, MouseEvent.NOBUTTON);
+        for (MouseMotionListener listener : component.getMouseMotionListeners()) listener.mouseMoved(phaseBarrier);
     }
 
     private static void dispatchMouseButton(Component component, long when, int x, int y, int button, int downMask) {
@@ -558,28 +572,41 @@ class CefBrowserOsrInputTest {
         mouseMethod.invoke(browser, new CefMouseEvent(CefMouseEvent.MOUSE_MOVED, 10, 10, 0, 0, CefMouseEvent.BUTTON1_MASK | CefMouseEvent.BUTTON2_MASK));
     }
 
-    private static String createInputPage() {
-        int wheelScale = OS.isWindows() ? 120 : 40;
-        int preciseMagnitude = (int) Math.round(0.4 * wheelScale);
-        int minimumMagnitude = Math.max(1, (int) Math.round(0.001 * wheelScale));
+    static String createInputPage(WindowsWheelTestSupport.Delivery wheelDelivery) {
+        double preciseDistance = 0.4 * 40;
+        double minimumDistance = 0.001 * 40;
+        int preciseMagnitude = (int) Math.round(preciseDistance);
+        int minimumMagnitude = Math.max(1, (int) Math.round(minimumDistance));
         int pageDeltaMode = OS.isMacintosh() ? 0 : 2;
         boolean expectDomRepeat = !OS.isMacintosh();
         boolean expectDomNumLock = !OS.isMacintosh();
+        boolean expectAmbientWindowsWheel = OS.isWindows();
+        boolean expectVerticalWheelDelivery = wheelDelivery.verticalExpected();
+        boolean expectHorizontalWheelDelivery = wheelDelivery.horizontalExpected();
         // CEF's macOS bridge constructs synthetic NSEvents with isARepeat:NO, so the Java tracker
         // contract covers inference there while this live path still requires both key deliveries.
         // It maps EVENTFLAG_NUM_LOCK_ON to Cocoa's numeric-pad modifier, which preserves keypad
         // identity but does not surface as the DOM NumLock toggle state.
         // The same bridge normalizes EVENTFLAG_SCROLL_BY_PAGE to DOM pixel mode; Aura preserves
         // DOM_DELTA_PAGE. In both cases the rounded page magnitude remains observable.
+        // CEF's Windows delegate applies the current line/character setting after JCEF inverts its
+        // transform. Integer quantization can change magnitudes, so the live fixture verifies axis,
+        // sign, mode, and monotonic page distance there. The native utility test owns exact math.
         // mPhaseEnd and tabPhaseEnd are transport barriers for the final releases in the first
-        // two phases. Without them the renderer could acknowledge a keydown before its matching
-        // keyup leaves Chromium's input queue, partially defeating the phase protocol.
+        // two phases. The dedicated middle phase provides the same barrier before the right click.
+        // On Linux, Chromium's middle-button mouseup default pastes the global X selection after
+        // DOM dispatch. The fixture must cancel that unrelated default and publish its phase title
+        // from a later task; otherwise clipboard work can interfere with the immediately following
+        // synthetic click and the title would not prove that the middle mouseup finished processing.
         // Missing-title updates are diagnostics only. Java advances the protocol exclusively for
         // exact InputPhase titles, so reporting partial progress cannot weaken phase ordering.
         return "<!doctype html><html><head><meta charset=utf-8><style>html,body{width:100%;height:100%;margin:0}</style></head><body><input id=i><input id=tabTarget><script>"
                 + "const expectDomRepeat=" + expectDomRepeat + ";"
                 + "const expectDomNumLock=" + expectDomNumLock + ";"
-                + "const seen={mFirst:false,mRepeat:false,mReset:false,mPhaseEnd:false,tab:false,tabFocus:false,tabPhaseEnd:false,unicode:false,arrowDown:false,arrowUp:false,keypadLeftDown:false,keypadLeftUp:false,leftShift:false,rightControl:false,numpad:false,legacyTyped:false,legacyTypedExact:false,legacyRepeat:false,legacyTab:false,legacyRight:false,legacyKeypad:false,legacyLocks:false,legacyLower:false,legacyShift:false,legacyCaps:false,legacyShiftCaps:false,move:false,legacyMove:false,middleDown:false,middleUp:false,rightDown:false,rightUp:false,vertical:false,horizontal:false,page:false,pageMagnitude:false,minimum:false};"
+                + "const expectAmbientWindowsWheel=" + expectAmbientWindowsWheel + ";"
+                + "const expectVerticalWheelDelivery=" + expectVerticalWheelDelivery + ";"
+                + "const expectHorizontalWheelDelivery=" + expectHorizontalWheelDelivery + ";"
+                + "const seen={mFirst:false,mRepeat:false,mReset:false,mPhaseEnd:false,tab:false,tabFocus:false,tabPhaseEnd:false,unicode:false,arrowDown:false,arrowUp:false,keypadLeftDown:false,keypadLeftUp:false,leftShift:false,rightControl:false,numpad:false,legacyTyped:false,legacyTypedExact:false,legacyRepeat:false,legacyTab:false,legacyRight:false,legacyKeypad:false,legacyLocks:false,legacyLower:false,legacyShift:false,legacyCaps:false,legacyShiftCaps:false,move:false,legacyMove:false,middleDown:false,middleUp:false,rightDown:false,rightUp:false,vertical:!expectVerticalWheelDelivery,horizontal:!expectHorizontalWheelDelivery,page:!expectVerticalWheelDelivery,pageMagnitude:!expectVerticalWheelDelivery,minimum:!expectVerticalWheelDelivery,wheelPhaseEnd:false};"
                 + "const phases=["
                 + "{title:'" + InputPhase.AWT_KEY_M.getTitle()
                 + "',required:['mFirst','mRepeat','mReset','mPhaseEnd']},"
@@ -587,37 +614,39 @@ class CefBrowserOsrInputTest {
                 + "',required:['tab','tabFocus','tabPhaseEnd']},"
                 + "{title:'" + InputPhase.AWT_KEYS.getTitle()
                 + "',required:['unicode','arrowDown','arrowUp','keypadLeftDown','keypadLeftUp','leftShift','rightControl','numpad']},"
-                + "{title:'" + InputPhase.AWT_MOUSE.getTitle()
-                + "',required:['move','middleDown','middleUp','rightDown','rightUp']},"
+                + "{title:'" + InputPhase.AWT_MOUSE_MIDDLE.getTitle()
+                + "',required:['move','middleDown','middleUp']},"
+                + "{title:'" + InputPhase.AWT_MOUSE_RIGHT.getTitle()
+                + "',required:['rightDown','rightUp']},"
                 + "{title:'" + InputPhase.AWT_WHEEL.getTitle()
-                + "',required:['vertical','horizontal','page','pageMagnitude','minimum']},"
+                + "',required:['vertical','horizontal','page','pageMagnitude','minimum','wheelPhaseEnd']},"
                 + "{title:'" + InputPhase.LEGACY_KEYS.getTitle()
                 + "',required:['legacyTyped','legacyTypedExact','legacyRepeat','legacyTab','legacyRight','legacyKeypad','legacyLocks','legacyLower','legacyShift','legacyCaps','legacyShiftCaps']},"
                 + "{title:'" + InputPhase.LEGACY_MOUSE.getTitle() + "',required:['legacyMove']}];"
-                + "let phaseIndex=0,mIndex=0,tabIndex=0,wheelIndex=0,inputRouteReady=false;"
+                + "let phaseIndex=0,mIndex=0,tabIndex=0,pageDelta=0,inputRouteReady=false;"
                 + "const report=()=>{const phase=phases[phaseIndex];if(!phase)return;const missing=phase.required.filter(key=>!seen[key]);if(missing.length){document.title='missing:'+phase.title+':'+missing.join(',');return;}phaseIndex++;document.title=phase.title;};"
                 + "addEventListener('keydown',e=>{if(e.code==='KeyM'){const mods=e.shiftKey&&e.ctrlKey&&e.altKey&&e.metaKey;if(mIndex===0&&!e.repeat&&mods)seen.mFirst=true;if(mIndex===1&&(!expectDomRepeat||e.repeat)&&mods)seen.mRepeat=true;if(mIndex===2&&!e.repeat&&mods)seen.mReset=true;mIndex++;}if(e.code==='Tab'&&e.location===0){if(tabIndex===0)seen.tab=true;if(tabIndex===1)seen.legacyTab=true;tabIndex++;}if(e.key==='ArrowLeft'&&e.location===0)seen.arrowDown=true;if(e.code==='Numpad4'&&e.key==='ArrowLeft'&&e.location===3)seen.keypadLeftDown=true;if(e.key==='Shift'&&e.location===1)seen.leftShift=true;if(e.key==='Control'&&e.location===2)seen.rightControl=true;if(e.code==='Numpad1'&&e.location===3)seen.numpad=true;if(e.code==='KeyR'&&e.ctrlKey&&(!expectDomRepeat||e.repeat))seen.legacyRepeat=true;if(e.code==='ShiftRight'&&e.location===2)seen.legacyRight=true;if(e.code==='Numpad0'&&e.location===3)seen.legacyKeypad=true;if(e.code==='KeyC'&&e.getModifierState('CapsLock')&&(!expectDomNumLock||e.getModifierState('NumLock')))seen.legacyLocks=true;if(e.code==='KeyA'&&e.key==='a'&&!e.shiftKey&&!e.getModifierState('CapsLock'))seen.legacyLower=true;if(e.code==='KeyB'&&e.key==='B'&&e.shiftKey&&!e.getModifierState('CapsLock'))seen.legacyShift=true;if(e.code==='KeyD'&&e.key==='D'&&!e.shiftKey&&e.getModifierState('CapsLock'))seen.legacyCaps=true;if(e.code==='KeyE'&&e.key==='e'&&e.shiftKey&&e.getModifierState('CapsLock'))seen.legacyShiftCaps=true;report();},true);"
                 + "addEventListener('keyup',e=>{if(e.code==='KeyM'&&mIndex===3)seen.mPhaseEnd=true;if(e.code==='Tab'&&e.location===0&&tabIndex===1)seen.tabPhaseEnd=true;if(e.key==='ArrowLeft'&&e.location===0)seen.arrowUp=true;if(e.code==='Numpad4'&&e.key==='ArrowLeft'&&e.location===3)seen.keypadLeftUp=true;report();},true);"
                 + "addEventListener('keypress',e=>{if(e.key==='\\u03A9')seen.unicode=true;if(e.key==='x')seen.legacyTyped=true;if(e.key==='q'&&e.shiftKey&&e.getModifierState('CapsLock'))seen.legacyTypedExact=true;report();},true);"
                 + "addEventListener('beforeinput',e=>{if(e.data==='\\u03A9')seen.unicode=true;if(e.data==='x')seen.legacyTyped=true;report();},true);"
                 + "addEventListener('input',e=>{if(e.data==='\\u03A9')seen.unicode=true;if(e.data==='x')seen.legacyTyped=true;report();},true);"
-                + "addEventListener('mousemove',e=>{if(e.clientX===1&&e.clientY===2&&!e.shiftKey&&!e.ctrlKey&&!e.altKey&&!e.metaKey&&e.buttons===0){if(!inputRouteReady){inputRouteReady=true;document.title='"
+                + "addEventListener('mousemove',e=>{if(e.clientX===190&&e.clientY===200&&!e.shiftKey&&!e.ctrlKey&&!e.altKey&&!e.metaKey&&e.buttons===0){seen.wheelPhaseEnd=true;report();return;}if(e.clientX===1&&e.clientY===2&&!e.shiftKey&&!e.ctrlKey&&!e.altKey&&!e.metaKey&&e.buttons===0){if(!inputRouteReady){inputRouteReady=true;document.title='"
                 + INPUT_READY_TITLE
                 + "';}return;}if(e.shiftKey&&e.ctrlKey&&e.altKey&&e.metaKey&&e.buttons===7)seen.move=true;if(!e.shiftKey&&!e.ctrlKey&&!e.altKey&&!e.metaKey&&e.buttons===5)seen.legacyMove=true;report();});"
                 + "addEventListener('mousedown',e=>{if(e.button===1)seen.middleDown=true;if(e.button===2)seen.rightDown=true;report();});"
-                + "addEventListener('mouseup',e=>{if(e.button===1)seen.middleUp=true;if(e.button===2)seen.rightUp=true;report();});"
+                + "addEventListener('mouseup',e=>{if(e.button===1){seen.middleUp=true;e.preventDefault();setTimeout(report,0);return;}if(e.button===2)seen.rightUp=true;report();});"
                 + "addEventListener('contextmenu',e=>e.preventDefault());"
-                + "addEventListener('wheel',e=>{if(wheelIndex===0&&e.deltaMode===0&&e.deltaX===0&&e.deltaY==="
+                + "addEventListener('wheel',e=>{if(e.clientX===90&&e.clientY===100&&e.deltaMode===0&&e.deltaX===0&&(expectAmbientWindowsWheel?e.deltaY>0:e.deltaY==="
                 + preciseMagnitude
-                + ")seen.vertical=true;if(wheelIndex===1&&e.deltaMode===0&&e.shiftKey&&e.deltaX==="
+                + "))seen.vertical=true;if(e.clientX===110&&e.clientY===120&&e.deltaMode===0&&e.shiftKey&&e.deltaY===0&&(expectAmbientWindowsWheel?e.deltaX>0:e.deltaX==="
                 + preciseMagnitude
-                + "&&e.deltaY===0)seen.horizontal=true;if(wheelIndex===2&&e.deltaMode==="
+                + "))seen.horizontal=true;if(e.clientX===130&&e.clientY===140&&e.deltaMode==="
                 + pageDeltaMode
-                + "&&e.deltaX===0&&e.deltaY===1)seen.page=true;if(wheelIndex===3&&e.deltaMode==="
+                + "&&e.deltaX===0&&(expectAmbientWindowsWheel?e.deltaY>0:e.deltaY===1)){seen.page=true;pageDelta=e.deltaY;}if(e.clientX===150&&e.clientY===160&&e.deltaMode==="
                 + pageDeltaMode
-                + "&&e.deltaX===0&&e.deltaY===3)seen.pageMagnitude=true;if(wheelIndex===4&&e.deltaMode===0&&e.deltaX===0&&e.deltaY===-"
+                + "&&e.deltaX===0&&(expectAmbientWindowsWheel?e.deltaY>0&&pageDelta>0&&e.deltaY>=pageDelta:e.deltaY===3))seen.pageMagnitude=true;if(e.clientX===170&&e.clientY===180&&e.deltaMode===0&&e.deltaX===0&&(expectAmbientWindowsWheel?e.deltaY<0:e.deltaY===-"
                 + minimumMagnitude
-                + ")seen.minimum=true;wheelIndex++;e.preventDefault();report();},{passive:false});"
+                + "))seen.minimum=true;e.preventDefault();report();},{passive:false});"
                 + "const input=document.getElementById('i');document.getElementById('tabTarget').addEventListener('focus',()=>{seen.tabFocus=true;input.focus();report();});"
                 + "document.title='" + PAGE_READY_TITLE + "';"
                 + "</script></body></html>";

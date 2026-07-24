@@ -112,6 +112,20 @@ class PlatformToolingContractTest(unittest.TestCase):
     self.assertEqual(3, workflow.count('--config=jcef.windowless_rendering_enabled=false'))
     self.assertNotIn("if: matrix.platform == 'amd64'", workflow)
 
+  def test_every_workflow_architecture_builds_and_runs_native_unit_tests(self):
+    workflow = (REPOSITORY_ROOT / '.github' / 'workflows' / 'build-jcef.yml').read_text(encoding='utf-8')
+    build_command = 'cmake --build jcef_build --config Release --target mouse_wheel_platform_util_test --parallel 4'
+    test_command = 'ctest --test-dir jcef_build --build-config Release --output-on-failure'
+    covered_targets = 0
+    for job_name in ('linux', 'windows', 'macos'):
+      job = re.search(r'^  {}:\n(.*?)(?=^  [a-z][a-z0-9_-]*:\n|\Z)'.format(job_name), workflow, re.DOTALL | re.MULTILINE)
+      self.assertIsNotNone(job)
+      covered_targets += len(re.findall(r'^\s+target:\s+(?:linux|windows|macos)_', job.group(1), re.MULTILINE))
+      self.assertEqual(1, job.group(1).count('name: Build and run native unit tests'))
+      self.assertEqual(1, job.group(1).count(build_command))
+      self.assertEqual(1, job.group(1).count(test_command))
+    self.assertEqual(6, covered_targets)
+
   def test_macos_headless_tests_do_not_use_first_thread_mode(self):
     runner = (TOOLS_ROOT / 'run_tests.sh').read_text(encoding='utf-8')
     self.assertIn('if [ "$HEADLESS" = false ]', runner)

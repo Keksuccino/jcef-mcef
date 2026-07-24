@@ -4,10 +4,10 @@
 
 #include "CefBrowser_N.h"
 
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
-#include <limits>
 #include <memory>
 #include <mutex>
 
@@ -25,6 +25,7 @@
 #include "jni_util.h"
 #include "key_event_platform_util.h"
 #include "life_span_handler.h"
+#include "mouse_wheel_platform_util.h"
 #include "pdf_print_callback.h"
 #include "render_handler.h"
 #include "run_file_dialog_callback.h"
@@ -244,6 +245,10 @@ static_assert(EVENTFLAG_PRECISION_SCROLLING_DELTA == (1 << 14));
 static_assert(EVENTFLAG_SCROLL_BY_PAGE == (1 << 15));
 
 using key_event_platform_util::InputEventSemantics;
+#if defined(OS_WIN)
+using mouse_wheel_platform_util::WindowsCefWheelDelta;
+using mouse_wheel_platform_util::WindowsCefWheelDeltaStatus;
+#endif
 
 int GetCefModifiersAwt(int modifiers) {
   int cef_modifiers = 0;
@@ -556,18 +561,69 @@ int GetKeyIdentityModifiers(int key_code, int key_location, InputEventSemantics 
   }
 }
 
-int RoundNonZeroWheelDelta(double delta) {
-  if (std::isnan(delta) || delta == 0)
-    return 0;
-  if (delta >= std::numeric_limits<int>::max())
-    return std::numeric_limits<int>::max();
-  if (delta <= std::numeric_limits<int>::min())
-    return std::numeric_limits<int>::min();
-  const long rounded = std::lround(delta);
-  if (rounded == 0)
-    return std::signbit(delta) ? -1 : 1;
-  return static_cast<int>(rounded);
+#if defined(OS_WIN)
+const char* GetWindowsCefWheelDeltaIssueReason(WindowsCefWheelDeltaStatus status) {
+  switch (status) {
+    case WindowsCefWheelDeltaStatus::kApproximated:
+      return "CEF 151's integer Windows scaling skips the exact magnitude";
+    case WindowsCefWheelDeltaStatus::kScrollingDisabled:
+      return "the Windows line/character scroll setting is zero";
+    case WindowsCefWheelDeltaStatus::kPageScrolling:
+      return "CEF 151 scales the delta by WHEEL_PAGESCROLL before applying "
+             "page granularity";
+    case WindowsCefWheelDeltaStatus::kSuccess:
+      return "success";
+  }
+  return "an unknown conversion error occurred";
 }
+
+void LogWindowsCefWheelDeltaIssueOnce(WindowsCefWheelDeltaStatus status, int target_delta, int translated_delta, bool horizontal) {
+  static std::atomic_uint logged_statuses{0};
+  const unsigned int status_bit = 1U << static_cast<unsigned int>(status);
+  if (logged_statuses.fetch_or(status_bit, std::memory_order_relaxed) & status_bit)
+    return;
+  if (status == WindowsCefWheelDeltaStatus::kApproximated) {
+    LOG(WARNING) << "Approximating AWT "
+                 << (horizontal ? "horizontal" : "vertical")
+                 << " wheel translated delta " << target_delta << " as "
+                 << translated_delta << " because "
+                 << GetWindowsCefWheelDeltaIssueReason(status) << ".";
+    return;
+  }
+  LOG(WARNING) << "Ignoring AWT " << (horizontal ? "horizontal" : "vertical")
+               << " wheel event with translated delta " << target_delta
+               << " because " << GetWindowsCefWheelDeltaIssueReason(status)
+               << ".";
+}
+
+void SendWindowsAwtMouseWheelEvent(CefRefPtr<CefBrowser> browser, CefMouseEvent event, int target_delta, bool horizontal) {
+  if (!CefCurrentlyOn(TID_UI)) {
+    CefPostTask(TID_UI, base::BindOnce(&SendWindowsAwtMouseWheelEvent, browser, event, target_delta, horizontal));
+    return;
+  }
+
+  // CefBrowserHostBase normally posts this call to the CEF UI thread before
+  // its Windows delegate reads the scroll setting. Invert on that same thread
+  // so our SystemParametersInfo query immediately precedes CEF's query and the
+  // event remains ordered with other posted browser input.
+  if (!browser.get() || !browser->IsValid())
+    return;
+  CefRefPtr<CefBrowserHost> host = browser->GetHost();
+  if (!host)
+    return;
+  const WindowsCefWheelDelta converted_delta = mouse_wheel_platform_util::GetWindowsCefWheelDelta(target_delta, horizontal);
+  if (converted_delta.status != WindowsCefWheelDeltaStatus::kSuccess &&
+      converted_delta.status != WindowsCefWheelDeltaStatus::kApproximated) {
+    LogWindowsCefWheelDeltaIssueOnce(converted_delta.status, target_delta, converted_delta.translated_delta, horizontal);
+    return;
+  }
+  if (converted_delta.status == WindowsCefWheelDeltaStatus::kApproximated)
+    LogWindowsCefWheelDeltaIssueOnce(converted_delta.status, target_delta, converted_delta.translated_delta, horizontal);
+  const int delta_x = horizontal ? converted_delta.delta : 0;
+  const int delta_y = horizontal ? 0 : converted_delta.delta;
+  host->SendMouseWheelEvent(event, delta_x, delta_y);
+}
+#endif
 
 // Windows virtual-key values are the cross-platform key identity used by CEF.
 // Keeping control character synthesis in one place prevents the platform
@@ -3033,30 +3089,59 @@ void SendJavaMouseWheelEvent(JNIEnv* env, CefRefPtr<CefBrowser> browser, jobject
       !std::isfinite(precise_rotation))
     return;
 
+#if defined(OS_WIN)
+  int target_delta = 0;
+#else
   int delta = 0;
+#endif
   if (scroll_type == awt::kWheelUnitScroll) {
 #if defined(OS_WIN)
-    constexpr double kWheelUnitScale = WHEEL_DELTA;
+    int scroll_amount = 0;
+    if (!CallRequiredIntMethod(env, event_class, mouse_wheel_event, "getScrollAmount", &scroll_amount) || scroll_amount < 0)
+      return;
+    // AWT's precise unit distance is preciseWheelRotation * scrollAmount. CEF
+    // 151 instead expects a raw Windows tick and reapplies the current system
+    // setting, so preserve the AWT event as the source of truth and invert that
+    // platform transform below.
+    target_delta = mouse_wheel_platform_util::GetWindowsAwtUnitTargetDelta(precise_rotation, scroll_amount);
 #else
     // CEF's Linux and macOS sample clients use 40 device units for one wheel
     // tick.
     constexpr double kWheelUnitScale = 40.0;
+    delta = mouse_wheel_platform_util::RoundNonZeroWheelDelta(-precise_rotation * kWheelUnitScale);
 #endif
-    delta = RoundNonZeroWheelDelta(-precise_rotation * kWheelUnitScale);
     if (precise_rotation != std::trunc(precise_rotation))
       cef_event.modifiers |= EVENTFLAG_PRECISION_SCROLLING_DELTA;
   } else if (scroll_type == awt::kWheelBlockScroll) {
-    delta = RoundNonZeroWheelDelta(-precise_rotation);
+#if defined(OS_WIN)
+    target_delta = mouse_wheel_platform_util::RoundNonZeroWheelDelta(-precise_rotation);
+#else
+    delta = mouse_wheel_platform_util::RoundNonZeroWheelDelta(-precise_rotation);
+#endif
     cef_event.modifiers |= EVENTFLAG_SCROLL_BY_PAGE;
   } else {
     return;
   }
 
-  const int delta_x = cef_event.modifiers & EVENTFLAG_SHIFT_DOWN ? delta : 0;
-  const int delta_y = cef_event.modifiers & EVENTFLAG_SHIFT_DOWN ? 0 : delta;
+  const bool horizontal = (cef_event.modifiers & EVENTFLAG_SHIFT_DOWN) != 0;
+#if defined(OS_WIN)
+  if (target_delta == 0)
+    return;
+  // The bundled CEF binary applies line/character scaling even to page events.
+  // Quantized magnitudes use the nearest safe same-sign result and are logged;
+  // zero and WHEEL_PAGESCROLL settings cannot safely deliver a representative
+  // event because WHEEL_PAGESCROLL can overflow gfx::Vector2d.
+  if (env->ExceptionCheck())
+    return;
+  SendWindowsAwtMouseWheelEvent(browser, cef_event, target_delta, horizontal);
+  return;
+#else
+  const int delta_x = horizontal ? delta : 0;
+  const int delta_y = horizontal ? 0 : delta;
   if (env->ExceptionCheck())
     return;
   browser->GetHost()->SendMouseWheelEvent(cef_event, delta_x, delta_y);
+#endif
 }
 
 struct JNIObjectsForCreate {

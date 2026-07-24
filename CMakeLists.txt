@@ -394,6 +394,7 @@ endif()
 # Include target subdirectories.
 #
 
+include(CTest)
 add_subdirectory(${CEF_LIBCEF_DLL_WRAPPER_PATH} libcef_dll_wrapper)
 add_subdirectory(native)
 

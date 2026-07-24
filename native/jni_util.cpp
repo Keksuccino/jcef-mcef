@@ -6,8 +6,10 @@
 
 #include <jawt.h>
 #include <algorithm>
+#include <cstdint>
 #include <limits>
 #include <string>
+#include <string_view>
 
 #include "jni_scoped_helpers.h"
 
@@ -18,6 +20,128 @@ namespace {
 JavaVM* g_jvm = nullptr;
 
 jobject g_javaClassLoader = nullptr;
+
+// NewStringUTF consumes JNI modified UTF-8, not the standard UTF-8 emitted by
+// CEF and Chromium. Keep this converter independent of CEF runtime functions:
+// it is also used while the macOS CEF framework may not yet be loaded.
+std::u16string UTF8ToUTF16(std::string_view input) {
+  std::u16string output;
+  output.reserve(input.size());
+
+  size_t offset = 0;
+  while (offset < input.size()) {
+    const uint8_t first = static_cast<uint8_t>(input[offset]);
+    uint32_t code_point = 0;
+    size_t sequence_length = 0;
+
+    if (first <= 0x7F) {
+      code_point = first;
+      sequence_length = 1;
+    } else if (first >= 0xC2 && first <= 0xDF && offset + 1 < input.size()) {
+      const uint8_t second = static_cast<uint8_t>(input[offset + 1]);
+      if ((second & 0xC0) == 0x80) {
+        code_point = ((first & 0x1F) << 6) | (second & 0x3F);
+        sequence_length = 2;
+      }
+    } else if (first >= 0xE0 && first <= 0xEF && offset + 2 < input.size()) {
+      const uint8_t second = static_cast<uint8_t>(input[offset + 1]);
+      const uint8_t third = static_cast<uint8_t>(input[offset + 2]);
+      const bool valid_second = (second & 0xC0) == 0x80 &&
+                                (first != 0xE0 || second >= 0xA0) &&
+                                (first != 0xED || second <= 0x9F);
+      if (valid_second && (third & 0xC0) == 0x80) {
+        code_point =
+            ((first & 0x0F) << 12) | ((second & 0x3F) << 6) | (third & 0x3F);
+        sequence_length = 3;
+      }
+    } else if (first >= 0xF0 && first <= 0xF4 && offset + 3 < input.size()) {
+      const uint8_t second = static_cast<uint8_t>(input[offset + 1]);
+      const uint8_t third = static_cast<uint8_t>(input[offset + 2]);
+      const uint8_t fourth = static_cast<uint8_t>(input[offset + 3]);
+      const bool valid_second = (second & 0xC0) == 0x80 &&
+                                (first != 0xF0 || second >= 0x90) &&
+                                (first != 0xF4 || second <= 0x8F);
+      if (valid_second && (third & 0xC0) == 0x80 && (fourth & 0xC0) == 0x80) {
+        code_point = ((first & 0x07) << 18) | ((second & 0x3F) << 12) |
+                     ((third & 0x3F) << 6) | (fourth & 0x3F);
+        sequence_length = 4;
+      }
+    }
+
+    if (sequence_length == 0) {
+      output.push_back(u'\uFFFD');
+      ++offset;
+      continue;
+    }
+
+    if (code_point <= 0xFFFF) {
+      output.push_back(static_cast<char16_t>(code_point));
+    } else {
+      code_point -= 0x10000;
+      output.push_back(static_cast<char16_t>(0xD800 + (code_point >> 10)));
+      output.push_back(static_cast<char16_t>(0xDC00 + (code_point & 0x3FF)));
+    }
+    offset += sequence_length;
+  }
+  return output;
+}
+
+std::string UTF16ToUTF8(std::u16string_view input) {
+  std::string output;
+  output.reserve(input.size());
+
+  size_t offset = 0;
+  while (offset < input.size()) {
+    uint32_t code_point = input[offset++];
+    if (code_point >= 0xD800 && code_point <= 0xDBFF) {
+      if (offset < input.size()) {
+        const uint32_t low_surrogate = input[offset];
+        if (low_surrogate >= 0xDC00 && low_surrogate <= 0xDFFF) {
+          code_point = 0x10000 + ((code_point - 0xD800) << 10) +
+                       (low_surrogate - 0xDC00);
+          ++offset;
+        } else {
+          code_point = 0xFFFD;
+        }
+      } else {
+        code_point = 0xFFFD;
+      }
+    } else if (code_point >= 0xDC00 && code_point <= 0xDFFF) {
+      code_point = 0xFFFD;
+    }
+
+    if (code_point <= 0x7F) {
+      output.push_back(static_cast<char>(code_point));
+    } else if (code_point <= 0x7FF) {
+      output.push_back(static_cast<char>(0xC0 | (code_point >> 6)));
+      output.push_back(static_cast<char>(0x80 | (code_point & 0x3F)));
+    } else if (code_point <= 0xFFFF) {
+      output.push_back(static_cast<char>(0xE0 | (code_point >> 12)));
+      output.push_back(static_cast<char>(0x80 | ((code_point >> 6) & 0x3F)));
+      output.push_back(static_cast<char>(0x80 | (code_point & 0x3F)));
+    } else {
+      output.push_back(static_cast<char>(0xF0 | (code_point >> 18)));
+      output.push_back(static_cast<char>(0x80 | ((code_point >> 12) & 0x3F)));
+      output.push_back(static_cast<char>(0x80 | ((code_point >> 6) & 0x3F)));
+      output.push_back(static_cast<char>(0x80 | (code_point & 0x3F)));
+    }
+  }
+  return output;
+}
+
+jstring NewJNIStringFromUTF16(JNIEnv* env, std::u16string_view value) {
+  if (value.size() > static_cast<size_t>(std::numeric_limits<jsize>::max())) {
+    ScopedJNIClass exception_class(env, "java/lang/OutOfMemoryError");
+    if (exception_class)
+      env->ThrowNew(exception_class, "Native string exceeds the maximum Java String length");
+    return nullptr;
+  }
+
+  static_assert(sizeof(jchar) == sizeof(std::u16string::value_type),
+                "JNI and C++ UTF-16 code units must have the same width");
+  const char16_t* chars = value.empty() ? u"" : value.data();
+  return env->NewString(reinterpret_cast<const jchar*>(chars), static_cast<jsize>(value.size()));
+}
 
 }  // namespace
 
@@ -155,18 +279,53 @@ bool SetJNIStringRef(JNIEnv* env, jobject jstringRef, const CefString& stringVal
 }
 
 jstring NewJNIString(JNIEnv* env, const std::string& str) {
-  return env->NewStringUTF(str.c_str());
+  return NewJNIStringFromUTF16(env, UTF8ToUTF16(str));
+}
+
+jstring NewJNIString(JNIEnv* env, const CefString& str) {
+  const char16_t* chars = str.empty() ? u"" : str.c_str();
+  return NewJNIStringFromUTF16(env, std::u16string_view(chars, str.length()));
+}
+
+jstring NewJNIString(JNIEnv* env, const char* str) {
+  return str ? NewJNIString(env, std::string(str)) : nullptr;
+}
+
+std::string GetJNIStringUTF8(JNIEnv* env, jstring jstr) {
+  if (!jstr)
+    return std::string();
+
+  const jsize length = env->GetStringLength(jstr);
+  if (length == 0)
+    return std::string();
+
+  const jchar* utf16 = env->GetStringChars(jstr, nullptr);
+  if (!utf16)
+    return std::string();
+
+  static_assert(sizeof(jchar) == sizeof(std::u16string::value_type),
+                "JNI and C++ UTF-16 code units must have the same width");
+  const std::string utf8 = UTF16ToUTF8(std::u16string_view(reinterpret_cast<const std::u16string::value_type*>(utf16), static_cast<size_t>(length)));
+  env->ReleaseStringChars(jstr, utf16);
+  return utf8;
 }
 
 CefString GetJNIString(JNIEnv* env, jstring jstr) {
-  CefString cef_str;
-  const char* chr = nullptr;
-  if (jstr)
-    chr = env->GetStringUTFChars(jstr, nullptr);
-  if (chr)
-    cef_str = chr;
-  if (jstr)
-    env->ReleaseStringUTFChars(jstr, chr);
+  if (!jstr)
+    return CefString();
+
+  const jsize length = env->GetStringLength(jstr);
+  if (length == 0)
+    return CefString();
+
+  const jchar* utf16 = env->GetStringChars(jstr, nullptr);
+  if (!utf16)
+    return CefString();
+
+  static_assert(sizeof(jchar) == sizeof(std::u16string::value_type),
+                "JNI and C++ UTF-16 code units must have the same width");
+  CefString cef_str(reinterpret_cast<const std::u16string::value_type*>(utf16), static_cast<size_t>(length));
+  env->ReleaseStringChars(jstr, utf16);
   return cef_str;
 }
 

@@ -23,6 +23,28 @@ import java.util.Arrays;
 @NativeCefTest
 class CefValueNativeTest {
     @Test
+    void stringsRoundTripUtf16WithoutModifiedUtf8Loss() {
+        String key = "key \u03A9 \u6F22 \uD83D\uDE80 \uD834\uDD1E";
+        String text =
+                "\u0000Latin \u03A9 CJK \u6F22 emoji \uD83D\uDE80 music \uD834\uDD1E end\u0000";
+
+        try (CefValue value = CefValue.create();
+                CefDictionaryValue dictionary = CefDictionaryValue.create();
+                CefListValue list = CefListValue.create()) {
+            assertTrue(value.setString(text));
+            assertEquals(text, value.getString());
+
+            assertTrue(dictionary.setString(key, text));
+            assertTrue(dictionary.hasKey(key));
+            assertEquals(text, dictionary.getString(key));
+            assertEquals(Arrays.asList(key), dictionary.getKeys());
+
+            assertTrue(list.setString(0, text));
+            assertEquals(text, list.getString(0));
+        }
+    }
+
+    @Test
     void valueSupportsEverySimpleTypeAndDeepCopies() {
         try (CefValue value = CefValue.create()) {
             assertTrue(value.isValid());

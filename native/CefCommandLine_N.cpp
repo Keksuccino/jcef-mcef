@@ -181,7 +181,7 @@ Java_org_cef_callback_CefCommandLine_1N_N_1GetCommandLineString(JNIEnv* env,
                                                                 jlong self) {
   CefRefPtr<CefCommandLine> command_line = GetSelf(self);
   if (!command_line)
-    return env->NewStringUTF("");
+    return NewJNIString(env, "");
   return NewJNIString(env, command_line->GetCommandLineString());
 }
 
@@ -191,7 +191,7 @@ Java_org_cef_callback_CefCommandLine_1N_N_1GetProgram(JNIEnv* env,
                                                       jlong self) {
   CefRefPtr<CefCommandLine> commandLine = GetSelf(self);
   if (!commandLine)
-    return env->NewStringUTF("");
+    return NewJNIString(env, "");
   return NewJNIString(env, commandLine->GetProgram());
 }
 
@@ -234,7 +234,7 @@ Java_org_cef_callback_CefCommandLine_1N_N_1GetSwitchValue(JNIEnv* env,
                                                           jstring name) {
   CefRefPtr<CefCommandLine> commandLine = GetSelf(self);
   if (!commandLine)
-    return env->NewStringUTF("");
+    return NewJNIString(env, "");
   return NewJNIString(env,
                       commandLine->GetSwitchValue(GetJNIString(env, name)));
 }

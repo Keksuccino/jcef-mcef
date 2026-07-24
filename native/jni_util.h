@@ -6,6 +6,7 @@
 #define JCEF_NATIVE_JNI_UTIL_H_
 
 #include <jni.h>
+#include <string>
 #include <vector>
 #include "include/cef_base.h"
 #include "include/cef_browser.h"
@@ -52,10 +53,18 @@ void SetJNIIntRef(JNIEnv* env, jobject jintRef, int intValue);
 void SetJNILongRef(JNIEnv* env, jobject jlongRef, int64_t longValue);
 bool SetJNIStringRef(JNIEnv* env, jobject jstringRef, const CefString& initValue);
 
-// Create a new String value.
+// Create a new Java String from standard UTF-8, a CEF string, or an ASCII/UTF-8
+// C string. These overloads use JNI's UTF-16 APIs because NewStringUTF expects
+// modified UTF-8 and corrupts standard UTF-8 supplementary characters.
 jstring NewJNIString(JNIEnv* env, const std::string& str);
+jstring NewJNIString(JNIEnv* env, const CefString& str);
+jstring NewJNIString(JNIEnv* env, const char* str);
 
-// Retrieve a String value.
+// Retrieve a Java String as standard UTF-8 without calling into the CEF
+// runtime. This is safe to use while the macOS CEF framework is being loaded.
+std::string GetJNIStringUTF8(JNIEnv* env, jstring jstr);
+
+// Retrieve a Java String value without converting through modified UTF-8.
 CefString GetJNIString(JNIEnv* env, jstring jstr);
 
 // Create a new array of String values.

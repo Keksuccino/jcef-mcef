@@ -97,15 +97,12 @@ JNIEXPORT jboolean JNICALL Java_org_cef_CefApp_N_1Startup(JNIEnv* env, jclass, j
   if (Context::GetInstance())
     return JNI_TRUE;
 
-  // Can't use GetJNIString before the CEF library is loaded.
-  std::string framework_path;
-  if (pathToCefFramework) {
-    const char* chr = env->GetStringUTFChars(pathToCefFramework, nullptr);
-    if (chr) {
-      framework_path = chr;
-      env->ReleaseStringUTFChars(pathToCefFramework, chr);
-    }
-  }
+  // GetJNIString creates a CefString and therefore cannot be used before the
+  // CEF framework is loaded. This helper only uses JNI and preserves the full
+  // Unicode framework path as standard UTF-8 for cef_load_library.
+  std::string framework_path = GetJNIStringUTF8(env, pathToCefFramework);
+  if (env->ExceptionCheck())
+    return JNI_FALSE;
   framework_path += "/Chromium Embedded Framework";
 
   // Load the CEF framework library at runtime instead of linking directly

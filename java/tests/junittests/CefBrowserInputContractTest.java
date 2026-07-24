@@ -17,6 +17,7 @@ import org.cef.event.CefMouseEvent;
 import org.cef.event.CefMouseWheelEvent;
 import org.cef.misc.EventFlags;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.awt.Canvas;
 import java.awt.Point;
@@ -199,6 +200,13 @@ class CefBrowserInputContractTest {
     }
 
     @Test
+    void normalizesSourceContractLineEndings(@TempDir Path tempDirectory) throws Exception {
+        Path sourcePath = tempDirectory.resolve("source.cpp");
+        Files.writeString(sourcePath, "first\r\nsecond\rthird\nfourth");
+        assertEquals("first\nsecond\nthird\nfourth", readSource(sourcePath));
+    }
+
+    @Test
     void keepsWindowsAwtWheelInversionAndCloseCheckOnCefUiThread() throws Exception {
         String source = readNativeBrowserSource();
         int functionStart = source.indexOf("void SendWindowsAwtMouseWheelEvent(");
@@ -353,7 +361,12 @@ class CefBrowserInputContractTest {
     private static String readNativeSource(String fileName) throws Exception {
         Path sourcePath = Path.of(System.getProperty("user.dir"), "native", fileName);
         assertTrue(Files.isRegularFile(sourcePath), "Run source contract tests from the repository root");
-        return Files.readString(sourcePath);
+        return readSource(sourcePath);
+    }
+
+    private static String readSource(Path sourcePath) throws Exception {
+        // Git may materialize source files with CRLF on Windows, while source contract literals use LF.
+        return Files.readString(sourcePath).replace("\r\n", "\n").replace('\r', '\n');
     }
 
     private static String sourceBetween(String source, String startMarker, String endMarker) {

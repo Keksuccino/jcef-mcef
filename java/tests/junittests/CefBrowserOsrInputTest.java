@@ -54,10 +54,12 @@ import javax.swing.SwingUtilities;
 @NativeCefTest
 class CefBrowserOsrInputTest {
     private static final int INPUT_TIMEOUT_SECONDS = 30;
+    private static final long INPUT_PROBE_INTERVAL_MILLISECONDS = 25L;
     private static final int KEY_MODIFIERS = InputEvent.SHIFT_DOWN_MASK | InputEvent.CTRL_DOWN_MASK
             | InputEvent.ALT_DOWN_MASK | InputEvent.META_DOWN_MASK | InputEvent.ALT_GRAPH_DOWN_MASK;
     private static final String PAGE_READY_TITLE = "jcef-awt-input-page-ready";
-    private static final String INPUT_READY_TITLE = "jcef-awt-input-focus-ready";
+    private static final String FOCUS_READY_TITLE = "jcef-awt-input-focus-ready";
+    private static final String INPUT_READY_TITLE = "jcef-awt-input-route-ready";
     private static final String SUCCESS_TITLE = "jcef-awt-input-complete";
 
     @Test
@@ -82,12 +84,15 @@ class CefBrowserOsrInputTest {
                     private final AtomicBoolean painted_ = new AtomicBoolean();
                     private final AtomicBoolean inputReady_ = new AtomicBoolean();
                     private final AtomicBoolean inputDispatched_ = new AtomicBoolean();
+                    private final AtomicBoolean inputProbeAcknowledged_ = new AtomicBoolean();
+                    private final AtomicBoolean inputProbePending_ = new AtomicBoolean();
                     private final AtomicBoolean terminationRequested_ = new AtomicBoolean();
                     private Component inputComponent_;
+                    private volatile ScheduledFuture<?> inputProbe_;
 
                     @Override
                     protected void setupTest() {
-                        client_.addDisplayHandler(new InputDisplayHandler(() -> browser_, lastTitle, pageInputComplete, this::focusInputPage, this::markInputReady, this::maybeFinish));
+                        client_.addDisplayHandler(new InputDisplayHandler(() -> browser_, lastTitle, pageInputComplete, this::focusInputPage, this::startInputProbe, this::markInputReady, this::maybeFinish));
                         addResource(testUrl, createInputPage(), "text/html");
                         AwtInputBrowser browser = new AwtInputBrowser(client_, testUrl);
                         browser_ = browser;
@@ -112,6 +117,7 @@ class CefBrowserOsrInputTest {
 
                     @Override
                     protected void cleanupTest() {
+                        stopInputProbe();
                         SwingUtilities.invokeLater(this::verifyClosedInputIsIgnored);
                         super.cleanupTest();
                     }
@@ -131,10 +137,10 @@ class CefBrowserOsrInputTest {
                                     throw new AssertionError("OSR browser has no main frame after page readiness");
                                 try {
                                     // BrowserHost.SetFocus crosses the CEF UI/renderer boundary asynchronously.
-                                    // Do not dispatch synthetic input until the renderer confirms both document
-                                    // focus and the intended active element, otherwise slower CI hosts can lose
-                                    // the entire first input sequence even though JavaScript already executed.
-                                    mainFrame.executeJavaScript("(()=>{const target=document.getElementById('i');const awaitFocus=()=>{target.focus();if(document.hasFocus()&&document.activeElement===target){document.title='" + INPUT_READY_TITLE + "';return;}setTimeout(awaitFocus,10);};awaitFocus();})();", testUrl, 1);
+                                    // Do not begin the input-route handshake until the renderer confirms both
+                                    // document focus and the intended active element. BrowserHost.SetFocus can
+                                    // otherwise still be in flight when JavaScript has already executed.
+                                    mainFrame.executeJavaScript("(()=>{const target=document.getElementById('i');const awaitFocus=()=>{target.focus();if(document.hasFocus()&&document.activeElement===target){document.title='" + FOCUS_READY_TITLE + "';return;}setTimeout(awaitFocus,10);};awaitFocus();})();", testUrl, 1);
                                 } finally {
                                     mainFrame.dispose();
                                 }
@@ -145,7 +151,53 @@ class CefBrowserOsrInputTest {
                         });
                     }
 
+                    private void startInputProbe() {
+                        if (inputProbeAcknowledged_.get()) return;
+                        try {
+                            ScheduledFuture<?> inputProbe = timeoutExecutor.scheduleWithFixedDelay(this::enqueueInputProbe, 0L, INPUT_PROBE_INTERVAL_MILLISECONDS, TimeUnit.MILLISECONDS);
+                            inputProbe_ = inputProbe;
+                            if (inputProbeAcknowledged_.get()) inputProbe.cancel(false);
+                        } catch (Throwable throwable) {
+                            failInputProbe(throwable);
+                        }
+                    }
+
+                    private void enqueueInputProbe() {
+                        if (inputProbeAcknowledged_.get() || !inputProbePending_.compareAndSet(false, true)) return;
+                        try {
+                            SwingUtilities.invokeLater(() -> {
+                                inputProbePending_.set(false);
+                                sendInputProbe();
+                            });
+                        } catch (Throwable throwable) {
+                            inputProbePending_.set(false);
+                            failInputProbe(throwable);
+                        }
+                    }
+
+                    private void sendInputProbe() {
+                        if (inputProbeAcknowledged_.get()) return;
+                        try {
+                            dispatchInputProbe(inputComponent_);
+                        } catch (Throwable throwable) {
+                            failInputProbe(throwable);
+                        }
+                    }
+
+                    private void failInputProbe(Throwable throwable) {
+                        stopInputProbe();
+                        failure.compareAndSet(null, throwable);
+                        requestTermination();
+                    }
+
+                    private void stopInputProbe() {
+                        inputProbeAcknowledged_.set(true);
+                        ScheduledFuture<?> inputProbe = inputProbe_;
+                        if (inputProbe != null) inputProbe.cancel(false);
+                    }
+
                     private void markInputReady() {
+                        stopInputProbe();
                         inputReady_.set(true);
                         maybeDispatchInput();
                     }
@@ -231,6 +283,11 @@ class CefBrowserOsrInputTest {
         return thread;
     }
 
+    private static void dispatchInputProbe(Component component) {
+        MouseEvent probe = new MouseEvent(component, MouseEvent.MOUSE_MOVED, 1L, 0, 1, 2, 0, false, MouseEvent.NOBUTTON);
+        for (MouseMotionListener listener : component.getMouseMotionListeners()) listener.mouseMoved(probe);
+    }
+
     private static void dispatchKeySequence(Component component) {
         KeyEvent pressed = new KeyEvent(component, KeyEvent.KEY_PRESSED, 1L, KEY_MODIFIERS, KeyEvent.VK_M, 'M', KeyEvent.KEY_LOCATION_STANDARD);
         KeyEvent repeated = new KeyEvent(component, KeyEvent.KEY_PRESSED, 2L, KEY_MODIFIERS, KeyEvent.VK_M, 'M', KeyEvent.KEY_LOCATION_STANDARD);
@@ -247,20 +304,9 @@ class CefBrowserOsrInputTest {
         for (KeyListener listener : component.getKeyListeners())
             listener.keyReleased(releasedAfterReset);
 
-        KeyEvent focusResetFirst = new KeyEvent(component, KeyEvent.KEY_PRESSED, 7L, 0, KeyEvent.VK_N, 'N', KeyEvent.KEY_LOCATION_STANDARD);
-        KeyEvent focusResetSecond = new KeyEvent(component, KeyEvent.KEY_PRESSED, 8L, 0, KeyEvent.VK_N, 'N', KeyEvent.KEY_LOCATION_STANDARD);
-        KeyEvent focusResetReleased = new KeyEvent(component, KeyEvent.KEY_RELEASED, 9L, 0, KeyEvent.VK_N, 'N', KeyEvent.KEY_LOCATION_STANDARD);
-        for (KeyListener listener : component.getKeyListeners())
-            listener.keyPressed(focusResetFirst);
-        for (FocusListener listener : component.getFocusListeners())
-            listener.focusLost(new FocusEvent(component, FocusEvent.FOCUS_LOST));
-        for (FocusListener listener : component.getFocusListeners())
-            listener.focusGained(new FocusEvent(component, FocusEvent.FOCUS_GAINED));
-        for (KeyListener listener : component.getKeyListeners())
-            listener.keyPressed(focusResetSecond);
-        for (KeyListener listener : component.getKeyListeners())
-            listener.keyReleased(focusResetReleased);
-
+        // CefBrowserInputContractTest covers repeat-state clearing across focus lifecycles. Keep
+        // this native renderer sequence focused throughout because BrowserHost.SetFocus is
+        // asynchronous and interleaving a second key sequence would test scheduling, not mapping.
         assertFalse(component.getFocusTraversalKeysEnabled(), "OSR input component must deliver traversal keys to CEF");
         KeyEvent tabPressed = new KeyEvent(component, KeyEvent.KEY_PRESSED, 10L, 0, KeyEvent.VK_TAB, '\t', KeyEvent.KEY_LOCATION_STANDARD);
         KeyEvent tabReleased = new KeyEvent(component, KeyEvent.KEY_RELEASED, 11L, 0, KeyEvent.VK_TAB, '\t', KeyEvent.KEY_LOCATION_STANDARD);
@@ -416,16 +462,16 @@ class CefBrowserOsrInputTest {
         return "<!doctype html><html><head><meta charset=utf-8><style>html,body{width:100%;height:100%;margin:0}</style></head><body><input id=i><input id=tabTarget><script>"
                 + "const expectDomRepeat=" + expectDomRepeat + ";"
                 + "const expectDomNumLock=" + expectDomNumLock + ";"
-                + "const seen={mFirst:false,mRepeat:false,mReset:false,nFirst:false,nReset:false,tab:false,tabFocus:false,unicode:false,arrowDown:false,arrowUp:false,keypadLeftDown:false,keypadLeftUp:false,leftShift:false,rightControl:false,numpad:false,legacyTyped:false,legacyTypedExact:false,legacyRepeat:false,legacyTab:false,legacyRight:false,legacyKeypad:false,legacyLocks:false,legacyLower:false,legacyShift:false,legacyCaps:false,legacyShiftCaps:false,move:false,legacyMove:false,middleDown:false,middleUp:false,rightDown:false,rightUp:false,vertical:false,horizontal:false,page:false,pageMagnitude:false,minimum:false};"
-                + "let mIndex=0,nIndex=0,tabIndex=0,wheelIndex=0;"
+                + "const seen={mFirst:false,mRepeat:false,mReset:false,tab:false,tabFocus:false,unicode:false,arrowDown:false,arrowUp:false,keypadLeftDown:false,keypadLeftUp:false,leftShift:false,rightControl:false,numpad:false,legacyTyped:false,legacyTypedExact:false,legacyRepeat:false,legacyTab:false,legacyRight:false,legacyKeypad:false,legacyLocks:false,legacyLower:false,legacyShift:false,legacyCaps:false,legacyShiftCaps:false,move:false,legacyMove:false,middleDown:false,middleUp:false,rightDown:false,rightUp:false,vertical:false,horizontal:false,page:false,pageMagnitude:false,minimum:false};"
+                + "let mIndex=0,tabIndex=0,wheelIndex=0,inputRouteReady=false;"
                 + "const report=()=>{const missing=Object.keys(seen).filter(k=>!seen[k]);document.title=missing.length?'missing:'+missing.join(','):'"
                 + SUCCESS_TITLE + "';};"
-                + "addEventListener('keydown',e=>{if(e.code==='KeyM'){const mods=e.shiftKey&&e.ctrlKey&&e.altKey&&e.metaKey;if(mIndex===0&&!e.repeat&&mods)seen.mFirst=true;if(mIndex===1&&(!expectDomRepeat||e.repeat)&&mods)seen.mRepeat=true;if(mIndex===2&&!e.repeat&&mods)seen.mReset=true;mIndex++;}if(e.code==='KeyN'){if(nIndex===0&&!e.repeat)seen.nFirst=true;if(nIndex===1&&!e.repeat)seen.nReset=true;nIndex++;}if(e.code==='Tab'&&e.location===0){if(tabIndex===0)seen.tab=true;if(tabIndex===1)seen.legacyTab=true;tabIndex++;}if(e.key==='ArrowLeft'&&e.location===0)seen.arrowDown=true;if(e.code==='Numpad4'&&e.key==='ArrowLeft'&&e.location===3)seen.keypadLeftDown=true;if(e.key==='Shift'&&e.location===1)seen.leftShift=true;if(e.key==='Control'&&e.location===2)seen.rightControl=true;if(e.code==='Numpad1'&&e.location===3)seen.numpad=true;if(e.code==='KeyR'&&e.ctrlKey&&(!expectDomRepeat||e.repeat))seen.legacyRepeat=true;if(e.code==='ShiftRight'&&e.location===2)seen.legacyRight=true;if(e.code==='Numpad0'&&e.location===3)seen.legacyKeypad=true;if(e.code==='KeyC'&&e.getModifierState('CapsLock')&&(!expectDomNumLock||e.getModifierState('NumLock')))seen.legacyLocks=true;if(e.code==='KeyA'&&e.key==='a'&&!e.shiftKey&&!e.getModifierState('CapsLock'))seen.legacyLower=true;if(e.code==='KeyB'&&e.key==='B'&&e.shiftKey&&!e.getModifierState('CapsLock'))seen.legacyShift=true;if(e.code==='KeyD'&&e.key==='D'&&!e.shiftKey&&e.getModifierState('CapsLock'))seen.legacyCaps=true;if(e.code==='KeyE'&&e.key==='e'&&e.shiftKey&&e.getModifierState('CapsLock'))seen.legacyShiftCaps=true;report();},true);"
+                + "addEventListener('keydown',e=>{if(e.code==='KeyM'){const mods=e.shiftKey&&e.ctrlKey&&e.altKey&&e.metaKey;if(mIndex===0&&!e.repeat&&mods)seen.mFirst=true;if(mIndex===1&&(!expectDomRepeat||e.repeat)&&mods)seen.mRepeat=true;if(mIndex===2&&!e.repeat&&mods)seen.mReset=true;mIndex++;}if(e.code==='Tab'&&e.location===0){if(tabIndex===0)seen.tab=true;if(tabIndex===1)seen.legacyTab=true;tabIndex++;}if(e.key==='ArrowLeft'&&e.location===0)seen.arrowDown=true;if(e.code==='Numpad4'&&e.key==='ArrowLeft'&&e.location===3)seen.keypadLeftDown=true;if(e.key==='Shift'&&e.location===1)seen.leftShift=true;if(e.key==='Control'&&e.location===2)seen.rightControl=true;if(e.code==='Numpad1'&&e.location===3)seen.numpad=true;if(e.code==='KeyR'&&e.ctrlKey&&(!expectDomRepeat||e.repeat))seen.legacyRepeat=true;if(e.code==='ShiftRight'&&e.location===2)seen.legacyRight=true;if(e.code==='Numpad0'&&e.location===3)seen.legacyKeypad=true;if(e.code==='KeyC'&&e.getModifierState('CapsLock')&&(!expectDomNumLock||e.getModifierState('NumLock')))seen.legacyLocks=true;if(e.code==='KeyA'&&e.key==='a'&&!e.shiftKey&&!e.getModifierState('CapsLock'))seen.legacyLower=true;if(e.code==='KeyB'&&e.key==='B'&&e.shiftKey&&!e.getModifierState('CapsLock'))seen.legacyShift=true;if(e.code==='KeyD'&&e.key==='D'&&!e.shiftKey&&e.getModifierState('CapsLock'))seen.legacyCaps=true;if(e.code==='KeyE'&&e.key==='e'&&e.shiftKey&&e.getModifierState('CapsLock'))seen.legacyShiftCaps=true;report();},true);"
                 + "addEventListener('keyup',e=>{if(e.key==='ArrowLeft'&&e.location===0)seen.arrowUp=true;if(e.code==='Numpad4'&&e.key==='ArrowLeft'&&e.location===3)seen.keypadLeftUp=true;report();},true);"
                 + "addEventListener('keypress',e=>{if(e.key==='\\u03A9')seen.unicode=true;if(e.key==='x')seen.legacyTyped=true;if(e.key==='q'&&e.shiftKey&&e.getModifierState('CapsLock'))seen.legacyTypedExact=true;report();},true);"
                 + "addEventListener('beforeinput',e=>{if(e.data==='\\u03A9')seen.unicode=true;if(e.data==='x')seen.legacyTyped=true;report();},true);"
                 + "addEventListener('input',e=>{if(e.data==='\\u03A9')seen.unicode=true;if(e.data==='x')seen.legacyTyped=true;report();},true);"
-                + "addEventListener('mousemove',e=>{if(e.shiftKey&&e.ctrlKey&&e.altKey&&e.metaKey&&e.buttons===7)seen.move=true;if(!e.shiftKey&&!e.ctrlKey&&!e.altKey&&!e.metaKey&&e.buttons===5)seen.legacyMove=true;report();});"
+                + "addEventListener('mousemove',e=>{if(e.clientX===1&&e.clientY===2&&!e.shiftKey&&!e.ctrlKey&&!e.altKey&&!e.metaKey&&e.buttons===0){if(!inputRouteReady){inputRouteReady=true;document.title='" + INPUT_READY_TITLE + "';}return;}if(e.shiftKey&&e.ctrlKey&&e.altKey&&e.metaKey&&e.buttons===7)seen.move=true;if(!e.shiftKey&&!e.ctrlKey&&!e.altKey&&!e.metaKey&&e.buttons===5)seen.legacyMove=true;report();});"
                 + "addEventListener('mousedown',e=>{if(e.button===1)seen.middleDown=true;if(e.button===2)seen.rightDown=true;report();});"
                 + "addEventListener('mouseup',e=>{if(e.button===1)seen.middleUp=true;if(e.button===2)seen.rightUp=true;report();});"
                 + "addEventListener('contextmenu',e=>e.preventDefault());"
@@ -482,16 +528,19 @@ class CefBrowserOsrInputTest {
         private final AtomicReference<String> lastTitle_;
         private final AtomicBoolean complete_;
         private final AtomicBoolean pageReady_ = new AtomicBoolean();
+        private final AtomicBoolean focusReady_ = new AtomicBoolean();
         private final AtomicBoolean inputReady_ = new AtomicBoolean();
         private final Runnable onPageReady_;
+        private final Runnable onFocusReady_;
         private final Runnable onInputReady_;
         private final Runnable onComplete_;
 
-        private InputDisplayHandler(Supplier<CefBrowser> browser, AtomicReference<String> lastTitle, AtomicBoolean complete, Runnable onPageReady, Runnable onInputReady, Runnable onComplete) {
+        private InputDisplayHandler(Supplier<CefBrowser> browser, AtomicReference<String> lastTitle, AtomicBoolean complete, Runnable onPageReady, Runnable onFocusReady, Runnable onInputReady, Runnable onComplete) {
             browser_ = browser;
             lastTitle_ = lastTitle;
             complete_ = complete;
             onPageReady_ = onPageReady;
+            onFocusReady_ = onFocusReady;
             onInputReady_ = onInputReady;
             onComplete_ = onComplete;
         }
@@ -502,6 +551,10 @@ class CefBrowserOsrInputTest {
             lastTitle_.set(title);
             if (PAGE_READY_TITLE.equals(title) && pageReady_.compareAndSet(false, true)) {
                 onPageReady_.run();
+                return;
+            }
+            if (FOCUS_READY_TITLE.equals(title) && focusReady_.compareAndSet(false, true)) {
+                onFocusReady_.run();
                 return;
             }
             if (INPUT_READY_TITLE.equals(title) && inputReady_.compareAndSet(false, true)) {

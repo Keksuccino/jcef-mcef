@@ -15,8 +15,10 @@ import org.cef.CefClient;
 import org.cef.browser.CefBrowser;
 import org.cef.browser.CefBrowserOsr;
 import org.cef.browser.CefBrowser_N;
+import org.cef.browser.CefFrame;
 import org.cef.browser.CefPaintElementType;
 import org.cef.browser.CefPaintEvent;
+import org.cef.handler.CefDisplayHandlerAdapter;
 import org.junit.jupiter.api.Test;
 
 import java.awt.Point;
@@ -29,24 +31,34 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @NativeCefTest
 class CefBrowserOsrPresentationStateTest {
     private static final long FUTURE_TIMEOUT_SECONDS = 10;
-    private static final int RESUMED_WIDTH = 37;
-    private static final int RESUMED_HEIGHT = 29;
+    private static final int HIDDEN_WIDTH = 37;
+    private static final int HIDDEN_HEIGHT = 29;
+    private static final int RESUMED_WIDTH = 43;
+    private static final int RESUMED_HEIGHT = 31;
+    private static final String RENDERER_VISIBLE_TITLE = "jcef-osr-renderer-visible";
 
     @Test
     void mcefStyleImmediateOsrBrowserAcceptsCompletePresentationStateSequence() throws Exception {
         CompletableFuture<McefStyleBrowser> browserCreated = new CompletableFuture<McefStyleBrowser>();
         CompletableFuture<CefPaintEvent> initialPaint = new CompletableFuture<CefPaintEvent>();
-        CompletableFuture<CefPaintEvent> resumedPaint = new CompletableFuture<CefPaintEvent>();
-        AtomicBoolean observePaint = new AtomicBoolean();
+        CompletableFuture<Void> rendererVisible = new CompletableFuture<Void>();
+        CompletableFuture<CefPaintEvent> resizedPaint = new CompletableFuture<CefPaintEvent>();
+        AtomicBoolean observeResizedPaint = new AtomicBoolean();
         TestFrame frame = TestFrame.createOnEventDispatchThread(() -> new TestFrame() {
             @Override
             protected void setupTest() {
+                client_.addDisplayHandler(new CefDisplayHandlerAdapter() {
+                    @Override
+                    public void onTitleChange(CefBrowser browser, String title) {
+                        if (browser == browser_ && RENDERER_VISIBLE_TITLE.equals(title)) rendererVisible.complete(null);
+                    }
+                });
                 McefStyleBrowser browser = new McefStyleBrowser(client_);
                 browser.addOnPaintListener(event -> {
                     if (event.getPopup()) return;
                     initialPaint.complete(event);
-                    if (observePaint.get() && event.getWidth() == RESUMED_WIDTH && event.getHeight() == RESUMED_HEIGHT)
-                        resumedPaint.complete(event);
+                    if (observeResizedPaint.get() && event.getWidth() == RESUMED_WIDTH && event.getHeight() == RESUMED_HEIGHT)
+                        resizedPaint.complete(event);
                 });
                 browser_ = browser;
                 browser_.createImmediately();
@@ -72,18 +84,23 @@ class CefBrowserOsrPresentationStateTest {
             browser.notifyScreenInfoChanged();
             browser.invalidate(CefPaintElementType.PET_VIEW);
             browser.invalidate(CefPaintElementType.PET_POPUP);
-            browser.resize(RESUMED_WIDTH, RESUMED_HEIGHT);
+            browser.resize(HIDDEN_WIDTH, HIDDEN_HEIGHT);
 
-            observePaint.set(true);
             browser.setWindowVisibility(true);
-            // CEF stops layout and painting while hidden, so repeat the resize notification after
-            // WasHidden(false). The geometry update above still verifies that resizing while hidden
-            // is safe, while this notification deterministically schedules the resumed frame.
-            browser.notifyResized(RESUMED_WIDTH, RESUMED_HEIGHT);
             browser.notifyScreenInfoChanged();
             browser.invalidate(CefPaintElementType.PET_VIEW);
+            requestVisibleRendererFrame(browser);
+            await(rendererVisible);
 
-            CefPaintEvent paint = await(resumedPaint);
+            // WasHidden(false) is asynchronous and CEF suppresses animation frames while hidden.
+            // The renderer callback therefore acknowledges visible state without accepting a stale
+            // paint that was already queued before WasHidden(true). Use a new geometry after that
+            // acknowledgement because CEF may legitimately coalesce a redundant resize.
+            observeResizedPaint.set(true);
+            browser.resize(RESUMED_WIDTH, RESUMED_HEIGHT);
+            browser.invalidate(CefPaintElementType.PET_VIEW);
+
+            CefPaintEvent paint = await(resizedPaint);
             assertSame(browser, paint.getBrowser());
             assertFalse(paint.getPopup());
             assertNotNull(paint.getDirtyRects());
@@ -92,6 +109,16 @@ class CefBrowserOsrPresentationStateTest {
         } finally {
             frame.terminateTest();
             frame.awaitCompletion();
+        }
+    }
+
+    private static void requestVisibleRendererFrame(CefBrowser browser) {
+        CefFrame mainFrame = browser.getMainFrame();
+        if (mainFrame == null) throw new AssertionError("OSR browser has no main frame after its initial paint");
+        try {
+            mainFrame.executeJavaScript("requestAnimationFrame(()=>{document.title='" + RENDERER_VISIBLE_TITLE + "';});", "about:blank", 1);
+        } finally {
+            mainFrame.dispose();
         }
     }
 
@@ -113,10 +140,6 @@ class CefBrowserOsrPresentationStateTest {
 
         private void resize(int width, int height) {
             updateViewGeometry(0, 0, width, height, new Point(0, 0));
-            notifyResized(width, height);
-        }
-
-        private void notifyResized(int width, int height) {
             wasResized(width, height);
         }
     }

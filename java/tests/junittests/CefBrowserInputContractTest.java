@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import org.cef.browser.CefBrowser;
 import org.cef.browser.CefBrowserOsr;
 import org.cef.browser.CefBrowser_N;
 import org.cef.callback.CefDragData;
@@ -26,6 +27,7 @@ import java.awt.event.KeyEvent;
 import java.awt.event.MouseEvent;
 import java.awt.event.MouseWheelEvent;
 import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.nio.file.Files;
@@ -47,6 +49,32 @@ class CefBrowserInputContractTest {
         assertPrivateNativeMethod("N_SendMouseEventAwt", java.awt.event.MouseEvent.class);
         assertPrivateNativeMethod("N_SendMouseWheelEvent", CefMouseWheelEvent.class);
         assertPrivateNativeMethod("N_SendMouseWheelEventAwt", java.awt.event.MouseWheelEvent.class);
+    }
+
+    @Test
+    void exposesCaptureLostThroughTheLiveInputLifecycleGate() throws Exception {
+        Method interfaceMethod = CefBrowser.class.getMethod("sendCaptureLostEvent");
+        assertEquals(void.class, interfaceMethod.getReturnType());
+        assertTrue(Modifier.isPublic(interfaceMethod.getModifiers()));
+        assertTrue(Modifier.isAbstract(interfaceMethod.getModifiers()));
+        assertPrivateNativeMethod("N_SendCaptureLostEvent");
+
+        String source = readJavaBrowserSource();
+        int methodStart = source.indexOf("public void sendCaptureLostEvent()");
+        int methodEnd = source.indexOf("\n    @Override", methodStart + 1);
+        int lifecycleGate = source.indexOf("if (!isNativeInputEligible()) return;", methodStart);
+        int nativeCall = source.indexOf("N_SendCaptureLostEvent();", methodStart);
+        assertTrue(methodStart >= 0);
+        assertTrue(methodEnd > methodStart);
+        assertTrue(lifecycleGate > methodStart && lifecycleGate < nativeCall);
+        assertTrue(nativeCall < methodEnd);
+
+        String nativeSource = readNativeBrowserSource();
+        String nativeBridge = sourceBetween(nativeSource, "Java_org_cef_browser_CefBrowser_1N_N_1SendCaptureLostEvent", "Java_org_cef_browser_CefBrowser_1N_N_1SendKeyEvent");
+        int browserLookup = nativeBridge.indexOf("CefRefPtr<CefBrowser> browser = JNI_GET_BROWSER_OR_RETURN(env, obj);");
+        int hostCall = nativeBridge.indexOf("browser->GetHost()->SendCaptureLostEvent();");
+        assertTrue(browserLookup >= 0);
+        assertTrue(hostCall > browserLookup);
     }
 
     @Test
@@ -333,6 +361,46 @@ class CefBrowserInputContractTest {
         assertDoesNotThrow(() -> browser.dragDrop(null));
     }
 
+    @Test
+    void captureLostUsesTheSharedNativeInputLifecycleEligibility() throws Exception {
+        InputHarness browser = new InputHarness();
+        Method inputEligible = CefBrowser_N.class.getDeclaredMethod("isNativeInputEligible");
+        inputEligible.setAccessible(true);
+        assertFalse((Boolean) inputEligible.invoke(browser));
+        assertDoesNotThrow(browser::sendCaptureLostEvent);
+
+        Field creationController = CefBrowser_N.class.getDeclaredField("creationController_");
+        creationController.setAccessible(true);
+        Object controller = creationController.get(browser);
+        Method beginCreation = controller.getClass().getDeclaredMethod("begin", boolean.class, boolean.class);
+        Method completeCreation = controller.getClass().getDeclaredMethod("succeeded");
+        beginCreation.setAccessible(true);
+        completeCreation.setAccessible(true);
+        assertTrue((Boolean) beginCreation.invoke(controller, false, false));
+        completeCreation.invoke(controller);
+
+        Field closing = CefBrowser_N.class.getDeclaredField("isClosing_");
+        Field closed = CefBrowser_N.class.getDeclaredField("isClosed_");
+        closing.setAccessible(true);
+        closed.setAccessible(true);
+        browser.setNativeRef("CefBrowser", 1L);
+        try {
+            assertTrue((Boolean) inputEligible.invoke(browser));
+            closing.setBoolean(browser, true);
+            assertFalse((Boolean) inputEligible.invoke(browser));
+            assertDoesNotThrow(browser::sendCaptureLostEvent);
+            closing.setBoolean(browser, false);
+            closed.setBoolean(browser, true);
+            assertFalse((Boolean) inputEligible.invoke(browser));
+            assertDoesNotThrow(browser::sendCaptureLostEvent);
+        } finally {
+            // The dummy reference is only for the Java predicate and must never reach JNI or finalization.
+            browser.setNativeRef("CefBrowser", 0L);
+            closing.setBoolean(browser, false);
+            closed.setBoolean(browser, true);
+        }
+    }
+
     private static void assertProtectedFinalMethod(String name, Class<?> parameterType) throws Exception {
         Method method = CefBrowser_N.class.getDeclaredMethod(name, parameterType);
         assertTrue(Modifier.isProtected(method.getModifiers()));
@@ -356,6 +424,12 @@ class CefBrowserInputContractTest {
 
     private static String readNativeBrowserSource() throws Exception {
         return readNativeSource("CefBrowser_N.cpp");
+    }
+
+    private static String readJavaBrowserSource() throws Exception {
+        Path sourcePath = Path.of(System.getProperty("user.dir"), "java", "org", "cef", "browser", "CefBrowser_N.java");
+        assertTrue(Files.isRegularFile(sourcePath), "Run source contract tests from the repository root");
+        return readSource(sourcePath);
     }
 
     private static String readNativeSource(String fileName) throws Exception {

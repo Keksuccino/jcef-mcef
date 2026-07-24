@@ -722,6 +722,16 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     }
 
     @Override
+    public void sendCaptureLostEvent() {
+        if (!isNativeInputEligible()) return;
+        try {
+            N_SendCaptureLostEvent();
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+    }
+
+    @Override
     public void setWindowVisibility(boolean visible) {
         try {
             N_SetWindowVisibility(visible);
@@ -1262,6 +1272,7 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     private final native void N_WasResized(int width, int height);
     private final native void N_Invalidate();
     private final native void N_InvalidatePaintElement(int type);
+    private final native void N_SendCaptureLostEvent();
     private final native void N_SendKeyEvent(CefKeyEvent e);
     private final native void N_SendKeyEventAwt(java.awt.event.KeyEvent e, boolean repeated);
     private final native void N_SendMouseEvent(CefMouseEvent e);

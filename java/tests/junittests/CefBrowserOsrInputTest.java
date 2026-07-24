@@ -601,6 +601,11 @@ class CefBrowserOsrInputTest {
     }
 
     private static void dispatchLegacyMouse(CefBrowser browser) throws Exception {
+        // Invoke the native method directly so a stale library cannot be hidden by the public
+        // wrapper's compatibility catch for UnsatisfiedLinkError.
+        Method captureLostMethod = CefBrowser_N.class.getDeclaredMethod("N_SendCaptureLostEvent");
+        captureLostMethod.setAccessible(true);
+        captureLostMethod.invoke(browser);
         Method mouseMethod =
                 CefBrowser_N.class.getDeclaredMethod("sendMouseEvent", CefMouseEvent.class);
         mouseMethod.setAccessible(true);

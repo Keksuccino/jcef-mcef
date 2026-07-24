@@ -4173,6 +4173,11 @@ JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1InvalidatePaintElem
   browser->GetHost()->Invalidate(type);
 }
 
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1SendCaptureLostEvent(JNIEnv* env, jobject obj) {
+  CefRefPtr<CefBrowser> browser = JNI_GET_BROWSER_OR_RETURN(env, obj);
+  browser->GetHost()->SendCaptureLostEvent();
+}
+
 JNIEXPORT void JNICALL
 Java_org_cef_browser_CefBrowser_1N_N_1SendKeyEvent(JNIEnv* env,
                                                    jobject obj,

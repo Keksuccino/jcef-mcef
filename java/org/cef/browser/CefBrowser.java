@@ -260,6 +260,13 @@ public interface CefBrowser {
     public void setFocus(boolean enable);
 
     /**
+     * Notify a windowless browser that its host lost mouse capture so Chromium can release captured
+     * input state. This method may be called on any browser-process thread. Calls made before
+     * native browser creation or while the browser is closing or closed have no effect.
+     */
+    public void sendCaptureLostEvent();
+
+    /**
      * Set whether the browser is visible. For windowless browsers, rendering and paint callbacks
      * stop while hidden. For windowed browsers this controls the containing native window on macOS
      * and has no effect on other platforms.

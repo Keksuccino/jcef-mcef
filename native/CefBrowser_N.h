@@ -431,6 +431,14 @@ JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1InvalidatePaintElem
 
 /*
  * Class:     org_cef_browser_CefBrowser_N
+ * Method:    N_SendCaptureLostEvent
+ * Signature: ()V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1SendCaptureLostEvent
+  (JNIEnv *, jobject);
+
+/*
+ * Class:     org_cef_browser_CefBrowser_N
  * Method:    N_SendKeyEvent
  * Signature: (Lorg/cef/event/CefKeyEvent;)V
  */

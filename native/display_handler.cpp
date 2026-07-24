@@ -6,6 +6,60 @@
 
 #include "jni_util.h"
 
+// Java and MCEF consume the raw numeric enum value, so fail the native build if
+// CEF changes this wire contract.
+static_assert(CT_POINTER == 0);
+static_assert(CT_CROSS == 1);
+static_assert(CT_HAND == 2);
+static_assert(CT_IBEAM == 3);
+static_assert(CT_WAIT == 4);
+static_assert(CT_HELP == 5);
+static_assert(CT_EASTRESIZE == 6);
+static_assert(CT_NORTHRESIZE == 7);
+static_assert(CT_NORTHEASTRESIZE == 8);
+static_assert(CT_NORTHWESTRESIZE == 9);
+static_assert(CT_SOUTHRESIZE == 10);
+static_assert(CT_SOUTHEASTRESIZE == 11);
+static_assert(CT_SOUTHWESTRESIZE == 12);
+static_assert(CT_WESTRESIZE == 13);
+static_assert(CT_NORTHSOUTHRESIZE == 14);
+static_assert(CT_EASTWESTRESIZE == 15);
+static_assert(CT_NORTHEASTSOUTHWESTRESIZE == 16);
+static_assert(CT_NORTHWESTSOUTHEASTRESIZE == 17);
+static_assert(CT_COLUMNRESIZE == 18);
+static_assert(CT_ROWRESIZE == 19);
+static_assert(CT_MIDDLEPANNING == 20);
+static_assert(CT_EASTPANNING == 21);
+static_assert(CT_NORTHPANNING == 22);
+static_assert(CT_NORTHEASTPANNING == 23);
+static_assert(CT_NORTHWESTPANNING == 24);
+static_assert(CT_SOUTHPANNING == 25);
+static_assert(CT_SOUTHEASTPANNING == 26);
+static_assert(CT_SOUTHWESTPANNING == 27);
+static_assert(CT_WESTPANNING == 28);
+static_assert(CT_MOVE == 29);
+static_assert(CT_VERTICALTEXT == 30);
+static_assert(CT_CELL == 31);
+static_assert(CT_CONTEXTMENU == 32);
+static_assert(CT_ALIAS == 33);
+static_assert(CT_PROGRESS == 34);
+static_assert(CT_NODROP == 35);
+static_assert(CT_COPY == 36);
+static_assert(CT_NONE == 37);
+static_assert(CT_NOTALLOWED == 38);
+static_assert(CT_ZOOMIN == 39);
+static_assert(CT_ZOOMOUT == 40);
+static_assert(CT_GRAB == 41);
+static_assert(CT_GRABBING == 42);
+static_assert(CT_MIDDLE_PANNING_VERTICAL == 43);
+static_assert(CT_MIDDLE_PANNING_HORIZONTAL == 44);
+static_assert(CT_CUSTOM == 45);
+static_assert(CT_DND_NONE == 46);
+static_assert(CT_DND_MOVE == 47);
+static_assert(CT_DND_COPY == 48);
+static_assert(CT_DND_LINK == 49);
+static_assert(CT_NUM_VALUES == 50);
+
 DisplayHandler::DisplayHandler(JNIEnv* env, jobject handler)
     : handle_(env, handler) {}
 

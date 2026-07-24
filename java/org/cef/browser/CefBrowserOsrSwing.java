@@ -21,7 +21,6 @@ import org.cef.OS;
 import org.cef.callback.CefDragData;
 
 import java.awt.Component;
-import java.awt.Cursor;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
 import java.awt.GraphicsConfiguration;
@@ -214,7 +213,7 @@ class CefBrowserOsrSwing extends CefBrowserOsr {
         SwingUtilities.invokeLater(new Runnable() {
             @Override
             public void run() {
-                if (canvas_ != null) canvas_.setCursor(new Cursor(cursorType));
+                if (canvas_ != null) canvas_.setCursor(CefCursorAwt.fromCefId(cursorType));
             }
         });
         return true;

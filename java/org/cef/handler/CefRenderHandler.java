@@ -88,7 +88,8 @@ public interface CefRenderHandler {
     /**
      * Handle cursor changes.
      * @param browser The browser generating the event.
-     * @param cursorType The new cursor type.
+     * @param cursorType The raw numeric {@code cef_cursor_type_t} value from CEF. Decode it with
+     *        {@link org.cef.misc.CefCursorType#fromId(int)}; it is not an AWT predefined-cursor ID.
      * @return true if the cursor change was handled.
      */
     public boolean onCursorChange(CefBrowser browser, int cursorType);

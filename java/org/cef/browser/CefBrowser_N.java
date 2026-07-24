@@ -118,18 +118,24 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
         // Headless MCEF browsers have no AWT parent, while windowed browsers
         // retain the upstream behavior of asking their containing window to close.
         Component uiComponent = getUIComponent();
-        if (uiComponent != null) {
-            SwingUtilities.invokeLater(new Runnable() {
-                @Override
-                public void run() {
-                    Component parent = SwingUtilities.getRoot(uiComponent);
-                    if (parent instanceof Window) {
-                        parent.dispatchEvent(
-                                new WindowEvent((Window) parent, WindowEvent.WINDOW_CLOSING));
-                    }
-                }
-            });
+        if (uiComponent == null) {
+            // Returning true promises CEF that this callback sent a custom close notification.
+            // Headless browsers have no window owner to notify, so CEF itself must complete the
+            // close after this callback returns.
+            return false;
         }
+
+        SwingUtilities.invokeLater(new Runnable() {
+            @Override
+            public void run() {
+                Component parent = SwingUtilities.getRoot(uiComponent);
+                if (parent instanceof Window) {
+                    parent.dispatchEvent(new WindowEvent((Window) parent, WindowEvent.WINDOW_CLOSING));
+                } else {
+                    completeCloseWithoutWindowOwner();
+                }
+            }
+        });
 
         // Cancel the close.
         return true;
@@ -592,6 +598,23 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
         if (isClosing_ || isClosed_) return;
         if (force) isClosing_ = true;
 
+        closeNative(force);
+    }
+
+    private void completeCloseWithoutWindowOwner() {
+        synchronized (this) {
+            if (isClosed_) return;
+
+            // DoClose already runs after before-unload handling. No custom owner exists to finish
+            // the close promised by returning true, so allow the next callback and issue the
+            // required continuation directly even if the original call already marked us closing.
+            closeAllowed_ = true;
+            isClosing_ = true;
+        }
+        closeNative(true);
+    }
+
+    private void closeNative(boolean force) {
         try {
             N_Close(force);
         } catch (UnsatisfiedLinkError ule) {

@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import org.cef.CefApp;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledOnOs;
@@ -47,7 +48,7 @@ class CefUnicodeFrameworkPathTest {
             copyProperty(command, "jcef.path");
             copyProperty(command, "java.library.path");
             command.add("-cp");
-            command.add(System.getProperty("java.class.path"));
+            command.add(ChildProcessSupport.classPathFor(CefUnicodeFrameworkPathProcess.class, CefApp.class));
             command.add(CefUnicodeFrameworkPathProcess.class.getName());
             command.add("--framework-dir-path=" + unicodeFramework);
 

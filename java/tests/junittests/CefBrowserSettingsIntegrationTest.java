@@ -67,6 +67,7 @@ class CefBrowserSettingsIntegrationTest {
     }
 
     @Test
+    @WindowedCefTest
     void rejectedSettingsDoNotPoisonTheClientCreationLifecycle() throws Exception {
         CompletableFuture<CefBrowser> browserCreated = new CompletableFuture<CefBrowser>();
         TestFrame frame = TestFrame.createOnEventDispatchThread(() -> new TestFrame() {
@@ -95,6 +96,7 @@ class CefBrowserSettingsIntegrationTest {
     }
 
     @Test
+    @WindowedCefTest
     void windowedBrowserDisablesInlineJavaScriptThroughBrowserSettings() throws Exception {
         CompletableFuture<String> finalTitle = new CompletableFuture<String>();
         AtomicBoolean loadingStopped = new AtomicBoolean();

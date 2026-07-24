@@ -13,6 +13,7 @@ import static tests.junittests.TestSetupContext.debugPrint;
 import org.cef.CefApp;
 import org.cef.CefClient;
 import org.cef.browser.CefBrowser;
+import org.cef.browser.CefBrowserOsr;
 import org.cef.browser.CefFrame;
 import org.cef.browser.CefRequestContext;
 import org.cef.callback.CefAuthCallback;
@@ -145,6 +146,13 @@ class TestFrame extends JFrame implements CefLifeSpanHandler, CefLoadHandler, Ce
         pack();
         setSize(800, 600);
         setVisible(true);
+    }
+
+    /** Creates the same component-free, immediately realized OSR browser used by MCEF. */
+    protected final CefBrowser createOffscreenBrowser(String startURL, CefRequestContext requestContext) {
+        CefBrowser browser = new CefBrowserOsr(client_, startURL, false, requestContext);
+        browser.createImmediately();
+        return browser;
     }
 
     // Override this method to perform test setup.

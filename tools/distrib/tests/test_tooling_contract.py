@@ -100,12 +100,16 @@ class PlatformToolingContractTest(unittest.TestCase):
       self.assertIn('binary_distrib/${{ matrix.target }}.tar.gz.sha256',
                     workflow)
 
-  def test_every_workflow_architecture_runs_native_backed_suite(self):
+  def test_every_workflow_architecture_runs_isolated_windowless_and_windowed_suites(self):
     workflow = (
         REPOSITORY_ROOT / '.github' / 'workflows' / 'build-jcef.yml').read_text(
             encoding='utf-8')
-    self.assertEqual(3, workflow.count('name: Run native-backed JUnit suite'))
+    self.assertEqual(3, workflow.count('name: Run windowless/native JUnit suite'))
+    self.assertEqual(3, workflow.count('name: Run windowed JUnit suite'))
     self.assertEqual(3, workflow.count('--include-tag native-cef'))
+    self.assertEqual(3, workflow.count('--exclude-tag windowed-cef'))
+    self.assertEqual(3, workflow.count('--include-tag windowed-cef'))
+    self.assertEqual(3, workflow.count('--config=jcef.windowless_rendering_enabled=false'))
     self.assertNotIn("if: matrix.platform == 'amd64'", workflow)
 
   def test_macos_headless_tests_do_not_use_first_thread_mode(self):

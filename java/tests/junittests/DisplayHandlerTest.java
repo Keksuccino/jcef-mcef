@@ -17,6 +17,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 // Test the DisplayHandler implementation.
 @NativeCefTest
+@WindowedCefTest
 class DisplayHandlerTest {
     private final String testUrl_ = "http://test.com/test.html";
     private final String testContent_ =

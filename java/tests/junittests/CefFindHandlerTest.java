@@ -47,6 +47,7 @@ class CefFindHandlerTest {
     };
 
     @Test
+    @WindowedCefTest
     void reportsFinalResultsForWindowedBrowser() {
         runResultMatrix("http://find-handler.test/windowed.html", false);
     }
@@ -57,6 +58,7 @@ class CefFindHandlerTest {
     }
 
     @Test
+    @WindowedCefTest
     void firstHandlerWinsAndCanBeReplacedAfterBrowserCreation() {
         HandlerReplacementController controller = new HandlerReplacementController("http://find-handler.test/replacement.html");
         TestFrame frame = createFrame(controller, false);
@@ -90,10 +92,8 @@ class CefFindHandlerTest {
                 addResource(controller.getUrl(), TEST_CONTENT, "text/html");
 
                 if (offscreen) {
-                    browser_ = client_.createBrowser(controller.getUrl(), true, false);
-                    assertNotNull(browser_);
+                    browser_ = createOffscreenBrowser(controller.getUrl(), null);
                     controller.attachBrowser(browser_);
-                    browser_.createImmediately();
                 } else {
                     createBrowser(controller.getUrl());
                     controller.attachBrowser(browser_);

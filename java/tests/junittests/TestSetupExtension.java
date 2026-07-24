@@ -93,6 +93,7 @@ public class TestSetupExtension implements BeforeAllCallback, AutoCloseable {
         // client forces synchronous N_Initialize/CefInitialize before any test
         // can construct a native CEF object such as CefDragData.
         CefSettings settings = new CefSettings();
+        settings.windowless_rendering_enabled = TestSetupContext.windowlessRenderingEnabled();
         app_ = CefApp.getInstance(settings);
         bootstrapClient_ = app_.createClient();
         if (CefApp.getState() != CefAppState.INITIALIZED) {

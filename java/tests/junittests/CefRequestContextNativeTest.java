@@ -134,6 +134,7 @@ class CefRequestContextNativeTest {
     }
 
     @Test
+    @WindowedCefTest
     void observesAndMutatesSettingsOnTheCefUiThread() {
         String testUrl = "http://request-context.test/settings.html";
         String testContent = "<html><body>request context</body></html>";

@@ -7,6 +7,7 @@ package tests.junittests;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import org.cef.CefApp;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -36,7 +37,7 @@ class CefPreInitializationRetryTest {
         copyProperty(command, "jcef.external_message_pump");
         copyProperty(command, "java.library.path");
         command.add("-cp");
-        command.add(System.getProperty("java.class.path"));
+        command.add(ChildProcessSupport.classPathFor(CefPreInitializationRetryProcess.class, CefApp.class));
         command.add(CefPreInitializationRetryProcess.class.getName());
         Path rootCache = tempDirectory_.resolve("cef-root-cache").toAbsolutePath();
         command.add(CefPreInitializationRetryProcess.ROOT_CACHE_ARGUMENT + rootCache);

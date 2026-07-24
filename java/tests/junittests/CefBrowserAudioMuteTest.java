@@ -24,6 +24,7 @@ class CefBrowserAudioMuteTest {
     private static final long FUTURE_TIMEOUT_SECONDS = 10;
 
     @Test
+    @WindowedCefTest
     void windowedAudioMuteCanBeToggledAndRestoredFromOutsideTheCefUiThread() throws Exception {
         assertAudioMuteToggle(false);
     }
@@ -40,9 +41,7 @@ class CefBrowserAudioMuteTest {
             @Override
             protected void setupTest() {
                 if (offscreen) {
-                    browser_ = client_.createBrowser("about:blank", true, false);
-                    assertNotNull(browser_);
-                    browser_.createImmediately();
+                    browser_ = createOffscreenBrowser("about:blank", null);
                 } else {
                     createBrowser("about:blank");
                 }

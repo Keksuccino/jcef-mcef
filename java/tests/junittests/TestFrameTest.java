@@ -26,6 +26,7 @@ class TestFrameTest {
     private boolean gotLoadingStateChange_ = false;
 
     @Test
+    @WindowedCefTest
     void minimal() throws Exception {
         final String testUrl = "http://test.com/test.html";
         TestFrame[] frame = new TestFrame[1];
@@ -79,6 +80,7 @@ class TestFrameTest {
     }
 
     @Test
+    @WindowedCefTest
     void repeatedDevToolsOpenReusesWrapperAndCloseClearsIt() throws Exception {
         final String testUrl = "http://test.com/devtools.html";
         AtomicBoolean openRequested = new AtomicBoolean();
@@ -145,8 +147,7 @@ class TestFrameTest {
                 @Override
                 protected void setupTest() {
                     addResource(testUrl, "<html><body>Pending DevTools</body></html>", "text/html");
-                    browser_ = client_.createBrowser(testUrl, true, false);
-                    browser_.createImmediately();
+                    browser_ = createOffscreenBrowser(testUrl, null);
                     super.setupTest();
                 }
 
@@ -206,9 +207,8 @@ class TestFrameTest {
                     context_ = CefRequestContext.createContext(null);
                     addResource(firstUrl, "<html><body>First</body></html>", "text/html");
                     addResource(secondUrl, "<html><body>Second</body></html>", "text/html");
-                    createBrowser(firstUrl, context_);
-                    secondBrowser_ = client_.createBrowser(secondUrl, true, false, context_);
-                    secondBrowser_.createImmediately();
+                    browser_ = createOffscreenBrowser(firstUrl, context_);
+                    secondBrowser_ = createOffscreenBrowser(secondUrl, context_);
                     super.setupTest();
                 }
 

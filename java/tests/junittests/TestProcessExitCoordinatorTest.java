@@ -263,8 +263,8 @@ class TestProcessExitCoordinatorTest {
                 nanoTime.addAndGet(timeoutNanos);
                 return;
             }
-            assertTrue(thread.isInterrupted() || !thread.isAlive());
-            releaseAndJoin(awt);
+            thread.join(TEST_THREAD_TIMEOUT_MILLIS);
+            assertFalse(thread.isAlive(), "Validated AWT shutdown blocker did not terminate after interruption");
         };
         TestProcessExitCoordinator.Hooks hooks = new TestProcessExitCoordinator.Hooks(() -> snapshotOfAwtShutdown(awt), nanoTime::get, waiter, shutdownActions::incrementAndGet, exitStatus::set, new PrintWriter(new ByteArrayOutputStream()));
 

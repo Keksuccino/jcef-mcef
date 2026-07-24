@@ -28,6 +28,7 @@ import org.cef.network.CefRequest;
 import org.cef.network.CefResponse;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 class CefHandlerCompatibilityTest {
@@ -108,6 +109,7 @@ class CefHandlerCompatibilityTest {
     @Test
     void legacyDisplayHandlerCanIgnoreAddedNotifications() {
         CefDisplayHandler handler = new LegacyDisplayHandler();
+        handler.onFaviconURLChange(null, List.of("https://example.test/icon.svg"));
         handler.onFullscreenModeChange(null, true);
         handler.onLoadingProgressChange(null, 0.5);
     }

@@ -8,6 +8,8 @@ import org.cef.CefSettings;
 import org.cef.browser.CefBrowser;
 import org.cef.browser.CefFrame;
 
+import java.util.List;
+
 /**
  * Implement this interface to handle events related to browser display state.
  * The methods of this class will be called on the UI thread.
@@ -27,6 +29,13 @@ public interface CefDisplayHandler {
      * @param title The new title.
      */
     public void onTitleChange(CefBrowser browser, String title);
+
+    /**
+     * Browser page icon URLs changed.
+     * @param browser The browser generating the event.
+     * @param iconUrls A possibly empty ordered snapshot of the candidate page icon URLs.
+     */
+    public default void onFaviconURLChange(CefBrowser browser, List<String> iconUrls) {}
 
     /**
      * Browser fullscreen mode changed.

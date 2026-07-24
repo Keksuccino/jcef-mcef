@@ -41,6 +41,19 @@ void DisplayHandler::OnTitleChange(CefRefPtr<CefBrowser> browser,
                        jbrowser.get(), jtitle.get());
 }
 
+void DisplayHandler::OnFaviconURLChange(CefRefPtr<CefBrowser> browser, const std::vector<CefString>& icon_urls) {
+  ScopedJNIEnv env;
+  if (!env)
+    return;
+
+  ScopedJNIBrowser jbrowser(env, browser);
+  ScopedJNIObjectLocal jicon_urls(env, NewJNIStringVector(env, icon_urls));
+  if (!jicon_urls)
+    return;
+
+  JNI_CALL_VOID_METHOD(env, handle_, "onFaviconURLChange", "(Lorg/cef/browser/CefBrowser;Ljava/util/List;)V", jbrowser.get(), jicon_urls.get());
+}
+
 void DisplayHandler::OnFullscreenModeChange(CefRefPtr<CefBrowser> browser,
                                             bool fullscreen) {
   ScopedJNIEnv env;

@@ -37,6 +37,7 @@ import java.beans.PropertyChangeListener;
 import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.Vector;
 import java.util.concurrent.atomic.AtomicReference;
@@ -371,6 +372,12 @@ public class CefClient extends CefClientHandler
     public void onTitleChange(CefBrowser browser, String title) {
         if (displayHandler_ != null && browser != null)
             displayHandler_.onTitleChange(browser, title);
+    }
+
+    @Override
+    public void onFaviconURLChange(CefBrowser browser, List<String> iconUrls) {
+        if (displayHandler_ != null && browser != null)
+            displayHandler_.onFaviconURLChange(browser, iconUrls);
     }
 
     @Override

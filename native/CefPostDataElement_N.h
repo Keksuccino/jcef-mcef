@@ -12,97 +12,80 @@ extern "C" {
  * Method:    N_Create
  * Signature: ()Lorg/cef/network/CefPostDataElement_N;
  */
-JNIEXPORT jobject JNICALL
-Java_org_cef_network_CefPostDataElement_1N_N_1Create(JNIEnv*, jclass);
+JNIEXPORT jobject JNICALL Java_org_cef_network_CefPostDataElement_1N_N_1Create
+  (JNIEnv *, jclass);
 
 /*
  * Class:     org_cef_network_CefPostDataElement_N
  * Method:    N_Dispose
  * Signature: (J)V
  */
-JNIEXPORT void JNICALL
-Java_org_cef_network_CefPostDataElement_1N_N_1Dispose(JNIEnv*, jobject, jlong);
+JNIEXPORT void JNICALL Java_org_cef_network_CefPostDataElement_1N_N_1Dispose
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_network_CefPostDataElement_N
  * Method:    N_IsReadOnly
  * Signature: (J)Z
  */
-JNIEXPORT jboolean JNICALL
-Java_org_cef_network_CefPostDataElement_1N_N_1IsReadOnly(JNIEnv*,
-                                                         jobject,
-                                                         jlong);
+JNIEXPORT jboolean JNICALL Java_org_cef_network_CefPostDataElement_1N_N_1IsReadOnly
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_network_CefPostDataElement_N
  * Method:    N_SetToEmpty
  * Signature: (J)V
  */
-JNIEXPORT void JNICALL
-Java_org_cef_network_CefPostDataElement_1N_N_1SetToEmpty(JNIEnv*,
-                                                         jobject,
-                                                         jlong);
+JNIEXPORT void JNICALL Java_org_cef_network_CefPostDataElement_1N_N_1SetToEmpty
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_network_CefPostDataElement_N
  * Method:    N_SetToFile
  * Signature: (JLjava/lang/String;)V
  */
-JNIEXPORT void JNICALL
-Java_org_cef_network_CefPostDataElement_1N_N_1SetToFile(JNIEnv*,
-                                                        jobject,
-                                                        jlong,
-                                                        jstring);
+JNIEXPORT void JNICALL Java_org_cef_network_CefPostDataElement_1N_N_1SetToFile
+  (JNIEnv *, jobject, jlong, jstring);
 
 /*
  * Class:     org_cef_network_CefPostDataElement_N
  * Method:    N_SetToBytes
  * Signature: (JI[B)V
  */
-JNIEXPORT void JNICALL
-Java_org_cef_network_CefPostDataElement_1N_N_1SetToBytes(JNIEnv*,
-                                                         jobject,
-                                                         jlong,
-                                                         jint,
-                                                         jbyteArray);
+JNIEXPORT void JNICALL Java_org_cef_network_CefPostDataElement_1N_N_1SetToBytes
+  (JNIEnv *, jobject, jlong, jint, jbyteArray);
 
 /*
  * Class:     org_cef_network_CefPostDataElement_N
  * Method:    N_GetType
  * Signature: (J)Lorg/cef/network/CefPostDataElement/Type;
  */
-JNIEXPORT jobject JNICALL
-Java_org_cef_network_CefPostDataElement_1N_N_1GetType(JNIEnv*, jobject, jlong);
+JNIEXPORT jobject JNICALL Java_org_cef_network_CefPostDataElement_1N_N_1GetType
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_network_CefPostDataElement_N
  * Method:    N_GetFile
  * Signature: (J)Ljava/lang/String;
  */
-JNIEXPORT jstring JNICALL
-Java_org_cef_network_CefPostDataElement_1N_N_1GetFile(JNIEnv*, jobject, jlong);
+JNIEXPORT jstring JNICALL Java_org_cef_network_CefPostDataElement_1N_N_1GetFile
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_network_CefPostDataElement_N
  * Method:    N_GetBytesCount
  * Signature: (J)I
  */
-JNIEXPORT jint JNICALL
-Java_org_cef_network_CefPostDataElement_1N_N_1GetBytesCount(JNIEnv*,
-                                                            jobject,
-                                                            jlong);
+JNIEXPORT jint JNICALL Java_org_cef_network_CefPostDataElement_1N_N_1GetBytesCount
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_network_CefPostDataElement_N
  * Method:    N_GetBytes
  * Signature: (JI[B)I
  */
-JNIEXPORT jint JNICALL
-Java_org_cef_network_CefPostDataElement_1N_N_1GetBytes(JNIEnv*,
-                                                       jobject,
-                                                       jlong,
-                                                       jint,
-                                                       jbyteArray);
+JNIEXPORT jint JNICALL Java_org_cef_network_CefPostDataElement_1N_N_1GetBytes
+  (JNIEnv *, jobject, jlong, jint, jbyteArray);
 
 #ifdef __cplusplus
 }

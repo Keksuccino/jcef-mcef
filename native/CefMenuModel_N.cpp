@@ -15,7 +15,37 @@ CefRefPtr<CefMenuModel> GetSelf(jlong self) {
   return reinterpret_cast<CefMenuModel*>(self);
 }
 
+void ThrowJavaException(JNIEnv* env,
+                        const char* class_name,
+                        const char* message) {
+  if (env->ExceptionCheck())
+    return;
+  ScopedJNIClass exception_class(env, class_name);
+  if (exception_class)
+    env->ThrowNew(exception_class, message);
+}
+
+bool GetMenuColorType(JNIEnv* env,
+                      jint value,
+                      cef_menu_color_type_t* color_type) {
+  if (value < CEF_MENU_COLOR_TEXT || value >= CEF_MENU_COLOR_NUM_VALUES) {
+    ThrowJavaException(env, "java/lang/IllegalArgumentException",
+                       "color_type is outside the CEF 151 range");
+    return false;
+  }
+  *color_type = static_cast<cef_menu_color_type_t>(value);
+  return true;
+}
+
 }  // namespace
+
+JNIEXPORT jboolean JNICALL
+Java_org_cef_callback_CefMenuModel_1N_N_1IsSubMenu(JNIEnv* env,
+                                                   jobject obj,
+                                                   jlong self) {
+  CefRefPtr<CefMenuModel> menu_model = GetSelf(self);
+  return menu_model && menu_model->IsSubMenu() ? JNI_TRUE : JNI_FALSE;
+}
 
 JNIEXPORT jboolean JNICALL
 Java_org_cef_callback_CefMenuModel_1N_N_1Clear(JNIEnv* env,
@@ -685,4 +715,114 @@ Java_org_cef_callback_CefMenuModel_1N_N_1GetAcceleratorAt(
   SetJNIBoolRef(env, jctrl_pressed, ctrl_pressed);
   SetJNIBoolRef(env, jalt_pressed, alt_pressed);
   return JNI_TRUE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_cef_callback_CefMenuModel_1N_N_1SetColor(JNIEnv* env,
+                                                  jobject obj,
+                                                  jlong self,
+                                                  jint jcommand_id,
+                                                  jint jcolor_type,
+                                                  jint jcolor) {
+  CefRefPtr<CefMenuModel> menu_model = GetSelf(self);
+  cef_menu_color_type_t color_type;
+  if (!menu_model || !GetMenuColorType(env, jcolor_type, &color_type))
+    return JNI_FALSE;
+  const cef_color_t color =
+      static_cast<cef_color_t>(static_cast<uint32_t>(jcolor));
+  return menu_model->SetColor(jcommand_id, color_type, color) ? JNI_TRUE
+                                                              : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_cef_callback_CefMenuModel_1N_N_1SetColorAt(JNIEnv* env,
+                                                    jobject obj,
+                                                    jlong self,
+                                                    jint jindex,
+                                                    jint jcolor_type,
+                                                    jint jcolor) {
+  CefRefPtr<CefMenuModel> menu_model = GetSelf(self);
+  cef_menu_color_type_t color_type;
+  if (!menu_model || !GetMenuColorType(env, jcolor_type, &color_type))
+    return JNI_FALSE;
+  const cef_color_t color =
+      static_cast<cef_color_t>(static_cast<uint32_t>(jcolor));
+  return menu_model->SetColorAt(jindex, color_type, color) ? JNI_TRUE
+                                                           : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_cef_callback_CefMenuModel_1N_N_1GetColor(JNIEnv* env,
+                                                  jobject obj,
+                                                  jlong self,
+                                                  jint jcommand_id,
+                                                  jint jcolor_type,
+                                                  jobject jcolor) {
+  CefRefPtr<CefMenuModel> menu_model = GetSelf(self);
+  cef_menu_color_type_t color_type;
+  if (!menu_model || !GetMenuColorType(env, jcolor_type, &color_type))
+    return JNI_FALSE;
+  if (!jcolor) {
+    ThrowJavaException(env, "java/lang/NullPointerException",
+                       "color must not be null");
+    return JNI_FALSE;
+  }
+
+  cef_color_t color = 0;
+  if (!menu_model->GetColor(jcommand_id, color_type, color))
+    return JNI_FALSE;
+  SetJNIIntRef(env, jcolor, static_cast<jint>(color));
+  return JNI_TRUE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_cef_callback_CefMenuModel_1N_N_1GetColorAt(JNIEnv* env,
+                                                    jobject obj,
+                                                    jlong self,
+                                                    jint jindex,
+                                                    jint jcolor_type,
+                                                    jobject jcolor) {
+  CefRefPtr<CefMenuModel> menu_model = GetSelf(self);
+  cef_menu_color_type_t color_type;
+  if (!menu_model || !GetMenuColorType(env, jcolor_type, &color_type))
+    return JNI_FALSE;
+  if (!jcolor) {
+    ThrowJavaException(env, "java/lang/NullPointerException",
+                       "color must not be null");
+    return JNI_FALSE;
+  }
+
+  cef_color_t color = 0;
+  if (!menu_model->GetColorAt(jindex, color_type, color))
+    return JNI_FALSE;
+  SetJNIIntRef(env, jcolor, static_cast<jint>(color));
+  return JNI_TRUE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_cef_callback_CefMenuModel_1N_N_1SetFontList(JNIEnv* env,
+                                                     jobject obj,
+                                                     jlong self,
+                                                     jint jcommand_id,
+                                                     jstring jfont_list) {
+  CefRefPtr<CefMenuModel> menu_model = GetSelf(self);
+  if (!menu_model)
+    return JNI_FALSE;
+  return menu_model->SetFontList(jcommand_id, GetJNIString(env, jfont_list))
+             ? JNI_TRUE
+             : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_cef_callback_CefMenuModel_1N_N_1SetFontListAt(JNIEnv* env,
+                                                       jobject obj,
+                                                       jlong self,
+                                                       jint jindex,
+                                                       jstring jfont_list) {
+  CefRefPtr<CefMenuModel> menu_model = GetSelf(self);
+  if (!menu_model)
+    return JNI_FALSE;
+  return menu_model->SetFontListAt(jindex, GetJNIString(env, jfont_list))
+             ? JNI_TRUE
+             : JNI_FALSE;
 }

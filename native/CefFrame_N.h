@@ -12,128 +12,184 @@ extern "C" {
  * Method:    N_Dispose
  * Signature: (J)V
  */
-JNIEXPORT void JNICALL Java_org_cef_browser_CefFrame_1N_N_1Dispose(JNIEnv*,
-                                                                   jobject,
-                                                                   jlong);
+JNIEXPORT void JNICALL Java_org_cef_browser_CefFrame_1N_N_1Dispose
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_browser_CefFrame_N
  * Method:    N_GetIdentifier
- * Signature: (J)J
+ * Signature: (J)Ljava/lang/String;
  */
-JNIEXPORT jlong JNICALL
-Java_org_cef_browser_CefFrame_1N_N_1GetIdentifier(JNIEnv*, jobject, jlong);
+JNIEXPORT jstring JNICALL Java_org_cef_browser_CefFrame_1N_N_1GetIdentifier
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_browser_CefFrame_N
  * Method:    N_GetURL
  * Signature: (J)Ljava/lang/String;
  */
-JNIEXPORT jstring JNICALL Java_org_cef_browser_CefFrame_1N_N_1GetURL(JNIEnv*,
-                                                                     jobject,
-                                                                     jlong);
+JNIEXPORT jstring JNICALL Java_org_cef_browser_CefFrame_1N_N_1GetURL
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_browser_CefFrame_N
  * Method:    N_GetName
  * Signature: (J)Ljava/lang/String;
  */
-JNIEXPORT jstring JNICALL Java_org_cef_browser_CefFrame_1N_N_1GetName(JNIEnv*,
-                                                                      jobject,
-                                                                      jlong);
+JNIEXPORT jstring JNICALL Java_org_cef_browser_CefFrame_1N_N_1GetName
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_browser_CefFrame_N
  * Method:    N_IsMain
  * Signature: (J)Z
  */
-JNIEXPORT jboolean JNICALL Java_org_cef_browser_CefFrame_1N_N_1IsMain(JNIEnv*,
-                                                                      jobject,
-                                                                      jlong);
+JNIEXPORT jboolean JNICALL Java_org_cef_browser_CefFrame_1N_N_1IsMain
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_browser_CefFrame_N
  * Method:    N_IsValid
  * Signature: (J)Z
  */
-JNIEXPORT jboolean JNICALL Java_org_cef_browser_CefFrame_1N_N_1IsValid(JNIEnv*,
-                                                                       jobject,
-                                                                       jlong);
+JNIEXPORT jboolean JNICALL Java_org_cef_browser_CefFrame_1N_N_1IsValid
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_browser_CefFrame_N
  * Method:    N_IsFocused
  * Signature: (J)Z
  */
-JNIEXPORT jboolean JNICALL
-Java_org_cef_browser_CefFrame_1N_N_1IsFocused(JNIEnv*, jobject, jlong);
+JNIEXPORT jboolean JNICALL Java_org_cef_browser_CefFrame_1N_N_1IsFocused
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_browser_CefFrame_N
  * Method:    N_GetParent
  * Signature: (J)Lorg/cef/browser/CefFrame;
  */
-JNIEXPORT jobject JNICALL Java_org_cef_browser_CefFrame_1N_N_1GetParent(JNIEnv*,
-                                                                        jobject,
-                                                                        jlong);
+JNIEXPORT jobject JNICALL Java_org_cef_browser_CefFrame_1N_N_1GetParent
+  (JNIEnv *, jobject, jlong);
+
+/*
+ * Class:     org_cef_browser_CefFrame_N
+ * Method:    N_GetBrowser
+ * Signature: (J)Lorg/cef/browser/CefBrowser;
+ */
+JNIEXPORT jobject JNICALL Java_org_cef_browser_CefFrame_1N_N_1GetBrowser
+  (JNIEnv *, jobject, jlong);
+
+/*
+ * Class:     org_cef_browser_CefFrame_N
+ * Method:    N_ViewSource
+ * Signature: (J)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefFrame_1N_N_1ViewSource
+  (JNIEnv *, jobject, jlong);
+
+/*
+ * Class:     org_cef_browser_CefFrame_N
+ * Method:    N_GetSource
+ * Signature: (JLorg/cef/callback/CefStringVisitor;)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefFrame_1N_N_1GetSource
+  (JNIEnv *, jobject, jlong, jobject);
+
+/*
+ * Class:     org_cef_browser_CefFrame_N
+ * Method:    N_GetText
+ * Signature: (JLorg/cef/callback/CefStringVisitor;)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefFrame_1N_N_1GetText
+  (JNIEnv *, jobject, jlong, jobject);
+
+/*
+ * Class:     org_cef_browser_CefFrame_N
+ * Method:    N_LoadRequest
+ * Signature: (JLorg/cef/network/CefRequest;)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefFrame_1N_N_1LoadRequest
+  (JNIEnv *, jobject, jlong, jobject);
+
+/*
+ * Class:     org_cef_browser_CefFrame_N
+ * Method:    N_LoadURL
+ * Signature: (JLjava/lang/String;)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefFrame_1N_N_1LoadURL
+  (JNIEnv *, jobject, jlong, jstring);
 
 /*
  * Class:     org_cef_browser_CefFrame_N
  * Method:    N_ExecuteJavaScript
  * Signature: (JLjava/lang/String;Ljava/lang/String;I)V
  */
-JNIEXPORT void JNICALL
-Java_org_cef_browser_CefFrame_1N_N_1ExecuteJavaScript(JNIEnv*,
-                                                      jobject,
-                                                      jlong,
-                                                      jstring,
-                                                      jstring,
-                                                      jint);
+JNIEXPORT void JNICALL Java_org_cef_browser_CefFrame_1N_N_1ExecuteJavaScript
+  (JNIEnv *, jobject, jlong, jstring, jstring, jint);
 
 /*
  * Class:     org_cef_browser_CefFrame_N
  * Method:    N_Undo
  * Signature: (J)V
  */
-JNIEXPORT void JNICALL Java_org_cef_browser_CefFrame_1N_N_1Undo(JNIEnv*,
-                                                                jobject,
-                                                                jlong);
+JNIEXPORT void JNICALL Java_org_cef_browser_CefFrame_1N_N_1Undo
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_browser_CefFrame_N
  * Method:    N_Redo
  * Signature: (J)V
  */
-JNIEXPORT void JNICALL Java_org_cef_browser_CefFrame_1N_N_1Redo(JNIEnv*,
-                                                                jobject,
-                                                                jlong);
+JNIEXPORT void JNICALL Java_org_cef_browser_CefFrame_1N_N_1Redo
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_browser_CefFrame_N
  * Method:    N_Cut
  * Signature: (J)V
  */
-JNIEXPORT void JNICALL Java_org_cef_browser_CefFrame_1N_N_1Cut(JNIEnv*,
-                                                               jobject,
-                                                               jlong);
+JNIEXPORT void JNICALL Java_org_cef_browser_CefFrame_1N_N_1Cut
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_browser_CefFrame_N
  * Method:    N_Copy
  * Signature: (J)V
  */
-JNIEXPORT void JNICALL Java_org_cef_browser_CefFrame_1N_N_1Copy(JNIEnv*,
-                                                                jobject,
-                                                                jlong);
+JNIEXPORT void JNICALL Java_org_cef_browser_CefFrame_1N_N_1Copy
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_browser_CefFrame_N
  * Method:    N_Paste
  * Signature: (J)V
  */
-JNIEXPORT void JNICALL Java_org_cef_browser_CefFrame_1N_N_1Paste(JNIEnv*,
-                                                                 jobject,
-                                                                 jlong);
+JNIEXPORT void JNICALL Java_org_cef_browser_CefFrame_1N_N_1Paste
+  (JNIEnv *, jobject, jlong);
+
+/*
+ * Class:     org_cef_browser_CefFrame_N
+ * Method:    N_PasteAndMatchStyle
+ * Signature: (J)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefFrame_1N_N_1PasteAndMatchStyle
+  (JNIEnv *, jobject, jlong);
+
+/*
+ * Class:     org_cef_browser_CefFrame_N
+ * Method:    N_Delete
+ * Signature: (J)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefFrame_1N_N_1Delete
+  (JNIEnv *, jobject, jlong);
+
+/*
+ * Class:     org_cef_browser_CefFrame_N
+ * Method:    N_SelectAll
+ * Signature: (J)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefFrame_1N_N_1SelectAll
+  (JNIEnv *, jobject, jlong);
 
 #ifdef __cplusplus
 }

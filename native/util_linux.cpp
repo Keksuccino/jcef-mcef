@@ -26,6 +26,18 @@ void X_XMoveResizeWindow(unsigned long browserHandle,
   XFlush(xdisplay);
 }
 
+void X_XReparentWindow(unsigned long browserHandle,
+                       unsigned long parentDrawable) {
+  ::Display* xdisplay = (::Display*)TempWindow::GetDisplay();
+  XReparentWindow(xdisplay, browserHandle, parentDrawable, 0, 0);
+  XFlush(xdisplay);
+}
+
+void X_XSync(bool discard) {
+  ::Display* xdisplay = (::Display*)TempWindow::GetDisplay();
+  XSync(xdisplay, discard);
+}
+
 }  // namespace
 
 // This function is called by LifeSpanHandler::OnAfterCreated().
@@ -39,6 +51,24 @@ void AddCefBrowser(CefRefPtr<CefBrowser> browser) {
 // This function is called by LifeSpanHandler::DoClose().
 void DestroyCefBrowser(CefRefPtr<CefBrowser> browser) {
   browser->GetHost()->CloseBrowser(true);
+}
+
+CefWindowHandle GetWindowHandle(JNIEnv* env, jobject canvas) {
+  return GetDrawableOfCanvas(canvas, env);
+}
+
+void SetParent(CefWindowHandle browserHandle,
+               CefWindowHandle parentHandle,
+               base::OnceClosure callback) {
+  if (parentHandle == kNullWindowHandle)
+    parentHandle = TempWindow::GetWindowHandle();
+  if (parentHandle != kNullWindowHandle && browserHandle != kNullWindowHandle) {
+    X_XReparentWindow(browserHandle, parentHandle);
+    // Complete the X request before releasing a waiting JAWT surface on the
+    // Java caller thread.
+    X_XSync(false);
+  }
+  std::move(callback).Run();
 }
 
 void SetWindowBounds(CefWindowHandle browserHandle,

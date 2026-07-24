@@ -80,6 +80,16 @@ class CefContextMenuParams_N extends CefNativeAdapter implements CefContextMenuP
     }
 
     @Override
+    public String getTitleText() {
+        try {
+            return N_GetTitleText(getNativeRef(null));
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+        return null;
+    }
+
+    @Override
     public String getPageUrl() {
         try {
             return N_GetPageUrl(getNativeRef(null));
@@ -189,6 +199,16 @@ class CefContextMenuParams_N extends CefNativeAdapter implements CefContextMenuP
         return 0;
     }
 
+    @Override
+    public boolean isCustomMenu() {
+        try {
+            return N_IsCustomMenu(getNativeRef(null));
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+        return false;
+    }
+
     private final native int N_GetXCoord(long self);
     private final native int N_GetYCoord(long self);
     private final native int N_GetTypeFlags(long self);
@@ -196,6 +216,7 @@ class CefContextMenuParams_N extends CefNativeAdapter implements CefContextMenuP
     private final native String N_GetUnfilteredLinkUrl(long self);
     private final native String N_GetSourceUrl(long self);
     private final native boolean N_HasImageContents(long self);
+    private final native String N_GetTitleText(long self);
     private final native String N_GetPageUrl(long self);
     private final native String N_GetFrameUrl(long self);
     private final native String N_GetFrameCharset(long self);
@@ -207,4 +228,5 @@ class CefContextMenuParams_N extends CefNativeAdapter implements CefContextMenuP
     private final native boolean N_IsEditable(long self);
     private final native boolean N_IsSpellCheckEnabled(long self);
     private final native int N_GetEditStateFlags(long self);
+    private final native boolean N_IsCustomMenu(long self);
 }

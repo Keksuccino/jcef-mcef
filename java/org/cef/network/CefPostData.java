@@ -38,6 +38,12 @@ public abstract class CefPostData {
     public abstract boolean isReadOnly();
 
     /**
+     * Returns true if the underlying POST data contains elements not represented by this object.
+     * Modifying an object with excluded elements may cause the request to fail.
+     */
+    public abstract boolean hasExcludedElements();
+
+    /**
      * Returns the number of existing post data elements.
      */
     public abstract int getElementCount();

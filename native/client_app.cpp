@@ -50,8 +50,8 @@ void ClientApp::OnBeforeCommandLineProcessing(
 
   if (process_type.empty()) {
 #if defined(OS_MACOSX)
-    // If windowed rendering is used, we need the browser window as CALayer
-    // due Java7 is CALayer based instead of NSLayer based.
+    // If windowed rendering is used, the browser window must use CALayer to
+    // match the macOS AWT window peer implementation.
     command_line->AppendSwitch("use-core-animation");
 
     // Skip keychain prompt on startup.

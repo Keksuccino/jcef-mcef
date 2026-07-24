@@ -21,6 +21,7 @@ public abstract class CefURLRequest {
         UR_IO_PENDING,
         UR_CANCELED,
         UR_FAILED,
+        UR_NUM_VALUES,
     }
 
     // This CTOR can't be called directly. Call method create() instead.
@@ -73,7 +74,12 @@ public abstract class CefURLRequest {
      * Returns the request error if status is UR_CANCELED or UR_FAILED, or 0
      * otherwise.
      */
-    public abstract ErrorCode getRequestError();
+    public ErrorCode getRequestError() {
+        return ErrorCode.findByCode(getRequestErrorCode());
+    }
+
+    /** Returns the exact raw request error, including values unknown to this JCEF version. */
+    public abstract int getRequestErrorCode();
 
     /**
      * Returns the response, or NULL if no response information is available.

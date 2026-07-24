@@ -20,6 +20,10 @@
 #include "include/cef_response.h"
 #include "include/wrapper/cef_message_router.h"
 
+// Releases cached class global references before the active JCEF class loader
+// is cleared.
+void ClearJNIClassCache(JNIEnv* env);
+
 //
 // --------
 // OVERVIEW
@@ -700,6 +704,12 @@ class ScopedJNITransitionType : public ScopedJNIBase<jobject> {
                           CefRequest::TransitionType transitionType);
 };
 
+// JNI immutable transition value, including source and qualifier bits.
+class ScopedJNITransition : public ScopedJNIBase<jobject> {
+ public:
+  ScopedJNITransition(JNIEnv* env, CefRequest::TransitionType transition_type);
+};
+
 // JNI URLRequestStatus.
 class ScopedJNIURLRequestStatus : public ScopedJNIBase<jobject> {
  public:
@@ -822,6 +832,26 @@ class ScopedJNICallback : public ScopedJNIObject<CefCallback> {
   ScopedJNICallback(JNIEnv* env, CefRefPtr<CefCallback> obj = nullptr);
 };
 
+// JNI CefResourceReadCallback object.
+class ScopedJNIResourceReadCallback
+    : public ScopedJNIObject<CefResourceReadCallback> {
+ public:
+  // If |obj| is nullptr the SetHandle method should be used.
+  ScopedJNIResourceReadCallback(
+      JNIEnv* env,
+      CefRefPtr<CefResourceReadCallback> obj = nullptr);
+};
+
+// JNI CefResourceSkipCallback object.
+class ScopedJNIResourceSkipCallback
+    : public ScopedJNIObject<CefResourceSkipCallback> {
+ public:
+  // If |obj| is nullptr the SetHandle method should be used.
+  ScopedJNIResourceSkipCallback(
+      JNIEnv* env,
+      CefRefPtr<CefResourceSkipCallback> obj = nullptr);
+};
+
 // JNI BoolRef object.
 class ScopedJNIBoolRef : public ScopedJNIBase<jobject> {
  public:
@@ -838,6 +868,15 @@ class ScopedJNIIntRef : public ScopedJNIBase<jobject> {
 
   // Implicit retrieval of the underlying value.
   operator int() const;
+};
+
+// JNI LongRef object.
+class ScopedJNILongRef : public ScopedJNIBase<jobject> {
+ public:
+  ScopedJNILongRef(JNIEnv* env, int64_t value);
+
+  // Implicit retrieval of the underlying value.
+  operator int64_t() const;
 };
 
 // JNI StringRef object.

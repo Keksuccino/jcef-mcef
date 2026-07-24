@@ -9,23 +9,24 @@ import org.cef.misc.CefAudioParameters;
 import org.cef.misc.DataPointer;
 
 /**
- * Implement this interface to handle events related to audio playing.
- * The methods of this class will be called on the UI thread.
+ * Convenience adapter for {@link CefAudioHandler}. See the interface methods for their individual
+ * CEF callback-thread and native-data lifetime contracts.
  */
 public abstract class CefAudioHandlerAdapter implements CefAudioHandler {
-	public boolean getAudioParameters(CefBrowser browser, CefAudioParameters params) {
-		return false;
-	}
-	
-	public void onAudioStreamStarted(CefBrowser browser, CefAudioParameters params, int channels) {
-	}
-	
-	public void onAudioStreamPacket(CefBrowser browser, DataPointer data, int frames, long pts) {
-	}
-	
-	public 	void onAudioStreamStopped(CefBrowser browser) {
-	}
-	
-	public void onAudioStreamError(CefBrowser browser, String text) {
-	}
+    @Override
+    public boolean getAudioParameters(CefBrowser browser, CefAudioParameters params) {
+        return false;
+    }
+
+    @Override
+    public void onAudioStreamStarted(CefBrowser browser, CefAudioParameters params, int channels) {}
+
+    @Override
+    public void onAudioStreamPacket(CefBrowser browser, DataPointer data, int frames, long pts) {}
+
+    @Override
+    public void onAudioStreamStopped(CefBrowser browser) {}
+
+    @Override
+    public void onAudioStreamError(CefBrowser browser, String text) {}
 }

@@ -9,6 +9,7 @@
 
 #include "client_handler.h"
 #include "jni_util.h"
+#include "network_jni_util.h"
 
 namespace {
 
@@ -61,6 +62,8 @@ jclass FindClass(JNIEnv* env, const char* class_name) {
 
   jobject classLoader = GetJavaClassLoader();
   ASSERT(classLoader);
+  if (!classLoader)
+    return nullptr;
 
   // std::map is not thread-safe with regard to concurrent reading and writing
   std::lock_guard<std::mutex> guard(classCacheMutex_);
@@ -85,13 +88,19 @@ jclass FindClass(JNIEnv* env, const char* class_name) {
   JNI_CALL_METHOD(env, classLoader, "loadClass",
                   "(Ljava/lang/String;)Ljava/lang/Class;", Object, result,
                   classNameJString.get());
+  if (!result)
+    return nullptr;
 
-  // Make a global reference out of the local reference to allow for caching.
-  // This produces a non-garbage-collectable class, since this global ref is
-  // never released! However, for the classes that are requested by JCEF via
-  // this mechanism, that should be acceptable, because they aren't candidates
-  // to be GCed anyway.
-  classCache_[classNameSeparatedByDots] = env->NewGlobalRef(result);
+  // Keep the class alive for this active JCEF context. ClearJNIClassCache
+  // releases all of these references during failed initialization or normal
+  // shutdown.
+  jobject global_class = env->NewGlobalRef(result);
+  if (!global_class) {
+    if (env->ExceptionCheck())
+      env->ExceptionClear();
+    return nullptr;
+  }
+  classCache_[classNameSeparatedByDots] = global_class;
 
   return static_cast<jclass>(result);
 }
@@ -112,11 +121,20 @@ jobject NewJNIIntRef(JNIEnv* env, int initValue) {
   return jintRef.Release();
 }
 
+jobject NewJNILongRef(JNIEnv* env, int64_t initValue) {
+  ScopedJNIObjectLocal jlongRef(env, "org/cef/misc/LongRef");
+  if (!jlongRef)
+    return nullptr;
+  SetJNILongRef(env, jlongRef, initValue);
+  return jlongRef.Release();
+}
+
 jobject NewJNIStringRef(JNIEnv* env, const CefString& initValue) {
   ScopedJNIObjectLocal jstringRef(env, "org/cef/misc/StringRef");
   if (!jstringRef)
     return nullptr;
-  SetJNIStringRef(env, jstringRef, initValue);
+  if (!SetJNIStringRef(env, jstringRef, initValue))
+    return nullptr;
   return jstringRef.Release();
 }
 
@@ -156,29 +174,21 @@ jobject NewJNICookie(JNIEnv* env, const CefCookie& cookie) {
 
 jobject NewJNITransitionType(JNIEnv* env,
                              CefRequest::TransitionType transitionType) {
-  ScopedJNIObjectResult result(env);
-  switch (transitionType & TT_SOURCE_MASK) {
-    default:
-      JNI_CASE(env, "org/cef/network/CefRequest$TransitionType", TT_LINK,
-               result);
-      JNI_CASE(env, "org/cef/network/CefRequest$TransitionType", TT_EXPLICIT,
-               result);
-      JNI_CASE(env, "org/cef/network/CefRequest$TransitionType",
-               TT_AUTO_SUBFRAME, result);
-      JNI_CASE(env, "org/cef/network/CefRequest$TransitionType",
-               TT_MANUAL_SUBFRAME, result);
-      JNI_CASE(env, "org/cef/network/CefRequest$TransitionType", TT_FORM_SUBMIT,
-               result);
-      JNI_CASE(env, "org/cef/network/CefRequest$TransitionType", TT_RELOAD,
-               result);
-  }
+  ScopedJNIClass cls(env, "org/cef/network/CefRequest$TransitionType");
+  if (!cls)
+    return nullptr;
+  jmethodID from_raw_value = env->GetStaticMethodID(
+      cls, "fromRawValue", "(I)Lorg/cef/network/CefRequest$TransitionType;");
+  if (!from_raw_value)
+    return nullptr;
+  return env->CallStaticObjectMethod(cls, from_raw_value,
+                                     CefTransitionToJInt(transitionType));
+}
 
-  if (result) {
-    const int qualifiers = (transitionType & TT_QUALIFIER_MASK);
-    JNI_CALL_VOID_METHOD(env, result, "addQualifiers", "(I)V", qualifiers);
-  }
-
-  return result.Release();
+jobject NewJNITransition(JNIEnv* env,
+                         CefRequest::TransitionType transition_type) {
+  return NewJNIObject(env, "org/cef/network/CefRequest$Transition", "(I)V",
+                      CefTransitionToJInt(transition_type));
 }
 
 jobject NewJNIURLRequestStatus(
@@ -194,6 +204,8 @@ jobject NewJNIURLRequestStatus(
       JNI_CASE(env, "org/cef/network/CefURLRequest$Status", UR_CANCELED,
                result);
       JNI_CASE(env, "org/cef/network/CefURLRequest$Status", UR_FAILED, result);
+      JNI_CASE(env, "org/cef/network/CefURLRequest$Status", UR_NUM_VALUES,
+               result);
   }
   return result.Release();
 }
@@ -207,6 +219,15 @@ jobject GetJNIBrowser(JNIEnv* env, CefRefPtr<CefBrowser> browser) {
 }
 
 }  // namespace
+
+void ClearJNIClassCache(JNIEnv* env) {
+  std::lock_guard<std::mutex> guard(classCacheMutex_);
+  for (std::pair<const std::string, jobject>& entry : classCache_) {
+    env->DeleteGlobalRef(entry.second);
+  }
+  classCache_.clear();
+  classCacheClassLoader_ = nullptr;
+}
 
 // static
 const int ScopedJNIEnv::kDefaultLocalCapacity = 1024;
@@ -313,6 +334,13 @@ ScopedJNITransitionType::ScopedJNITransitionType(
     CefRequest::TransitionType transitionType)
     : ScopedJNIBase<jobject>(env) {
   jhandle_ = NewJNITransitionType(env, transitionType);
+}
+
+ScopedJNITransition::ScopedJNITransition(
+    JNIEnv* env,
+    CefRequest::TransitionType transition_type)
+    : ScopedJNIBase<jobject>(env) {
+  jhandle_ = NewJNITransition(env, transition_type);
   DCHECK(jhandle_);
 }
 
@@ -433,6 +461,24 @@ ScopedJNICallback::ScopedJNICallback(JNIEnv* env, CefRefPtr<CefCallback> obj)
                                    "org/cef/callback/CefCallback_N",
                                    "CefCallback") {}
 
+ScopedJNIResourceReadCallback::ScopedJNIResourceReadCallback(
+    JNIEnv* env,
+    CefRefPtr<CefResourceReadCallback> obj)
+    : ScopedJNIObject<CefResourceReadCallback>(
+          env,
+          obj,
+          "org/cef/callback/CefResourceReadCallback_N",
+          "CefResourceReadCallback") {}
+
+ScopedJNIResourceSkipCallback::ScopedJNIResourceSkipCallback(
+    JNIEnv* env,
+    CefRefPtr<CefResourceSkipCallback> obj)
+    : ScopedJNIObject<CefResourceSkipCallback>(
+          env,
+          obj,
+          "org/cef/callback/CefResourceSkipCallback_N",
+          "CefResourceSkipCallback") {}
+
 ScopedJNIBoolRef::ScopedJNIBoolRef(JNIEnv* env, bool value)
     : ScopedJNIBase<jobject>(env) {
   jhandle_ = NewJNIBoolRef(env, value);
@@ -451,6 +497,16 @@ ScopedJNIIntRef::ScopedJNIIntRef(JNIEnv* env, int value)
 
 ScopedJNIIntRef::operator int() const {
   return GetJNIIntRef(env_, jhandle_);
+}
+
+ScopedJNILongRef::ScopedJNILongRef(JNIEnv* env, int64_t value)
+    : ScopedJNIBase<jobject>(env) {
+  jhandle_ = NewJNILongRef(env, value);
+  DCHECK(jhandle_);
+}
+
+ScopedJNILongRef::operator int64_t() const {
+  return GetJNILongRef(env_, jhandle_);
 }
 
 ScopedJNIStringRef::ScopedJNIStringRef(JNIEnv* env, const CefString& value)

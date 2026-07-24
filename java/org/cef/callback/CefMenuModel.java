@@ -27,8 +27,9 @@ public interface CefMenuModel {
         public static final int MENU_ID_CUT = 112;
         public static final int MENU_ID_COPY = 113;
         public static final int MENU_ID_PASTE = 114;
-        public static final int MENU_ID_DELETE = 115;
-        public static final int MENU_ID_SELECT_ALL = 116;
+        public static final int MENU_ID_PASTE_MATCH_STYLE = 115;
+        public static final int MENU_ID_DELETE = 116;
+        public static final int MENU_ID_SELECT_ALL = 117;
 
         // Miscellaneous.
         public static final int MENU_ID_FIND = 130;
@@ -43,6 +44,11 @@ public interface CefMenuModel {
         public static final int MENU_ID_SPELLCHECK_SUGGESTION_4 = 204;
         public static final int MENU_ID_SPELLCHECK_SUGGESTION_LAST = 204;
         public static final int MENU_ID_NO_SPELLING_SUGGESTIONS = 205;
+        public static final int MENU_ID_ADD_TO_DICTIONARY = 206;
+
+        // Reserved Chromium custom menu IDs.
+        public static final int MENU_ID_CUSTOM_FIRST = 220;
+        public static final int MENU_ID_CUSTOM_LAST = 250;
 
         // All user-defined menu IDs should come between MENU_ID_USER_FIRST and
         // MENU_ID_USER_LAST to avoid overlapping the Chromium and CEF ID ranges
@@ -62,6 +68,35 @@ public interface CefMenuModel {
         MENUITEMTYPE_SEPARATOR,
         MENUITEMTYPE_SUBMENU,
     }
+
+    /**
+     * Supported explicit menu color targets. Numeric values are pinned to
+     * {@code cef_menu_color_type_t} in CEF 151.
+     */
+    public enum MenuColorType {
+        CEF_MENU_COLOR_TEXT(0),
+        CEF_MENU_COLOR_TEXT_HOVERED(1),
+        CEF_MENU_COLOR_TEXT_ACCELERATOR(2),
+        CEF_MENU_COLOR_TEXT_ACCELERATOR_HOVERED(3),
+        CEF_MENU_COLOR_BACKGROUND(4),
+        CEF_MENU_COLOR_BACKGROUND_HOVERED(5);
+
+        private final int value_;
+
+        MenuColorType(int value) {
+            value_ = value;
+        }
+
+        /** Returns the exact CEF 151 native enum value. */
+        public int getValue() {
+            return value_;
+        }
+    }
+
+    /**
+     * Returns true if this menu is a submenu.
+     */
+    boolean isSubMenu();
 
     /**
      * Clears the menu. Returns true on success.
@@ -335,4 +370,37 @@ public interface CefMenuModel {
      */
     boolean getAcceleratorAt(int index, IntRef key_code, BoolRef shift_pressed,
             BoolRef ctrl_pressed, BoolRef alt_pressed);
+
+    /**
+     * Set the explicit color for the command and color target. A color value of zero removes the
+     * explicit color.
+     */
+    boolean setColor(int command_id, MenuColorType color_type, int color);
+
+    /**
+     * Set the explicit color at the index and color target. An index of -1 sets the default color.
+     */
+    boolean setColorAt(int index, MenuColorType color_type, int color);
+
+    /**
+     * Retrieve the explicit color for the command and color target.
+     */
+    boolean getColor(int command_id, MenuColorType color_type, IntRef color);
+
+    /**
+     * Retrieve the explicit color at the index and color target. An index of -1 retrieves the
+     * default color.
+     */
+    boolean getColorAt(int index, MenuColorType color_type, IntRef color);
+
+    /**
+     * Set the font list for the command. A null or empty string restores the system font.
+     */
+    boolean setFontList(int command_id, String font_list);
+
+    /**
+     * Set the font list at the index. An index of -1 sets the default font and a null or empty
+     * string restores the system font.
+     */
+    boolean setFontListAt(int index, String font_list);
 }

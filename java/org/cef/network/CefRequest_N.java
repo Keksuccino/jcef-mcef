@@ -6,6 +6,7 @@ package org.cef.network;
 
 import org.cef.callback.CefNative;
 
+import java.util.List;
 import java.util.Map;
 
 class CefRequest_N extends CefRequest implements CefNative {
@@ -188,10 +189,41 @@ class CefRequest_N extends CefRequest implements CefNative {
     }
 
     @Override
+    public void getHeaderList(List<CefHeader> headerList) {
+        try {
+            String[] pairs = N_GetHeaderList(N_CefHandle);
+            if (pairs != null) CefHeader.addNativePairs(headerList, pairs);
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+    }
+
+    @Override
+    public void setHeaderList(List<CefHeader> headerList) {
+        String[] pairs = CefHeader.toNativePairs(headerList);
+        try {
+            N_SetHeaderList(N_CefHandle, pairs);
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+    }
+
+    @Override
     public void set(
             String url, String method, CefPostData postData, Map<String, String> headerMap) {
         try {
             N_Set(N_CefHandle, url, method, postData, headerMap);
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+    }
+
+    @Override
+    public void setWithHeaderList(
+            String url, String method, CefPostData postData, List<CefHeader> headerList) {
+        String[] pairs = CefHeader.toNativePairs(headerList);
+        try {
+            N_SetWithHeaderList(N_CefHandle, url, method, postData, pairs);
         } catch (UnsatisfiedLinkError ule) {
             ule.printStackTrace();
         }
@@ -246,13 +278,13 @@ class CefRequest_N extends CefRequest implements CefNative {
     }
 
     @Override
-    public TransitionType getTransitionType() {
+    public int getTransitionTypeValue() {
         try {
-            return N_GetTransitionType(N_CefHandle);
+            return N_GetTransitionTypeValue(N_CefHandle);
         } catch (UnsatisfiedLinkError ule) {
             ule.printStackTrace();
         }
-        return TransitionType.TT_AUTO_SUBFRAME;
+        return TransitionType.TT_EXPLICIT.getValue();
     }
 
     private final native static CefRequest_N N_Create();
@@ -273,12 +305,16 @@ class CefRequest_N extends CefRequest implements CefNative {
             long self, String name, String value, boolean overwrite);
     private final native void N_GetHeaderMap(long self, Map<String, String> headerMap);
     private final native void N_SetHeaderMap(long self, Map<String, String> headerMap);
+    private final native String[] N_GetHeaderList(long self);
+    private final native void N_SetHeaderList(long self, String[] headerPairs);
     private final native void N_Set(long self, String url, String method, CefPostData postData,
             Map<String, String> headerMap);
+    private final native void N_SetWithHeaderList(
+            long self, String url, String method, CefPostData postData, String[] headerPairs);
     private final native int N_GetFlags(long self);
     private final native void N_SetFlags(long self, int flags);
     private final native String N_GetFirstPartyForCookies(long self);
     private final native void N_SetFirstPartyForCookies(long self, String url);
     private final native ResourceType N_GetResourceType(long self);
-    private final native TransitionType N_GetTransitionType(long self);
+    private final native int N_GetTransitionTypeValue(long self);
 }

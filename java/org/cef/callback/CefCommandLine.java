@@ -18,10 +18,80 @@ import java.util.Vector;
  */
 public interface CefCommandLine {
     /**
+     * Create a new writable command line. The returned instance owns a native reference and should
+     * be released with {@link #dispose()} when it is no longer needed.
+     */
+    public static CefCommandLine createCommandLine() {
+        return CefCommandLine_N.createNative();
+    }
+
+    /**
+     * Return the read-only global command line. The returned instance owns a native reference and
+     * should be released with {@link #dispose()} when it is no longer needed.
+     */
+    public static CefCommandLine getGlobalCommandLine() {
+        return CefCommandLine_N.getGlobalNative();
+    }
+
+    /**
+     * Release this Java object's native reference. This method is idempotent. Command lines passed
+     * to callbacks are callback-scoped and must not be disposed or retained by client code.
+     */
+    public void dispose();
+
+    /**
+     * Returns true if this object is valid. Do not call any other methods if this function returns
+     * false.
+     */
+    public boolean isValid();
+
+    /**
+     * Returns true if the values of this object are read-only.
+     */
+    public boolean isReadOnly();
+
+    /**
+     * Returns a writable copy of this object. The returned instance must be released with
+     * {@link #dispose()}.
+     */
+    public CefCommandLine copy();
+
+    /**
+     * Initialize from an argv-style array whose first element is the program name. This method is
+     * supported on non-Windows platforms only.
+     *
+     * @param argv non-null argv elements, including the program name at index zero
+     * @throws IllegalArgumentException if {@code argv} is empty or its program name is empty
+     * @throws NullPointerException if {@code argv} or one of its elements is null
+     * @throws UnsupportedOperationException on Windows
+     */
+    public void initFromArgv(String[] argv);
+
+    /**
+     * Initialize from the string returned by the Windows {@code GetCommandLineW()} function. This
+     * method is supported on Windows only.
+     *
+     * @throws NullPointerException if {@code commandLine} is null
+     * @throws UnsupportedOperationException on non-Windows platforms
+     */
+    public void initFromString(String commandLine);
+
+    /**
      * Reset the command-line switches and arguments but leave the program
      * component unchanged.
      */
     public void reset();
+
+    /**
+     * Retrieve the represented command line as argv-style values.
+     */
+    public Vector<String> getArgv();
+
+    /**
+     * Construct and return the represented command line string. Quoting behavior is platform
+     * dependent.
+     */
+    public String getCommandLineString();
 
     /**
      * Get the program part of the command line string (the first item).
@@ -76,6 +146,11 @@ public interface CefCommandLine {
     public void appendSwitchWithValue(String name, String value);
 
     /**
+     * Remove a switch. This method has no effect if the switch is not present.
+     */
+    public void removeSwitch(String name);
+
+    /**
      * Tests if there are remaining command line arguments.
      * @return True if there are remaining command line arguments.
      */
@@ -92,4 +167,9 @@ public interface CefCommandLine {
      * @param argument name of the argument.
      */
     public void appendArgument(String argument);
+
+    /**
+     * Insert a command before the current command, as commonly used for debugger wrappers.
+     */
+    public void prependWrapper(String wrapper);
 }

@@ -13,10 +13,6 @@
 #include "util_mac.h"
 #endif
 
-#if defined(OS_POSIX)
-#include "signal_restore_posix.h"
-#endif
-
 namespace {
 
 Context* g_context = nullptr;
@@ -24,6 +20,11 @@ Context* g_context = nullptr;
 CefSettings GetJNISettings(JNIEnv* env, jobject obj) {
   CefString tmp;
   CefSettings settings;
+
+#if defined(OS_POSIX) && !defined(OS_ANDROID)
+  settings.disable_signal_handlers = true;
+#endif
+
   if (!obj)
     return settings;
 
@@ -42,6 +43,11 @@ CefSettings GetJNISettings(JNIEnv* env, jobject obj) {
                      &settings.command_line_args_disabled);
   if (GetJNIFieldString(env, cls, obj, "cache_path", &tmp) && !tmp.empty()) {
     CefString(&settings.cache_path) = tmp;
+    tmp.clear();
+  }
+  if (GetJNIFieldString(env, cls, obj, "root_cache_path", &tmp) &&
+      !tmp.empty()) {
+    CefString(&settings.root_cache_path) = tmp;
     tmp.clear();
   }
   GetJNIFieldBoolean(env, cls, obj, "persist_session_cookies",
@@ -80,6 +86,9 @@ CefSettings GetJNISettings(JNIEnv* env, jobject obj) {
                               "LOGSEVERITY_ERROR")) {
       settings.log_severity = LOGSEVERITY_ERROR;
     } else if (IsJNIEnumValue(env, severity, "org/cef/CefSettings$LogSeverity",
+                              "LOGSEVERITY_FATAL")) {
+      settings.log_severity = LOGSEVERITY_FATAL;
+    } else if (IsJNIEnumValue(env, severity, "org/cef/CefSettings$LogSeverity",
                               "LOGSEVERITY_DISABLE")) {
       settings.log_severity = LOGSEVERITY_DISABLE;
     } else {
@@ -111,10 +120,13 @@ CefSettings GetJNISettings(JNIEnv* env, jobject obj) {
     CefString(&settings.main_bundle_path) = tmp;
     tmp.clear();
   }
-  GetJNIFieldBoolean(env, cls, obj, "pack_loading_disabled",
-                     &settings.pack_loading_disabled);
   GetJNIFieldInt(env, cls, obj, "remote_debugging_port",
                  &settings.remote_debugging_port);
+  if (GetJNIFieldString(env, cls, obj, "chrome_policy_id", &tmp) &&
+      !tmp.empty()) {
+    CefString(&settings.chrome_policy_id) = tmp;
+    tmp.clear();
+  }
   GetJNIFieldInt(env, cls, obj, "uncaught_exception_stack_size",
                  &settings.uncaught_exception_stack_size);
   jobject obj_col = nullptr;
@@ -140,12 +152,13 @@ CefSettings GetJNISettings(JNIEnv* env, jobject obj) {
 
 // static
 void Context::Create() {
+  if (g_context)
+    return;
   new Context();
 }
 
 // static
 void Context::Destroy() {
-  DCHECK(g_context);
   if (g_context)
     delete g_context;
 }
@@ -155,8 +168,15 @@ Context* Context::GetInstance() {
   return g_context;
 }
 
+// static
+int Context::GetLogSeverityForTesting(JNIEnv* env, jobject settings) {
+  return static_cast<int>(GetJNISettings(env, settings).log_severity);
+}
+
 bool Context::PreInitialize(JNIEnv* env, jobject c) {
+#if !defined(OS_MACOSX)
   DCHECK(thread_checker_.CalledOnValidThread());
+#endif
 
   JavaVM* jvm;
   jint rs = env->GetJavaVM(&jvm);
@@ -172,7 +192,8 @@ bool Context::PreInitialize(JNIEnv* env, jobject c) {
   ASSERT(javaClassLoader);
   if (!javaClassLoader)
     return false;
-  SetJavaClassLoader(env, javaClassLoader);
+  if (!SetJavaClassLoader(env, javaClassLoader))
+    return false;
 
   return true;
 }
@@ -181,7 +202,9 @@ bool Context::Initialize(JNIEnv* env,
                          jobject c,
                          jobject appHandler,
                          jobject jsettings) {
+#if !defined(OS_MACOSX)
   DCHECK(thread_checker_.CalledOnValidThread());
+#endif
 
 #if defined(OS_WIN)
   CefMainArgs main_args(::GetModuleHandle(nullptr));
@@ -231,21 +254,11 @@ bool Context::Initialize(JNIEnv* env,
       new ClientApp(CefString(&settings.cache_path), env, appHandler));
   bool res = false;
 
-#if defined(OS_POSIX)
-  // CefInitialize will reset signal handlers. Backup/restore the original
-  // signal handlers to avoid crashes in the JVM (see issue #41).
-  BackupSignalHandlers();
-#endif
-
 #if defined(OS_MACOSX)
   res = util_mac::CefInitializeOnMainThread(main_args, settings,
                                             client_app.get());
 #else
   res = CefInitialize(main_args, settings, client_app.get(), nullptr);
-#endif
-
-#if defined(OS_POSIX)
-  RestoreSignalHandlers();
 #endif
 
   return res;
@@ -257,17 +270,20 @@ void Context::OnContextInitialized() {
 }
 
 void Context::DoMessageLoopWork() {
-  DCHECK(thread_checker_.CalledOnValidThread());
-
 #if defined(OS_MACOSX)
+  // The Java standard pump uses a Swing Timer on the EDT, and util_mac performs
+  // the actual CEF work on AppKit main.
   util_mac::CefDoMessageLoopWorkOnMainThread();
 #else
+  DCHECK(thread_checker_.CalledOnValidThread());
   CefDoMessageLoopWork();
 #endif
 }
 
 void Context::Shutdown() {
+#if !defined(OS_MACOSX)
   DCHECK(thread_checker_.CalledOnValidThread());
+#endif
 
   // Clear scheme handler factories on shutdown to avoid refcount DCHECK.
   CefClearSchemeHandlerFactories();
@@ -288,6 +304,12 @@ void Context::Shutdown() {
 #endif
 }
 
+#if defined(OS_MACOSX)
+void Context::DestroyTempWindowOnMainThread() {
+  temp_window_.reset(nullptr);
+}
+#endif
+
 Context::Context() : external_message_pump_(true) {
   DCHECK(!g_context);
   g_context = this;
@@ -301,7 +323,9 @@ Context::Context() : external_message_pump_(true) {
 }
 
 Context::~Context() {
+#if !defined(OS_MACOSX)
   DCHECK(thread_checker_.CalledOnValidThread());
+#endif
   g_context = nullptr;
 
 #if defined(OS_MACOSX)

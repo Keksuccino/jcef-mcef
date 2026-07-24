@@ -12,146 +12,168 @@ extern "C" {
  * Method:    N_Create
  * Signature: ()Lorg/cef/network/CefResponse_N;
  */
-JNIEXPORT jobject JNICALL Java_org_cef_network_CefResponse_1N_N_1Create(JNIEnv*,
-                                                                        jclass);
+JNIEXPORT jobject JNICALL Java_org_cef_network_CefResponse_1N_N_1Create
+  (JNIEnv *, jclass);
 
 /*
  * Class:     org_cef_network_CefResponse_N
  * Method:    N_Dispose
  * Signature: (J)V
  */
-JNIEXPORT void JNICALL Java_org_cef_network_CefResponse_1N_N_1Dispose(JNIEnv*,
-                                                                      jobject,
-                                                                      jlong);
+JNIEXPORT void JNICALL Java_org_cef_network_CefResponse_1N_N_1Dispose
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_network_CefResponse_N
  * Method:    N_IsReadOnly
  * Signature: (J)Z
  */
-JNIEXPORT jboolean JNICALL
-Java_org_cef_network_CefResponse_1N_N_1IsReadOnly(JNIEnv*, jobject, jlong);
+JNIEXPORT jboolean JNICALL Java_org_cef_network_CefResponse_1N_N_1IsReadOnly
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_network_CefResponse_N
- * Method:    N_GetError
- * Signature: (J)Lorg/cef/handler/CefLoadHandler/ErrorCode;
+ * Method:    N_GetErrorCode
+ * Signature: (J)I
  */
-JNIEXPORT jobject JNICALL
-Java_org_cef_network_CefResponse_1N_N_1GetError(JNIEnv*, jobject, jlong);
+JNIEXPORT jint JNICALL Java_org_cef_network_CefResponse_1N_N_1GetErrorCode
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_network_CefResponse_N
- * Method:    N_SetError
- * Signature: (JLorg/cef/handler/CefLoadHandler/ErrorCode;)V
+ * Method:    N_SetErrorCode
+ * Signature: (JI)V
  */
-JNIEXPORT void JNICALL Java_org_cef_network_CefResponse_1N_N_1SetError(JNIEnv*,
-                                                                       jobject,
-                                                                       jlong,
-                                                                       jobject);
+JNIEXPORT void JNICALL Java_org_cef_network_CefResponse_1N_N_1SetErrorCode
+  (JNIEnv *, jobject, jlong, jint);
 
 /*
  * Class:     org_cef_network_CefResponse_N
  * Method:    N_GetStatus
  * Signature: (J)I
  */
-JNIEXPORT jint JNICALL Java_org_cef_network_CefResponse_1N_N_1GetStatus(JNIEnv*,
-                                                                        jobject,
-                                                                        jlong);
+JNIEXPORT jint JNICALL Java_org_cef_network_CefResponse_1N_N_1GetStatus
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_network_CefResponse_N
  * Method:    N_SetStatus
  * Signature: (JI)V
  */
-JNIEXPORT void JNICALL Java_org_cef_network_CefResponse_1N_N_1SetStatus(JNIEnv*,
-                                                                        jobject,
-                                                                        jlong,
-                                                                        jint);
+JNIEXPORT void JNICALL Java_org_cef_network_CefResponse_1N_N_1SetStatus
+  (JNIEnv *, jobject, jlong, jint);
 
 /*
  * Class:     org_cef_network_CefResponse_N
  * Method:    N_GetStatusText
  * Signature: (J)Ljava/lang/String;
  */
-JNIEXPORT jstring JNICALL
-Java_org_cef_network_CefResponse_1N_N_1GetStatusText(JNIEnv*, jobject, jlong);
+JNIEXPORT jstring JNICALL Java_org_cef_network_CefResponse_1N_N_1GetStatusText
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_network_CefResponse_N
  * Method:    N_SetStatusText
  * Signature: (JLjava/lang/String;)V
  */
-JNIEXPORT void JNICALL
-Java_org_cef_network_CefResponse_1N_N_1SetStatusText(JNIEnv*,
-                                                     jobject,
-                                                     jlong,
-                                                     jstring);
+JNIEXPORT void JNICALL Java_org_cef_network_CefResponse_1N_N_1SetStatusText
+  (JNIEnv *, jobject, jlong, jstring);
 
 /*
  * Class:     org_cef_network_CefResponse_N
  * Method:    N_GetMimeType
  * Signature: (J)Ljava/lang/String;
  */
-JNIEXPORT jstring JNICALL
-Java_org_cef_network_CefResponse_1N_N_1GetMimeType(JNIEnv*, jobject, jlong);
+JNIEXPORT jstring JNICALL Java_org_cef_network_CefResponse_1N_N_1GetMimeType
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_network_CefResponse_N
  * Method:    N_SetMimeType
  * Signature: (JLjava/lang/String;)V
  */
-JNIEXPORT void JNICALL
-Java_org_cef_network_CefResponse_1N_N_1SetMimeType(JNIEnv*,
-                                                   jobject,
-                                                   jlong,
-                                                   jstring);
+JNIEXPORT void JNICALL Java_org_cef_network_CefResponse_1N_N_1SetMimeType
+  (JNIEnv *, jobject, jlong, jstring);
+
+/*
+ * Class:     org_cef_network_CefResponse_N
+ * Method:    N_GetCharset
+ * Signature: (J)Ljava/lang/String;
+ */
+JNIEXPORT jstring JNICALL Java_org_cef_network_CefResponse_1N_N_1GetCharset
+  (JNIEnv *, jobject, jlong);
+
+/*
+ * Class:     org_cef_network_CefResponse_N
+ * Method:    N_SetCharset
+ * Signature: (JLjava/lang/String;)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_network_CefResponse_1N_N_1SetCharset
+  (JNIEnv *, jobject, jlong, jstring);
 
 /*
  * Class:     org_cef_network_CefResponse_N
  * Method:    N_GetHeaderByName
  * Signature: (JLjava/lang/String;)Ljava/lang/String;
  */
-JNIEXPORT jstring JNICALL
-Java_org_cef_network_CefResponse_1N_N_1GetHeaderByName(JNIEnv*,
-                                                       jobject,
-                                                       jlong,
-                                                       jstring);
+JNIEXPORT jstring JNICALL Java_org_cef_network_CefResponse_1N_N_1GetHeaderByName
+  (JNIEnv *, jobject, jlong, jstring);
 
 /*
  * Class:     org_cef_network_CefResponse_N
  * Method:    N_SetHeaderByName
  * Signature: (JLjava/lang/String;Ljava/lang/String;Z)V
  */
-JNIEXPORT void JNICALL
-Java_org_cef_network_CefResponse_1N_N_1SetHeaderByName(JNIEnv*,
-                                                       jobject,
-                                                       jlong,
-                                                       jstring,
-                                                       jstring,
-                                                       jboolean);
+JNIEXPORT void JNICALL Java_org_cef_network_CefResponse_1N_N_1SetHeaderByName
+  (JNIEnv *, jobject, jlong, jstring, jstring, jboolean);
 
 /*
  * Class:     org_cef_network_CefResponse_N
  * Method:    N_GetHeaderMap
  * Signature: (JLjava/util/Map;)V
  */
-JNIEXPORT void JNICALL
-Java_org_cef_network_CefResponse_1N_N_1GetHeaderMap(JNIEnv*,
-                                                    jobject,
-                                                    jlong,
-                                                    jobject);
+JNIEXPORT void JNICALL Java_org_cef_network_CefResponse_1N_N_1GetHeaderMap
+  (JNIEnv *, jobject, jlong, jobject);
 
 /*
  * Class:     org_cef_network_CefResponse_N
  * Method:    N_SetHeaderMap
  * Signature: (JLjava/util/Map;)V
  */
-JNIEXPORT void JNICALL
-Java_org_cef_network_CefResponse_1N_N_1SetHeaderMap(JNIEnv*,
-                                                    jobject,
-                                                    jlong,
-                                                    jobject);
+JNIEXPORT void JNICALL Java_org_cef_network_CefResponse_1N_N_1SetHeaderMap
+  (JNIEnv *, jobject, jlong, jobject);
+
+/*
+ * Class:     org_cef_network_CefResponse_N
+ * Method:    N_GetHeaderList
+ * Signature: (J)[Ljava/lang/String;
+ */
+JNIEXPORT jobjectArray JNICALL Java_org_cef_network_CefResponse_1N_N_1GetHeaderList
+  (JNIEnv *, jobject, jlong);
+
+/*
+ * Class:     org_cef_network_CefResponse_N
+ * Method:    N_SetHeaderList
+ * Signature: (J[Ljava/lang/String;)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_network_CefResponse_1N_N_1SetHeaderList
+  (JNIEnv *, jobject, jlong, jobjectArray);
+
+/*
+ * Class:     org_cef_network_CefResponse_N
+ * Method:    N_GetURL
+ * Signature: (J)Ljava/lang/String;
+ */
+JNIEXPORT jstring JNICALL Java_org_cef_network_CefResponse_1N_N_1GetURL
+  (JNIEnv *, jobject, jlong);
+
+/*
+ * Class:     org_cef_network_CefResponse_N
+ * Method:    N_SetURL
+ * Signature: (JLjava/lang/String;)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_network_CefResponse_1N_N_1SetURL
+  (JNIEnv *, jobject, jlong, jstring);
 
 #ifdef __cplusplus
 }

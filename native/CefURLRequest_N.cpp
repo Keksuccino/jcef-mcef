@@ -167,15 +167,16 @@ Java_org_cef_network_CefURLRequest_1N_N_1GetRequestStatus(JNIEnv* env,
   return status.Release();
 }
 
-JNIEXPORT jobject JNICALL
-Java_org_cef_network_CefURLRequest_1N_N_1GetRequestError(JNIEnv* env,
-                                                         jobject obj,
-                                                         jlong self) {
+JNIEXPORT jint JNICALL
+Java_org_cef_network_CefURLRequest_1N_N_1GetRequestErrorCode(JNIEnv* env,
+                                                             jobject obj,
+                                                             jlong self) {
   CefRefPtr<URLRequest> urlRequest = GetSelf(self);
   cef_errorcode_t err = ERR_FAILED;
   if (urlRequest)
     err = urlRequest->GetRequestError();
-  return NewJNIErrorCode(env, err);
+  static_assert(sizeof(cef_errorcode_t) == sizeof(jint));
+  return static_cast<jint>(err);
 }
 
 JNIEXPORT jobject JNICALL

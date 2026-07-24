@@ -55,6 +55,32 @@ Java_org_cef_callback_CefDownloadItem_1N_N_1IsCanceled(JNIEnv* env,
   return downloadItem->IsCanceled() ? JNI_TRUE : JNI_FALSE;
 }
 
+JNIEXPORT jboolean JNICALL
+Java_org_cef_callback_CefDownloadItem_1N_N_1IsInterrupted(JNIEnv* env,
+                                                          jobject obj,
+                                                          jlong self) {
+  CefRefPtr<CefDownloadItem> download_item = GetSelf(self);
+  return download_item && download_item->IsInterrupted() ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_cef_callback_CefDownloadItem_1N_N_1IsPaused(JNIEnv* env,
+                                                     jobject obj,
+                                                     jlong self) {
+  CefRefPtr<CefDownloadItem> download_item = GetSelf(self);
+  return download_item && download_item->IsPaused() ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jint JNICALL
+Java_org_cef_callback_CefDownloadItem_1N_N_1GetInterruptReason(JNIEnv* env,
+                                                               jobject obj,
+                                                               jlong self) {
+  CefRefPtr<CefDownloadItem> download_item = GetSelf(self);
+  if (!download_item)
+    return CEF_DOWNLOAD_INTERRUPT_REASON_NONE;
+  return static_cast<jint>(download_item->GetInterruptReason());
+}
+
 JNIEXPORT jlong JNICALL
 Java_org_cef_callback_CefDownloadItem_1N_N_1GetCurrentSpeed(JNIEnv* env,
                                                             jobject obj,
@@ -145,6 +171,16 @@ Java_org_cef_callback_CefDownloadItem_1N_N_1GetURL(JNIEnv* env,
   if (!downloadItem)
     return nullptr;
   return NewJNIString(env, downloadItem->GetURL());
+}
+
+JNIEXPORT jstring JNICALL
+Java_org_cef_callback_CefDownloadItem_1N_N_1GetOriginalURL(JNIEnv* env,
+                                                           jobject obj,
+                                                           jlong self) {
+  CefRefPtr<CefDownloadItem> download_item = GetSelf(self);
+  if (!download_item)
+    return nullptr;
+  return NewJNIString(env, download_item->GetOriginalUrl());
 }
 
 JNIEXPORT jstring JNICALL

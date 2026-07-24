@@ -18,15 +18,12 @@ class ResourceHandler : public CefResourceHandler {
   ResourceHandler(JNIEnv* env, jobject handler);
 
   // CefResourceHandler methods:
-  bool ProcessRequest(CefRefPtr<CefRequest> request,
-                      CefRefPtr<CefCallback> callback) override;
-  void GetResponseHeaders(CefRefPtr<CefResponse> response,
-                          int64_t& response_length,
-                          CefString& redirectUrl) override;
-  bool ReadResponse(void* data_out,
-                    int bytes_to_read,
-                    int& bytes_read,
-                    CefRefPtr<CefCallback> callback) override;
+  bool ProcessRequest(CefRefPtr<CefRequest> request, CefRefPtr<CefCallback> callback) override;
+  bool Open(CefRefPtr<CefRequest> request, bool& handle_request, CefRefPtr<CefCallback> callback) override;
+  void GetResponseHeaders(CefRefPtr<CefResponse> response, int64_t& response_length, CefString& redirectUrl) override;
+  bool ReadResponse(void* data_out, int bytes_to_read, int& bytes_read, CefRefPtr<CefCallback> callback) override;
+  bool Read(void* data_out, int bytes_to_read, int& bytes_read, CefRefPtr<CefResourceReadCallback> callback) override;
+  bool Skip(int64_t bytes_to_skip, int64_t& bytes_skipped, CefRefPtr<CefResourceSkipCallback> callback) override;
   void Cancel() override;
 
  protected:

@@ -6,6 +6,7 @@ package org.cef.handler;
 
 import org.cef.browser.CefBrowser;
 import org.cef.browser.CefFrame;
+import org.cef.network.CefRequest.Transition;
 import org.cef.network.CefRequest.TransitionType;
 
 import java.util.HashMap;
@@ -44,6 +45,13 @@ public interface CefLoadHandler {
         ERR_CONTEXT_SHUT_DOWN(-26),
         ERR_BLOCKED_BY_RESPONSE(-27),
         ERR_CLEARTEXT_NOT_PERMITTED(-29),
+        ERR_BLOCKED_BY_CSP(-30),
+        ERR_BLOCKED_BY_ORB(-32),
+        ERR_NETWORK_ACCESS_REVOKED(-33),
+        ERR_BLOCKED_BY_FINGERPRINTING_PROTECTION(-34),
+        ERR_BLOCKED_IN_INCOGNITO_BY_ADMINISTRATOR(-35),
+        ERR_LOCAL_NETWORK_PERMISSION_MISSING(-36),
+        ERR_STRICT_ECH_REQUIRED(-37),
         ERR_CONNECTION_CLOSED(-100),
         ERR_CONNECTION_RESET(-101),
         ERR_CONNECTION_REFUSED(-102),
@@ -56,7 +64,6 @@ public interface CefLoadHandler {
         ERR_ADDRESS_UNREACHABLE(-109),
         ERR_SSL_CLIENT_AUTH_CERT_NEEDED(-110),
         ERR_TUNNEL_CONNECTION_FAILED(-111),
-        ERR_NO_SSL_VERSIONS_ENABLED(-112),
         ERR_SSL_VERSION_OR_CIPHER_MISMATCH(-113),
         ERR_SSL_RENEGOTIATION_REQUESTED(-114),
         ERR_PROXY_AUTH_UNSUPPORTED(-115),
@@ -80,13 +87,10 @@ public interface CefLoadHandler {
         ERR_NAME_RESOLUTION_FAILED(-137),
         ERR_NETWORK_ACCESS_DENIED(-138),
         ERR_TEMPORARILY_THROTTLED(-139),
-        ERR_HTTPS_PROXY_TUNNEL_RESPONSE_REDIRECT(-140),
         ERR_SSL_CLIENT_AUTH_SIGNATURE_FAILED(-141),
         ERR_MSG_TOO_BIG(-142),
         ERR_WS_PROTOCOL_ERROR(-145),
         ERR_ADDRESS_IN_USE(-147),
-        ERR_SSL_HANDSHAKE_NOT_COMPLETED(-148),
-        ERR_SSL_BAD_PEER_PUBLIC_KEY(-149),
         ERR_SSL_PINNED_KEY_NOT_IN_CERT_CHAIN(-150),
         ERR_CLIENT_AUTH_CERT_TYPE_UNSUPPORTED(-151),
         ERR_SSL_DECRYPT_ERROR_ALERT(-153),
@@ -116,6 +120,10 @@ public interface CefLoadHandler {
         ERR_INVALID_ECH_CONFIG_LIST(-182),
         ERR_ECH_NOT_NEGOTIATED(-183),
         ERR_ECH_FALLBACK_CERTIFICATE_INVALID(-184),
+        ERR_PROXY_UNABLE_TO_CONNECT_TO_DESTINATION(-186),
+        ERR_PROXY_DELEGATE_CANCELED_CONNECT_REQUEST(-187),
+        ERR_PROXY_DELEGATE_CANCELED_CONNECT_RESPONSE(-188),
+        ERR_CONTROL_MSG_TOO_BIG(-189),
         ERR_CERT_COMMON_NAME_INVALID(-200),
         ERR_CERT_DATE_INVALID(-201),
         ERR_CERT_AUTHORITY_INVALID(-202),
@@ -130,9 +138,9 @@ public interface CefLoadHandler {
         ERR_CERT_NAME_CONSTRAINT_VIOLATION(-212),
         ERR_CERT_VALIDITY_TOO_LONG(-213),
         ERR_CERTIFICATE_TRANSPARENCY_REQUIRED(-214),
-        ERR_CERT_SYMANTEC_LEGACY(-215),
         ERR_CERT_KNOWN_INTERCEPTION_BLOCKED(-217),
-        ERR_CERT_END(-219),
+        ERR_CERT_SELF_SIGNED_LOCAL_NETWORK(-219),
+        ERR_CERT_END(-220),
         ERR_INVALID_URL(-300),
         ERR_DISALLOWED_URL_SCHEME(-301),
         ERR_UNKNOWN_URL_SCHEME(-302),
@@ -151,9 +159,6 @@ public interface CefLoadHandler {
         ERR_MALFORMED_IDENTITY(-329),
         ERR_CONTENT_DECODING_FAILED(-330),
         ERR_NETWORK_IO_SUSPENDED(-331),
-        ERR_SYN_REPLY_NOT_RECEIVED(-332),
-        ERR_ENCODING_CONVERSION_FAILED(-333),
-        ERR_UNRECOGNIZED_FTP_DIRECTORY_LISTING_FORMAT(-334),
         ERR_NO_SUPPORTED_PROXIES(-336),
         ERR_HTTP2_PROTOCOL_ERROR(-337),
         ERR_INVALID_AUTH_CREDENTIALS(-338),
@@ -187,15 +192,18 @@ public interface CefLoadHandler {
         ERR_INVALID_HTTP_RESPONSE(-370),
         ERR_CONTENT_DECODING_INIT_FAILED(-371),
         ERR_HTTP2_RST_STREAM_NO_ERROR_RECEIVED(-372),
-        ERR_HTTP2_PUSHED_STREAM_NOT_AVAILABLE(-373),
-        ERR_HTTP2_CLAIMED_PUSHED_STREAM_RESET_BY_SERVER(-374),
         ERR_TOO_MANY_RETRIES(-375),
         ERR_HTTP2_STREAM_CLOSED(-376),
-        ERR_HTTP2_CLIENT_REFUSED_STREAM(-377),
-        ERR_HTTP2_PUSHED_RESPONSE_DOES_NOT_MATCH(-378),
         ERR_HTTP_RESPONSE_CODE_FAILURE(-379),
         ERR_QUIC_CERT_ROOT_NOT_KNOWN(-380),
         ERR_QUIC_GOAWAY_REQUEST_CAN_BE_RETRIED(-381),
+        ERR_TOO_MANY_ACCEPT_CH_RESTARTS(-382),
+        ERR_INCONSISTENT_IP_ADDRESS_SPACE(-383),
+        ERR_CACHED_IP_ADDRESS_SPACE_BLOCKED_BY_LOCAL_NETWORK_ACCESS_POLICY(-384),
+        ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS(-385),
+        ERR_ZSTD_WINDOW_SIZE_TOO_BIG(-386),
+        ERR_DICTIONARY_LOAD_FAILED(-387),
+        ERR_UNEXPECTED_CONTENT_DICTIONARY_HEADER(-388),
         ERR_CACHE_MISS(-400),
         ERR_CACHE_READ_FAILURE(-401),
         ERR_CACHE_WRITE_FAILURE(-402),
@@ -210,6 +218,7 @@ public interface CefLoadHandler {
         ERR_CACHE_ENTRY_NOT_SUITABLE(-411),
         ERR_CACHE_DOOM_FAILURE(-412),
         ERR_CACHE_OPEN_OR_CREATE_FAILURE(-413),
+        ERR_CACHE_COMPRESSION_FAILURE(-414),
         ERR_INSECURE_RESPONSE(-501),
         ERR_NO_PRIVATE_KEY_FOR_CERT(-502),
         ERR_ADD_USER_CERT_FAILED(-503),
@@ -217,13 +226,7 @@ public interface CefLoadHandler {
         ERR_INVALID_WEB_BUNDLE(-505),
         ERR_TRUST_TOKEN_OPERATION_FAILED(-506),
         ERR_TRUST_TOKEN_OPERATION_SUCCESS_WITHOUT_SENDING_REQUEST(-507),
-        ERR_FTP_FAILED(-601),
-        ERR_FTP_SERVICE_UNAVAILABLE(-602),
-        ERR_FTP_TRANSFER_ABORTED(-603),
-        ERR_FTP_FILE_BUSY(-604),
-        ERR_FTP_SYNTAX_ERROR(-605),
-        ERR_FTP_COMMAND_NOT_SUPPORTED(-606),
-        ERR_FTP_BAD_COMMAND_SEQUENCE(-607),
+        ERR_HTTPENGINE_PROVIDER_IN_USE(-508),
         ERR_PKCS12_IMPORT_BAD_PASSWORD(-701),
         ERR_PKCS12_IMPORT_FAILED(-702),
         ERR_IMPORT_CA_CERT_NOT_CA(-703),
@@ -237,16 +240,75 @@ public interface CefLoadHandler {
         ERR_PRIVATE_KEY_EXPORT_FAILED(-712),
         ERR_SELF_SIGNED_CERT_GENERATION_FAILED(-713),
         ERR_CERT_DATABASE_CHANGED(-714),
+        ERR_CERT_VERIFIER_CHANGED(-716),
         ERR_DNS_MALFORMED_RESPONSE(-800),
         ERR_DNS_SERVER_REQUIRES_TCP(-801),
-        ERR_DNS_SERVER_FAILED(-802),
         ERR_DNS_TIMED_OUT(-803),
         ERR_DNS_CACHE_MISS(-804),
         ERR_DNS_SEARCH_EMPTY(-805),
         ERR_DNS_SORT_ERROR(-806),
         ERR_DNS_SECURE_RESOLVER_HOSTNAME_RESOLUTION_FAILED(-808),
         ERR_DNS_NAME_HTTPS_ONLY(-809),
-        ERR_DNS_REQUEST_CANCELLED(-810);
+        ERR_DNS_REQUEST_CANCELLED(-810),
+        ERR_DNS_NO_MATCHING_SUPPORTED_ALPN(-811),
+        ERR_DNS_SECURE_PROBE_RECORD_INVALID(-814),
+        ERR_DNS_CACHE_INVALIDATION_IN_PROGRESS(-815),
+        ERR_DNS_FORMAT_ERROR(-816),
+        ERR_DNS_SERVER_FAILURE(-817),
+        ERR_DNS_NOT_IMPLEMENTED(-818),
+        ERR_DNS_REFUSED(-819),
+        ERR_DNS_OTHER_FAILURE(-820),
+        ERR_DNS_DIRECT_ONLY(-821),
+        ERR_BLOB_INVALID_CONSTRUCTION_ARGUMENTS(-900),
+        ERR_BLOB_OUT_OF_MEMORY(-901),
+        ERR_BLOB_FILE_WRITE_FAILED(-902),
+        ERR_BLOB_SOURCE_DIED_IN_TRANSIT(-903),
+        ERR_BLOB_DEREFERENCED_WHILE_BUILDING(-904),
+        ERR_BLOB_REFERENCED_BLOB_BROKEN(-905),
+        ERR_BLOB_REFERENCED_FILE_UNAVAILABLE(-906),
+
+        // Keep removed Chromium error names after all active CEF 151 values so active mappings
+        // always win if Chromium reuses one of these numeric values in a future release.
+        @Deprecated
+        ERR_NO_SSL_VERSIONS_ENABLED(-112),
+        @Deprecated
+        ERR_HTTPS_PROXY_TUNNEL_RESPONSE_REDIRECT(-140),
+        @Deprecated
+        ERR_SSL_HANDSHAKE_NOT_COMPLETED(-148),
+        @Deprecated
+        ERR_SSL_BAD_PEER_PUBLIC_KEY(-149),
+        @Deprecated
+        ERR_CERT_SYMANTEC_LEGACY(-215),
+        @Deprecated
+        ERR_SYN_REPLY_NOT_RECEIVED(-332),
+        @Deprecated
+        ERR_ENCODING_CONVERSION_FAILED(-333),
+        @Deprecated
+        ERR_UNRECOGNIZED_FTP_DIRECTORY_LISTING_FORMAT(-334),
+        @Deprecated
+        ERR_HTTP2_PUSHED_STREAM_NOT_AVAILABLE(-373),
+        @Deprecated
+        ERR_HTTP2_CLAIMED_PUSHED_STREAM_RESET_BY_SERVER(-374),
+        @Deprecated
+        ERR_HTTP2_CLIENT_REFUSED_STREAM(-377),
+        @Deprecated
+        ERR_HTTP2_PUSHED_RESPONSE_DOES_NOT_MATCH(-378),
+        @Deprecated
+        ERR_FTP_FAILED(-601),
+        @Deprecated
+        ERR_FTP_SERVICE_UNAVAILABLE(-602),
+        @Deprecated
+        ERR_FTP_TRANSFER_ABORTED(-603),
+        @Deprecated
+        ERR_FTP_FILE_BUSY(-604),
+        @Deprecated
+        ERR_FTP_SYNTAX_ERROR(-605),
+        @Deprecated
+        ERR_FTP_COMMAND_NOT_SUPPORTED(-606),
+        @Deprecated
+        ERR_FTP_BAD_COMMAND_SEQUENCE(-607),
+        @Deprecated
+        ERR_DNS_SERVER_FAILED(-802);
 
         static private final Map<Integer, ErrorCode> CODES = new HashMap<>();
         static {
@@ -313,6 +375,14 @@ public interface CefLoadHandler {
     public void onLoadStart(CefBrowser browser, CefFrame frame, TransitionType transitionType);
 
     /**
+     * Called with the exact immutable native transition value. The default implementation preserves
+     * source compatibility by forwarding the known source to the legacy enum overload.
+     */
+    public default void onLoadStart(CefBrowser browser, CefFrame frame, Transition transition) {
+        onLoadStart(browser, frame, transition == null ? null : transition.getType());
+    }
+
+    /**
      * Called when the browser is done loading a frame. The frameIdentifer value will never be
      * empty. Multiple frames may be loading at the same time. Sub-frames may start or continue
      * loading after the main frame load has ended. This method will always be called for all frames
@@ -337,4 +407,13 @@ public interface CefLoadHandler {
      */
     public void onLoadError(CefBrowser browser, CefFrame frame, ErrorCode errorCode,
             String errorText, String failedUrl);
+
+    /**
+     * Called with the exact native error integer. The default implementation forwards a known enum
+     * value, or {@code null} when a newer CEF reports a value unknown to this JCEF version.
+     */
+    public default void onLoadError(
+            CefBrowser browser, CefFrame frame, int errorCode, String errorText, String failedUrl) {
+        onLoadError(browser, frame, ErrorCode.findByCode(errorCode), errorText, failedUrl);
+    }
 }

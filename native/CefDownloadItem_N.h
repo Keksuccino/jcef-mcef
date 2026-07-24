@@ -12,148 +12,160 @@ extern "C" {
  * Method:    N_IsValid
  * Signature: (J)Z
  */
-JNIEXPORT jboolean JNICALL
-Java_org_cef_callback_CefDownloadItem_1N_N_1IsValid(JNIEnv*, jobject, jlong);
+JNIEXPORT jboolean JNICALL Java_org_cef_callback_CefDownloadItem_1N_N_1IsValid
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_callback_CefDownloadItem_N
  * Method:    N_IsInProgress
  * Signature: (J)Z
  */
-JNIEXPORT jboolean JNICALL
-Java_org_cef_callback_CefDownloadItem_1N_N_1IsInProgress(JNIEnv*,
-                                                         jobject,
-                                                         jlong);
+JNIEXPORT jboolean JNICALL Java_org_cef_callback_CefDownloadItem_1N_N_1IsInProgress
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_callback_CefDownloadItem_N
  * Method:    N_IsComplete
  * Signature: (J)Z
  */
-JNIEXPORT jboolean JNICALL
-Java_org_cef_callback_CefDownloadItem_1N_N_1IsComplete(JNIEnv*, jobject, jlong);
+JNIEXPORT jboolean JNICALL Java_org_cef_callback_CefDownloadItem_1N_N_1IsComplete
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_callback_CefDownloadItem_N
  * Method:    N_IsCanceled
  * Signature: (J)Z
  */
-JNIEXPORT jboolean JNICALL
-Java_org_cef_callback_CefDownloadItem_1N_N_1IsCanceled(JNIEnv*, jobject, jlong);
+JNIEXPORT jboolean JNICALL Java_org_cef_callback_CefDownloadItem_1N_N_1IsCanceled
+  (JNIEnv *, jobject, jlong);
+
+/*
+ * Class:     org_cef_callback_CefDownloadItem_N
+ * Method:    N_IsInterrupted
+ * Signature: (J)Z
+ */
+JNIEXPORT jboolean JNICALL Java_org_cef_callback_CefDownloadItem_1N_N_1IsInterrupted
+  (JNIEnv *, jobject, jlong);
+
+/*
+ * Class:     org_cef_callback_CefDownloadItem_N
+ * Method:    N_IsPaused
+ * Signature: (J)Z
+ */
+JNIEXPORT jboolean JNICALL Java_org_cef_callback_CefDownloadItem_1N_N_1IsPaused
+  (JNIEnv *, jobject, jlong);
+
+/*
+ * Class:     org_cef_callback_CefDownloadItem_N
+ * Method:    N_GetInterruptReason
+ * Signature: (J)I
+ */
+JNIEXPORT jint JNICALL Java_org_cef_callback_CefDownloadItem_1N_N_1GetInterruptReason
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_callback_CefDownloadItem_N
  * Method:    N_GetCurrentSpeed
  * Signature: (J)J
  */
-JNIEXPORT jlong JNICALL
-Java_org_cef_callback_CefDownloadItem_1N_N_1GetCurrentSpeed(JNIEnv*,
-                                                            jobject,
-                                                            jlong);
+JNIEXPORT jlong JNICALL Java_org_cef_callback_CefDownloadItem_1N_N_1GetCurrentSpeed
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_callback_CefDownloadItem_N
  * Method:    N_GetPercentComplete
  * Signature: (J)I
  */
-JNIEXPORT jint JNICALL
-Java_org_cef_callback_CefDownloadItem_1N_N_1GetPercentComplete(JNIEnv*,
-                                                               jobject,
-                                                               jlong);
+JNIEXPORT jint JNICALL Java_org_cef_callback_CefDownloadItem_1N_N_1GetPercentComplete
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_callback_CefDownloadItem_N
  * Method:    N_GetTotalBytes
  * Signature: (J)J
  */
-JNIEXPORT jlong JNICALL
-Java_org_cef_callback_CefDownloadItem_1N_N_1GetTotalBytes(JNIEnv*,
-                                                          jobject,
-                                                          jlong);
+JNIEXPORT jlong JNICALL Java_org_cef_callback_CefDownloadItem_1N_N_1GetTotalBytes
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_callback_CefDownloadItem_N
  * Method:    N_GetReceivedBytes
  * Signature: (J)J
  */
-JNIEXPORT jlong JNICALL
-Java_org_cef_callback_CefDownloadItem_1N_N_1GetReceivedBytes(JNIEnv*,
-                                                             jobject,
-                                                             jlong);
+JNIEXPORT jlong JNICALL Java_org_cef_callback_CefDownloadItem_1N_N_1GetReceivedBytes
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_callback_CefDownloadItem_N
  * Method:    N_GetStartTime
  * Signature: (J)Ljava/util/Date;
  */
-JNIEXPORT jobject JNICALL
-Java_org_cef_callback_CefDownloadItem_1N_N_1GetStartTime(JNIEnv*,
-                                                         jobject,
-                                                         jlong);
+JNIEXPORT jobject JNICALL Java_org_cef_callback_CefDownloadItem_1N_N_1GetStartTime
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_callback_CefDownloadItem_N
  * Method:    N_GetEndTime
  * Signature: (J)Ljava/util/Date;
  */
-JNIEXPORT jobject JNICALL
-Java_org_cef_callback_CefDownloadItem_1N_N_1GetEndTime(JNIEnv*, jobject, jlong);
+JNIEXPORT jobject JNICALL Java_org_cef_callback_CefDownloadItem_1N_N_1GetEndTime
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_callback_CefDownloadItem_N
  * Method:    N_GetFullPath
  * Signature: (J)Ljava/lang/String;
  */
-JNIEXPORT jstring JNICALL
-Java_org_cef_callback_CefDownloadItem_1N_N_1GetFullPath(JNIEnv*,
-                                                        jobject,
-                                                        jlong);
+JNIEXPORT jstring JNICALL Java_org_cef_callback_CefDownloadItem_1N_N_1GetFullPath
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_callback_CefDownloadItem_N
  * Method:    N_GetId
  * Signature: (J)I
  */
-JNIEXPORT jint JNICALL
-Java_org_cef_callback_CefDownloadItem_1N_N_1GetId(JNIEnv*, jobject, jlong);
+JNIEXPORT jint JNICALL Java_org_cef_callback_CefDownloadItem_1N_N_1GetId
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_callback_CefDownloadItem_N
  * Method:    N_GetURL
  * Signature: (J)Ljava/lang/String;
  */
-JNIEXPORT jstring JNICALL
-Java_org_cef_callback_CefDownloadItem_1N_N_1GetURL(JNIEnv*, jobject, jlong);
+JNIEXPORT jstring JNICALL Java_org_cef_callback_CefDownloadItem_1N_N_1GetURL
+  (JNIEnv *, jobject, jlong);
+
+/*
+ * Class:     org_cef_callback_CefDownloadItem_N
+ * Method:    N_GetOriginalURL
+ * Signature: (J)Ljava/lang/String;
+ */
+JNIEXPORT jstring JNICALL Java_org_cef_callback_CefDownloadItem_1N_N_1GetOriginalURL
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_callback_CefDownloadItem_N
  * Method:    N_GetSuggestedFileName
  * Signature: (J)Ljava/lang/String;
  */
-JNIEXPORT jstring JNICALL
-Java_org_cef_callback_CefDownloadItem_1N_N_1GetSuggestedFileName(JNIEnv*,
-                                                                 jobject,
-                                                                 jlong);
+JNIEXPORT jstring JNICALL Java_org_cef_callback_CefDownloadItem_1N_N_1GetSuggestedFileName
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_callback_CefDownloadItem_N
  * Method:    N_GetContentDisposition
  * Signature: (J)Ljava/lang/String;
  */
-JNIEXPORT jstring JNICALL
-Java_org_cef_callback_CefDownloadItem_1N_N_1GetContentDisposition(JNIEnv*,
-                                                                  jobject,
-                                                                  jlong);
+JNIEXPORT jstring JNICALL Java_org_cef_callback_CefDownloadItem_1N_N_1GetContentDisposition
+  (JNIEnv *, jobject, jlong);
 
 /*
  * Class:     org_cef_callback_CefDownloadItem_N
  * Method:    N_GetMimeType
  * Signature: (J)Ljava/lang/String;
  */
-JNIEXPORT jstring JNICALL
-Java_org_cef_callback_CefDownloadItem_1N_N_1GetMimeType(JNIEnv*,
-                                                        jobject,
-                                                        jlong);
+JNIEXPORT jstring JNICALL Java_org_cef_callback_CefDownloadItem_1N_N_1GetMimeType
+  (JNIEnv *, jobject, jlong);
 
 #ifdef __cplusplus
 }

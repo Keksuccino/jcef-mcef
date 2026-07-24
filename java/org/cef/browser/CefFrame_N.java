@@ -5,6 +5,10 @@
 package org.cef.browser;
 
 import org.cef.callback.CefNativeAdapter;
+import org.cef.callback.CefStringVisitor;
+import org.cef.network.CefRequest;
+
+import java.util.Objects;
 
 /**
  * This class represents all methods which are connected to the
@@ -30,12 +34,12 @@ class CefFrame_N extends CefNativeAdapter implements CefFrame {
     }
 
     @Override
-    public long getIdentifier() {
+    public String getIdentifier() {
         try {
             return N_GetIdentifier(getNativeRef(null));
         } catch (UnsatisfiedLinkError ule) {
             ule.printStackTrace();
-            return -1;
+            return null;
         }
     }
 
@@ -100,6 +104,65 @@ class CefFrame_N extends CefNativeAdapter implements CefFrame {
     }
 
     @Override
+    public CefBrowser getBrowser() {
+        try {
+            return N_GetBrowser(getNativeRef(null));
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+            return null;
+        }
+    }
+
+    @Override
+    public void viewSource() {
+        try {
+            N_ViewSource(getNativeRef(null));
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+    }
+
+    @Override
+    public void getSource(CefStringVisitor visitor) {
+        Objects.requireNonNull(visitor, "visitor");
+        try {
+            N_GetSource(getNativeRef(null), visitor);
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+    }
+
+    @Override
+    public void getText(CefStringVisitor visitor) {
+        Objects.requireNonNull(visitor, "visitor");
+        try {
+            N_GetText(getNativeRef(null), visitor);
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+    }
+
+    @Override
+    public void loadRequest(CefRequest request) {
+        Objects.requireNonNull(request, "request");
+        try {
+            N_LoadRequest(getNativeRef(null), request);
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+    }
+
+    @Override
+    public void loadURL(String url) {
+        Objects.requireNonNull(url, "url");
+        try {
+            N_LoadURL(getNativeRef(null), url);
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+    }
+
+    @Override
     public void executeJavaScript(String code, String url, int line) {
         try {
             N_ExecuteJavaScript(getNativeRef(null), code, url, line);
@@ -108,6 +171,7 @@ class CefFrame_N extends CefNativeAdapter implements CefFrame {
         }
     }
 
+    @Override
     public void undo() {
         try {
             N_Undo(getNativeRef(null));
@@ -116,6 +180,7 @@ class CefFrame_N extends CefNativeAdapter implements CefFrame {
         }
     }
 
+    @Override
     public void redo() {
         try {
             N_Redo(getNativeRef(null));
@@ -124,6 +189,7 @@ class CefFrame_N extends CefNativeAdapter implements CefFrame {
         }
     }
 
+    @Override
     public void cut() {
         try {
             N_Cut(getNativeRef(null));
@@ -132,6 +198,7 @@ class CefFrame_N extends CefNativeAdapter implements CefFrame {
         }
     }
 
+    @Override
     public void copy() {
         try {
             N_Copy(getNativeRef(null));
@@ -140,6 +207,7 @@ class CefFrame_N extends CefNativeAdapter implements CefFrame {
         }
     }
 
+    @Override
     public void paste() {
         try {
             N_Paste(getNativeRef(null));
@@ -148,18 +216,54 @@ class CefFrame_N extends CefNativeAdapter implements CefFrame {
         }
     }
 
+    @Override
+    public void pasteAndMatchStyle() {
+        try {
+            N_PasteAndMatchStyle(getNativeRef(null));
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+    }
+
+    @Override
+    public void delete() {
+        try {
+            N_Delete(getNativeRef(null));
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+    }
+
+    @Override
+    public void selectAll() {
+        try {
+            N_SelectAll(getNativeRef(null));
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+    }
+
     private final native void N_Dispose(long self);
-    private final native long N_GetIdentifier(long self);
+    private final native String N_GetIdentifier(long self);
     private final native String N_GetURL(long self);
     private final native String N_GetName(long self);
     private final native boolean N_IsMain(long self);
     private final native boolean N_IsValid(long self);
     private final native boolean N_IsFocused(long self);
     private final native CefFrame N_GetParent(long self);
+    private final native CefBrowser N_GetBrowser(long self);
+    private final native void N_ViewSource(long self);
+    private final native void N_GetSource(long self, CefStringVisitor visitor);
+    private final native void N_GetText(long self, CefStringVisitor visitor);
+    private final native void N_LoadRequest(long self, CefRequest request);
+    private final native void N_LoadURL(long self, String url);
     private final native void N_ExecuteJavaScript(long self, String code, String url, int line);
     private final native void N_Undo(long self);
     private final native void N_Redo(long self);
     private final native void N_Cut(long self);
     private final native void N_Copy(long self);
     private final native void N_Paste(long self);
+    private final native void N_PasteAndMatchStyle(long self);
+    private final native void N_Delete(long self);
+    private final native void N_SelectAll(long self);
 }

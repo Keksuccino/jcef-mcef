@@ -4,14 +4,22 @@
 
 package org.cef.browser;
 
+import org.cef.CefBrowserSettings;
 import org.cef.CefClient;
 
 /**
  * Creates a new instance of CefBrowser according the passed values
  */
 public class CefBrowserFactory {
-    public static CefBrowser create(CefClient client, String url,
-            boolean isTransparent, CefRequestContext context) {
+    public static CefBrowser create(
+            CefClient client, String url, boolean isTransparent, CefRequestContext context) {
         return new CefBrowserOsr(client, url, isTransparent, context);
+    }
+
+    public static CefBrowser create(CefClient client, String url, boolean isOffscreenRendered,
+            boolean isTransparent, CefRequestContext context, CefBrowserSettings settings) {
+        if (isOffscreenRendered)
+            return new CefBrowserOsrSwing(client, url, isTransparent, context, settings);
+        return new CefBrowserWr(client, url, context, settings);
     }
 }

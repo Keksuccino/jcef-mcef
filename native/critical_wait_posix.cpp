@@ -4,7 +4,7 @@
 
 #include "critical_wait.h"
 
-#include <sys/time.h>
+#include <time.h>
 
 // CriticalLock
 
@@ -39,14 +39,14 @@ void CriticalWait::Wait() {
 }
 
 bool CriticalWait::Wait(unsigned int maxWaitMs) {
-  int sec = (int)(maxWaitMs / 1000);
-  int nsec = (maxWaitMs - sec * 1000) * 1000000;  // convert to nsec
-  struct timeval tv;
   struct timespec ts;
-
-  gettimeofday(&tv, nullptr);
-  ts.tv_sec = tv.tv_sec + sec;
-  ts.tv_nsec = nsec;
+  clock_gettime(CLOCK_REALTIME, &ts);
+  ts.tv_sec += maxWaitMs / 1000;
+  ts.tv_nsec += (maxWaitMs % 1000) * 1000000;
+  if (ts.tv_nsec >= 1000000000) {
+    ts.tv_sec += ts.tv_nsec / 1000000000;
+    ts.tv_nsec %= 1000000000;
+  }
 
   int res = pthread_cond_timedwait(&cond_, &lock_->lock_, &ts);
   return res == 0;

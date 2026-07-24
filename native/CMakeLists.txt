@@ -14,6 +14,8 @@ set(JCEF_SRCS
   CefAuthCallback_N.h
   CefBeforeDownloadCallback_N.cpp
   CefBeforeDownloadCallback_N.h
+  CefBinaryValue_N.cpp
+  CefBinaryValue_N.h
   CefBrowser_N.cpp
   CefBrowser_N.h
   CefCallback_N.cpp
@@ -30,6 +32,8 @@ set(JCEF_SRCS
   CefDownloadItemCallback_N.h
   CefDownloadItem_N.cpp
   CefDownloadItem_N.h
+  CefDictionaryValue_N.cpp
+  CefDictionaryValue_N.h
   CefDragData_N.cpp
   CefDragData_N.h
   CefFileDialogCallback_N.cpp
@@ -38,6 +42,8 @@ set(JCEF_SRCS
   CefFrame_N.h
   CefJSDialogCallback_N.h
   CefJSDialogCallback_N.cpp
+  CefListValue_N.cpp
+  CefListValue_N.h
   CefMenuModel_N.cpp
   CefMenuModel_N.h
   CefMessageRouter_N.cpp
@@ -54,18 +60,24 @@ set(JCEF_SRCS
   CefPrintSettings_N.h
   CefQueryCallback_N.cpp
   CefQueryCallback_N.h
+  CefRegistration_N.cpp
+  CefRegistration_N.h
   CefRequest_N.cpp
   CefRequest_N.h
-  CefCallback_N.cpp
-  CefCallback_N.h
   CefRequestContext_N.cpp
   CefRequestContext_N.h
+  CefResourceReadCallback_N.cpp
+  CefResourceReadCallback_N.h
+  CefResourceSkipCallback_N.cpp
+  CefResourceSkipCallback_N.h
   CefResponse_N.cpp
   CefResponse_N.h
   CefSchemeRegistrar_N.cpp
   CefSchemeRegistrar_N.h
   CefURLRequest_N.cpp
   CefURLRequest_N.h
+  CefValue_N.cpp
+  CefValue_N.h
   browser_process_handler.cpp
   browser_process_handler.h
   client_app.cpp
@@ -83,18 +95,23 @@ set(JCEF_SRCS
   cookie_visitor.cpp
   cookie_visitor.h
   critical_wait.h
+  devtools_message_observer.cpp
+  devtools_message_observer.h
   dialog_handler.cpp
   dialog_handler.h
   display_handler.cpp
   display_handler.h
   audio_handler.cpp
   audio_handler.h
+  cef_value_util.h
   download_handler.cpp
   download_handler.h
   drag_handler.cpp
   drag_handler.h
   focus_handler.cpp
   focus_handler.h
+  int_callback.cpp
+  int_callback.h
   jcef_version.h
   jni_scoped_helpers.h
   jni_scoped_helpers.cpp
@@ -120,6 +137,8 @@ set(JCEF_SRCS
   request_context_handler.h
   request_handler.cpp
   request_handler.h
+  resolve_callback.cpp
+  resolve_callback.h
   resource_handler.cpp
   resource_handler.h
   resource_request_handler.cpp
@@ -128,6 +147,8 @@ set(JCEF_SRCS
   run_file_dialog_callback.h
   scheme_handler_factory.cpp
   scheme_handler_factory.h
+  setting_observer.cpp
+  setting_observer.h
   string_visitor.cpp
   string_visitor.h
   temp_window.h
@@ -142,8 +163,6 @@ set(JCEF_SRCS
 set(JCEF_SRCS_LINUX
   critical_wait_posix.cpp
   jni_util_linux.cpp
-  signal_restore_posix.cpp
-  signal_restore_posix.h
   temp_window_x11.cc
   temp_window_x11.h
   util_linux.cpp
@@ -151,8 +170,6 @@ set(JCEF_SRCS_LINUX
   )
 set(JCEF_SRCS_MAC
   critical_wait_posix.cpp
-  signal_restore_posix.cpp
-  signal_restore_posix.h
   temp_window_mac.h
   temp_window_mac.mm
   util_mac.h
@@ -212,6 +229,24 @@ endif()
 # Determine the target output directory.
 SET_CEF_TARGET_OUT_DIR()
 
+# CEF 151 requires C++20. Keep this explicit on every JCEF target because the
+# CEF macro also carries a legacy Xcode language-standard attribute.
+function(SET_JCEF_CXX20_PROPERTIES target)
+  set_target_properties(${target} PROPERTIES
+    CXX_EXTENSIONS OFF
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+    OBJCXX_EXTENSIONS OFF
+    OBJCXX_STANDARD 20
+    OBJCXX_STANDARD_REQUIRED ON
+    )
+  if(OS_MAC)
+    set_target_properties(${target} PROPERTIES
+      XCODE_ATTRIBUTE_CLANG_CXX_LANGUAGE_STANDARD "c++20"
+      )
+  endif()
+endfunction()
+
 
 #
 # Linux configuration.
@@ -221,6 +256,7 @@ if(OS_LINUX)
   # Helper executable target.
   add_executable(${JCEF_HELPER_TARGET} ${JCEF_HELPER_SRCS})
   SET_EXECUTABLE_TARGET_PROPERTIES(${JCEF_HELPER_TARGET})
+  SET_JCEF_CXX20_PROPERTIES(${JCEF_HELPER_TARGET})
   add_dependencies(${JCEF_HELPER_TARGET} libcef_dll_wrapper)
   target_link_libraries(${JCEF_HELPER_TARGET} libcef_lib libcef_dll_wrapper ${CEF_STANDARD_LIBS})
 
@@ -231,6 +267,7 @@ if(OS_LINUX)
   # JCEF library target.
   add_library(${JCEF_TARGET} SHARED ${JCEF_SRCS})
   SET_LIBRARY_TARGET_PROPERTIES(${JCEF_TARGET})
+  SET_JCEF_CXX20_PROPERTIES(${JCEF_TARGET})
   add_dependencies(${JCEF_TARGET} libcef_dll_wrapper ${JCEF_HELPER_TARGET})
   target_link_libraries(${JCEF_TARGET} libcef_lib libcef_dll_wrapper ${CEF_STANDARD_LIBS} ${JNI_LIBRARIES})
   target_include_directories(${JCEF_TARGET} PUBLIC ${JNI_INCLUDE_DIRS})
@@ -254,20 +291,9 @@ if(OS_LINUX)
   # Copy binary and resource files to the target output directory.
   COPY_FILES("${JCEF_TARGET}" "${CEF_BINARY_FILES}" "${CEF_BINARY_DIR}" "${CEF_TARGET_OUT_DIR}")
   COPY_FILES("${JCEF_TARGET}" "${CEF_RESOURCE_FILES}" "${CEF_RESOURCE_DIR}" "${CEF_TARGET_OUT_DIR}")
-
-  # TODO(jcef): Eliminate the symlink requirement once we figure out how.
-  # See https://github.com/chromiumembedded/java-cef/issues/137#issuecomment-1465038405
-  add_custom_command(
-    TARGET ${JCEF_TARGET}
-    POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_COMMAND} -E echo "*** Run the following commands manually to create necessary symlinks ***"
-    COMMAND ${CMAKE_COMMAND} -E echo "sudo ln -s ${CEF_RESOURCE_DIR}/icudtl.dat ${JAVA_DIR}/bin/icudtl.dat"
-    COMMAND ${CMAKE_COMMAND} -E echo "sudo ln -s ${CEF_BINARY_DIR}/snapshot_blob.bin ${JAVA_DIR}/bin/snapshot_blob.bin"
-    COMMAND ${CMAKE_COMMAND} -E echo "sudo ln -s ${CEF_BINARY_DIR}/v8_context_snapshot.bin ${JAVA_DIR}/bin/v8_context_snapshot.bin"
-    COMMAND ${CMAKE_COMMAND} -E echo ""
-    VERBATIM
-    )
+  if(EXISTS "${CEF_BINARY_DIR}/libminigbm.so")
+    COPY_FILES("${JCEF_TARGET}" "libminigbm.so" "${CEF_BINARY_DIR}" "${CEF_TARGET_OUT_DIR}")
+  endif()
 endif()
 
 
@@ -276,6 +302,15 @@ endif()
 #
 
 if(OS_MAC)
+  # Find the ant executable, including Homebrew paths.
+  find_program(ANT_EXECUTABLE ant
+    HINTS /opt/homebrew/bin /usr/local/bin
+    )
+  if(NOT ANT_EXECUTABLE)
+    message(FATAL_ERROR "ant not found. Install with: brew install ant")
+  endif()
+  message(STATUS "Using ant: ${ANT_EXECUTABLE}")
+
   # Avoid CMP0042 policy errors.
   set(CMAKE_MACOSX_RPATH 1)
 
@@ -291,17 +326,18 @@ if(OS_MAC)
   set(EXECUTABLE_NAME "${JCEF_APP_NAME}")
   set(PRODUCT_NAME "${JCEF_APP_NAME}")
 
-  if(USE_SANDBOX)
-    # Logical target used to link the cef_sandbox library.
-    ADD_LOGICAL_TARGET("cef_sandbox_lib" "${CEF_SANDBOX_LIB_DEBUG}" "${CEF_SANDBOX_LIB_RELEASE}")
-  endif()
-
   # JCEF library target.
   add_library(${JCEF_TARGET} SHARED ${JCEF_RESOURCES_SRCS} ${JCEF_SRCS})
-  SET_EXECUTABLE_TARGET_PROPERTIES(${JCEF_TARGET})
+  SET_LIBRARY_TARGET_PROPERTIES(${JCEF_TARGET})
+  SET_JCEF_CXX20_PROPERTIES(${JCEF_TARGET})
   add_dependencies(${JCEF_TARGET} libcef_dll_wrapper)
   target_link_libraries(${JCEF_TARGET} libcef_dll_wrapper ${CEF_STANDARD_LIBS}  ${JNI_LIBRARIES})
   target_include_directories(${JCEF_TARGET} PUBLIC ${JNI_INCLUDE_DIRS})
+
+  # Use ad-hoc code signing for the dynamic library (required by Xcode 14+).
+  set_target_properties(${JCEF_TARGET} PROPERTIES
+    XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "-"
+    )
 
   # Compile flags specific to the JCEF library target.
   # USING_JAVA          = Add the USING_JAVA define.
@@ -315,22 +351,28 @@ if(OS_MAC)
     TARGET ${JCEF_TARGET}
     POST_BUILD
     # Build the main app bundle.
-    COMMAND ant
-            -buildfile ${CMAKE_SOURCE_DIR}
-            -Djdk7.path=${JAVA_DIR}
-            -Dout.path=${CEF_TARGET_OUT_DIR}
-            -Dout.name=${JCEF_APP_NAME}
+    COMMAND ${ANT_EXECUTABLE}
+            -buildfile "${CMAKE_SOURCE_DIR}/build.xml"
+            "-Dout.path=${CEF_TARGET_OUT_DIR}"
+            "-Dout.name=${JCEF_APP_NAME}"
             -Dout.id=org.jcef.jcef
             -Dout.mainclass=tests.detailed.MainFrame
             bundle
-    # Copy the CEF framework into the main app bundle.
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CEF_BINARY_DIR}/Chromium Embedded Framework.framework"
-            "${JCEF_APP}/Contents/Frameworks/Chromium Embedded Framework.framework"
-    # Copy the JCEF library into the main app bindle.
+    # Copy the JCEF library into the main app bundle.
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CEF_TARGET_OUT_DIR}/${JCEF_TARGET_LIBRARY}"
+            "$<TARGET_FILE:${JCEF_TARGET}>"
             "${JCEF_TARGET_LIBRARY_APP_PATH}"
+    VERBATIM
+    )
+
+  # The archive contains a flat framework. Use CEF's macro to construct the
+  # canonical Versions/A layout and symlinks before signing the final bundle.
+  COPY_MAC_FRAMEWORK("${JCEF_TARGET}" "${CEF_BINARY_DIR}" "${JCEF_APP}")
+  set(JCEF_CEF_FRAMEWORK "${JCEF_APP}/Contents/Frameworks/Chromium Embedded Framework.framework")
+  add_custom_command(
+    TARGET ${JCEF_TARGET}
+    POST_BUILD
+    COMMAND /usr/bin/codesign --force --sign - --timestamp=none "${JCEF_CEF_FRAMEWORK}"
     VERBATIM
     )
 
@@ -360,16 +402,23 @@ if(OS_MAC)
     # Create Helper executable target.
     add_executable(${_helper_target} MACOSX_BUNDLE ${JCEF_HELPER_SRCS})
     SET_EXECUTABLE_TARGET_PROPERTIES(${_helper_target})
+    SET_JCEF_CXX20_PROPERTIES(${_helper_target})
     add_dependencies(${_helper_target} libcef_dll_wrapper)
     target_link_libraries(${_helper_target} libcef_dll_wrapper ${CEF_STANDARD_LIBS})
     set_target_properties(${_helper_target} PROPERTIES
       MACOSX_BUNDLE_INFO_PLIST ${_helper_info_plist}
       OUTPUT_NAME ${_helper_output_name}
+      XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "-"
       )
 
-    if(USE_SANDBOX)
-      target_link_libraries(${_helper_target} cef_sandbox_lib)
-    endif()
+    # Sign the completed helper before it is copied into the main app. The main
+    # app is signed only after every nested helper and framework is in place.
+    add_custom_command(
+      TARGET ${_helper_target}
+      POST_BUILD
+      COMMAND /usr/bin/codesign --force --sign - --timestamp=none "$<TARGET_BUNDLE_DIR:${_helper_target}>"
+      VERBATIM
+      )
 
     # Add the Helper as a dependency of the main executable target.
     add_dependencies(${JCEF_TARGET} "${_helper_target}")
@@ -384,6 +433,15 @@ if(OS_MAC)
       VERBATIM
       )
   endforeach()
+
+  add_custom_command(
+    TARGET ${JCEF_TARGET}
+    POST_BUILD
+    COMMAND /usr/bin/codesign --force --sign - --timestamp=none "${JCEF_TARGET_LIBRARY_APP_PATH}"
+    COMMAND /usr/bin/codesign --force --sign - --timestamp=none "${JCEF_APP}"
+    COMMAND /usr/bin/codesign --verify --deep --strict --verbose=2 "${JCEF_APP}"
+    VERBATIM
+    )
 endif()
 
 
@@ -395,12 +453,14 @@ if(OS_WINDOWS)
   # Helper executable target.
   add_executable(${JCEF_HELPER_TARGET} WIN32 ${JCEF_HELPER_SRCS})
   SET_EXECUTABLE_TARGET_PROPERTIES(${JCEF_HELPER_TARGET})
+  SET_JCEF_CXX20_PROPERTIES(${JCEF_HELPER_TARGET})
   add_dependencies(${JCEF_HELPER_TARGET} libcef_dll_wrapper)
   target_link_libraries(${JCEF_HELPER_TARGET} libcef_lib libcef_dll_wrapper ${CEF_STANDARD_LIBS})
 
   # JCEF library target.
   add_library(${JCEF_TARGET} SHARED ${JCEF_SRCS})
   SET_LIBRARY_TARGET_PROPERTIES(${JCEF_TARGET})
+  SET_JCEF_CXX20_PROPERTIES(${JCEF_TARGET})
   add_dependencies(${JCEF_TARGET} libcef_dll_wrapper ${JCEF_HELPER_TARGET})
   target_link_libraries(${JCEF_TARGET} libcef_lib libcef_dll_wrapper ${CEF_STANDARD_LIBS} ${JNI_LIBRARIES})
   target_include_directories(${JCEF_TARGET} PUBLIC ${JNI_INCLUDE_DIRS})
@@ -417,4 +477,3 @@ if(OS_WINDOWS)
   COPY_FILES("${JCEF_TARGET}" "${CEF_BINARY_FILES}" "${CEF_BINARY_DIR}" "${CEF_TARGET_OUT_DIR}")
   COPY_FILES("${JCEF_TARGET}" "${CEF_RESOURCE_FILES}" "${CEF_RESOURCE_DIR}" "${CEF_TARGET_OUT_DIR}")
 endif()
-

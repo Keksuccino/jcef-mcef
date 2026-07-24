@@ -7,7 +7,7 @@
 #include <string>
 
 #include "include/cef_app.h"
-#include "include/cef_version.h"
+#include "include/cef_version_info.h"
 
 #include "context.h"
 #include "jcef_version.h"
@@ -19,37 +19,42 @@
 #include <X11/Xlib.h>
 #endif
 
-JNIEXPORT jboolean JNICALL Java_org_cef_CefApp_N_1PreInitialize(JNIEnv* env,
-                                                                jobject c) {
+JNIEXPORT jboolean JNICALL Java_org_cef_CefApp_N_1PreInitialize(JNIEnv* env, jobject c) {
 #if !defined(OS_MACOSX)
   // On macOS this is called from Startup().
   Context::Create();
 #endif
-  return Context::GetInstance()->PreInitialize(env, c) ? JNI_TRUE : JNI_FALSE;
+  Context* context = Context::GetInstance();
+  return context && context->PreInitialize(env, c) ? JNI_TRUE : JNI_FALSE;
 }
 
-JNIEXPORT jboolean JNICALL
-Java_org_cef_CefApp_N_1Initialize(JNIEnv* env,
-                                  jobject c,
-                                  jobject appHandler,
-                                  jobject jsettings) {
-  return Context::GetInstance()->Initialize(env, c, appHandler, jsettings)
+JNIEXPORT jboolean JNICALL Java_org_cef_CefApp_N_1Initialize(JNIEnv* env, jobject c, jobject appHandler, jobject jsettings) {
+  Context* context = Context::GetInstance();
+  return context && context->Initialize(env, c, appHandler, jsettings)
              ? JNI_TRUE
              : JNI_FALSE;
 }
 
-JNIEXPORT void JNICALL Java_org_cef_CefApp_N_1Shutdown(JNIEnv* env, jobject) {
-  Context::GetInstance()->Shutdown();
+JNIEXPORT void JNICALL Java_org_cef_CefApp_N_1AbortInitialization(JNIEnv* env, jobject) {
+  ClearJNIReferences(env);
   Context::Destroy();
 }
 
-JNIEXPORT void JNICALL Java_org_cef_CefApp_N_1DoMessageLoopWork(JNIEnv* env,
-                                                                jobject) {
-  Context::GetInstance()->DoMessageLoopWork();
+JNIEXPORT void JNICALL Java_org_cef_CefApp_N_1Shutdown(JNIEnv* env, jobject) {
+  Context* context = Context::GetInstance();
+  if (context)
+    context->Shutdown();
+  ClearJNIReferences(env);
+  Context::Destroy();
 }
 
-JNIEXPORT jobject JNICALL Java_org_cef_CefApp_N_1GetVersion(JNIEnv* env,
-                                                            jobject obj) {
+JNIEXPORT void JNICALL Java_org_cef_CefApp_N_1DoMessageLoopWorkNative(JNIEnv* env, jobject) {
+  Context* context = Context::GetInstance();
+  if (context)
+    context->DoMessageLoopWork();
+}
+
+JNIEXPORT jobject JNICALL Java_org_cef_CefApp_N_1GetVersion(JNIEnv* env, jobject obj) {
   return NewJNIObject(env, "org/cef/CefApp$CefVersion",
                       "(Lorg/cef/CefApp;IIIIIIIII)V", obj, JCEF_COMMIT_NUMBER,
                       cef_version_info(0),   // CEF_VERSION_MAJOR
@@ -62,38 +67,36 @@ JNIEXPORT jobject JNICALL Java_org_cef_CefApp_N_1GetVersion(JNIEnv* env,
                       cef_version_info(7));  // CHROME_VERSION_PATCH
 }
 
-JNIEXPORT jboolean JNICALL
-Java_org_cef_CefApp_N_1RegisterSchemeHandlerFactory(JNIEnv* env,
-                                                    jobject,
-                                                    jstring jSchemeName,
-                                                    jstring jDomainName,
-                                                    jobject jFactory) {
+JNIEXPORT jint JNICALL Java_org_cef_CefApp_N_1GetLogSeverityForTesting(JNIEnv* env, jclass, jobject settings) {
+  return static_cast<jint>(Context::GetLogSeverityForTesting(env, settings));
+}
+
+JNIEXPORT jboolean JNICALL Java_org_cef_CefApp_N_1RegisterSchemeHandlerFactory(JNIEnv* env, jobject, jstring jSchemeName, jstring jDomainName, jobject jFactory) {
   if (!jFactory)
     return JNI_FALSE;
 
-  CefRefPtr<SchemeHandlerFactory> factory =
-      new SchemeHandlerFactory(env, jFactory);
+  CefRefPtr<SchemeHandlerFactory> factory = new SchemeHandlerFactory(env, jFactory);
   if (!factory)
     return JNI_FALSE;
 
-  bool result = CefRegisterSchemeHandlerFactory(GetJNIString(env, jSchemeName),
-                                                GetJNIString(env, jDomainName),
-                                                factory.get());
+  bool result = CefRegisterSchemeHandlerFactory(GetJNIString(env, jSchemeName), GetJNIString(env, jDomainName), factory.get());
   return result ? JNI_TRUE : JNI_FALSE;
 }
 
-JNIEXPORT jboolean JNICALL
-Java_org_cef_CefApp_N_1ClearSchemeHandlerFactories(JNIEnv*, jobject) {
+JNIEXPORT jboolean JNICALL Java_org_cef_CefApp_N_1ClearSchemeHandlerFactories(JNIEnv*, jobject) {
   return CefClearSchemeHandlerFactories() ? JNI_TRUE : JNI_FALSE;
 }
 
-JNIEXPORT jboolean JNICALL
-Java_org_cef_CefApp_N_1Startup(JNIEnv* env,
-                               jclass,
-                               jstring pathToCefFramework) {
+JNIEXPORT jboolean JNICALL Java_org_cef_CefApp_N_1Startup(JNIEnv* env, jclass, jstring pathToCefFramework) {
 #if defined(OS_LINUX)
   XInitThreads();
 #elif defined(OS_MACOSX)
+  // Java guards the normal path, but keep the native boundary idempotent as
+  // well. Re-loading the framework or replacing the Context would leak the
+  // first Context and invalidate live wrappers.
+  if (Context::GetInstance())
+    return JNI_TRUE;
+
   // Can't use GetJNIString before the CEF library is loaded.
   std::string framework_path;
   if (pathToCefFramework) {

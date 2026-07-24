@@ -9,6 +9,7 @@
 #import <Foundation/NSLock.h>
 #import <jni.h>
 #include <objc/runtime.h>
+#include <atomic>
 
 #include "include/base/cef_callback.h"
 #include "include/cef_app.h"
@@ -18,6 +19,7 @@
 
 #include "client_app.h"
 #include "client_handler.h"
+#include "context.h"
 #include "critical_wait.h"
 #include "jni_util.h"
 #include "render_handler.h"
@@ -31,6 +33,14 @@ static CriticalLock g_browsers_lock_;
 id g_mouse_monitor_ = nil;
 static CefRefPtr<ClientApp> g_client_app_ = nullptr;
 bool g_handling_send_event = false;
+
+enum MessageLoopWorkState {
+  MESSAGE_LOOP_WORK_IDLE,
+  MESSAGE_LOOP_WORK_QUEUED,
+  MESSAGE_LOOP_WORK_RUNNING,
+  MESSAGE_LOOP_WORK_RERUN,
+};
+std::atomic<int> g_message_loop_work_state_(MESSAGE_LOOP_WORK_IDLE);
 
 }  // namespace
 
@@ -56,6 +66,18 @@ bool g_handling_send_event = false;
 @implementation SetVisibilityParams
 @end
 
+// Used for passing data to/from CefHandler updateView: without dereferencing
+// the unowned CEF NSView handle on the Java callback thread.
+@interface UpdateViewParams : NSObject {
+ @public
+  CefWindowHandle handle_;
+  CefRect content_rect_;
+  CefRect browser_rect_;
+}
+@end
+@implementation UpdateViewParams
+@end
+
 // Obj-C Wrapper Class to be called by "performSelectorOnMainThread".
 @interface CefHandler : NSObject {
 }
@@ -64,35 +86,28 @@ bool g_handling_send_event = false;
 + (void)shutdown;
 + (void)doMessageLoopWork;
 + (void)setVisibility:(SetVisibilityParams*)params;
++ (void)updateView:(UpdateViewParams*)params;
 
 @end  // interface CefHandler
 
-// Java provides an NSApplicationAWT implementation that we can't access or
-// override directly. Therefore add the necessary CefAppProtocol
-// functionality to NSApplication using categories and swizzling.
-@interface NSApplication (JCEFApplication) <CefAppProtocol>
+namespace {
 
-- (BOOL)isHandlingSendEvent;
-- (void)setHandlingSendEvent:(BOOL)handlingSendEvent;
-- (void)_swizzled_sendEvent:(NSEvent*)event;
-- (void)_swizzled_terminate:(id)sender;
+NSView* RetainRegisteredBrowserViewOnMainThread(CefWindowHandle handle) {
+  DCHECK([NSThread isMainThread]);
+  g_browsers_lock_.Lock();
+  NSView* view = g_browsers_.count(handle) > 0
+                     ? [CAST_CEF_WINDOW_HANDLE_TO_NSVIEW(handle) retain]
+                     : nil;
+  g_browsers_lock_.Unlock();
+  return view;
+}
 
-@end
+void UpdateViewOnMainThread(UpdateViewParams* params);
 
-@implementation NSApplication (JCEFApplication)
-
-// This selector is called very early during the application initialization.
-+ (void)load {
-  // Swap NSApplication::sendEvent with _swizzled_sendEvent.
-  Method original = class_getInstanceMethod(self, @selector(sendEvent));
-  Method swizzled =
-      class_getInstanceMethod(self, @selector(_swizzled_sendEvent));
-  method_exchangeImplementations(original, swizzled);
-
-  Method originalTerm = class_getInstanceMethod(self, @selector(terminate:));
-  Method swizzledTerm =
-      class_getInstanceMethod(self, @selector(_swizzled_terminate:));
-  method_exchangeImplementations(originalTerm, swizzledTerm);
+void InstallMouseMonitorOnMainThread() {
+  DCHECK([NSThread isMainThread]);
+  if (g_mouse_monitor_)
+    return;
 
   g_mouse_monitor_ = [NSEvent
       addLocalMonitorForEventsMatchingMask:(NSEventMaskLeftMouseDown |
@@ -181,6 +196,45 @@ bool g_handling_send_event = false;
                                    }];
 }
 
+void RemoveMouseMonitorOnMainThread() {
+  DCHECK([NSThread isMainThread]);
+  if (!g_mouse_monitor_)
+    return;
+
+  [NSEvent removeMonitor:g_mouse_monitor_];
+  g_mouse_monitor_ = nil;
+}
+
+}  // namespace
+
+// Java provides an NSApplicationAWT implementation that we can't access or
+// override directly. Therefore add the necessary CefAppProtocol
+// functionality to NSApplication using categories and swizzling.
+@interface NSApplication (JCEFApplication) <CefAppProtocol>
+
+- (BOOL)isHandlingSendEvent;
+- (void)setHandlingSendEvent:(BOOL)handlingSendEvent;
+- (void)_swizzled_sendEvent:(NSEvent*)event;
+- (void)_swizzled_terminate:(id)sender;
+
+@end
+
+@implementation NSApplication (JCEFApplication)
+
+// This selector is called very early during the application initialization.
++ (void)load {
+  // Swap NSApplication::sendEvent with _swizzled_sendEvent.
+  Method original = class_getInstanceMethod(self, @selector(sendEvent));
+  Method swizzled =
+      class_getInstanceMethod(self, @selector(_swizzled_sendEvent));
+  method_exchangeImplementations(original, swizzled);
+
+  Method originalTerm = class_getInstanceMethod(self, @selector(terminate:));
+  Method swizzledTerm =
+      class_getInstanceMethod(self, @selector(_swizzled_terminate:));
+  method_exchangeImplementations(originalTerm, swizzledTerm);
+}
+
 - (BOOL)isHandlingSendEvent {
   return g_handling_send_event;
 }
@@ -215,37 +269,93 @@ bool g_handling_send_event = false;
 
 // |params| will be released by the caller.
 + (void)initialize:(InitializeParams*)params {
+  DCHECK([NSThread isMainThread]);
+  // Installing an NSEvent monitor during this image's +load can initialize
+  // NSApplication on the Java launcher thread before AWT owns AppKit. Defer
+  // all AppKit messaging until AWT has created its main-thread application.
+  InstallMouseMonitorOnMainThread();
   g_client_app_ = params->application_;
   params->result_ = CefInitialize(params->args_, params->settings_,
                                   g_client_app_.get(), nullptr);
+  if (!params->result_) {
+    g_client_app_ = nullptr;
+    RemoveMouseMonitorOnMainThread();
+  }
 }
 
 + (void)shutdown {
+  DCHECK([NSThread isMainThread]);
+  // Cmd+Q and Java disposal can converge here. Only the first path owns
+  // CefShutdown.
+  if (!g_client_app_)
+    return;
+
   // Pump CefDoMessageLoopWork a few times before shutting down.
   for (int i = 0; i < 10; ++i)
     CefDoMessageLoopWork();
 
+  // TempWindowMac owns an NSWindow and therefore must be destroyed on the
+  // AppKit main thread. Context is deleted later on the Java lifecycle thread
+  // after this synchronous selector returns.
+  Context* context = Context::GetInstance();
+  if (context)
+    context->DestroyTempWindowOnMainThread();
+
   CefShutdown();
   g_client_app_ = nullptr;
 
-  [NSEvent removeMonitor:g_mouse_monitor_];
+  RemoveMouseMonitorOnMainThread();
 }
 
 + (void)doMessageLoopWork {
-  CefDoMessageLoopWork();
+  DCHECK([NSThread isMainThread]);
+  int expected = MESSAGE_LOOP_WORK_QUEUED;
+  bool transitioned = g_message_loop_work_state_.compare_exchange_strong(
+      expected, MESSAGE_LOOP_WORK_RUNNING, std::memory_order_acq_rel);
+  DCHECK(transitioned);
+  if (!transitioned)
+    return;
+
+  for (;;) {
+    if (g_client_app_)
+      CefDoMessageLoopWork();
+
+    expected = MESSAGE_LOOP_WORK_RUNNING;
+    if (g_message_loop_work_state_.compare_exchange_strong(
+            expected, MESSAGE_LOOP_WORK_IDLE, std::memory_order_acq_rel)) {
+      break;
+    }
+
+    // A request that arrived while CefDoMessageLoopWork was running must not be
+    // lost. Consume exactly one additional iteration; further concurrent calls
+    // are folded into the same RERUN state.
+    DCHECK_EQ(expected, MESSAGE_LOOP_WORK_RERUN);
+    g_message_loop_work_state_.store(MESSAGE_LOOP_WORK_RUNNING,
+                                     std::memory_order_release);
+  }
 }
 
 + (void)setVisibility:(SetVisibilityParams*)params {
-  if (g_client_app_) {
-    NSView* wh = CAST_CEF_WINDOW_HANDLE_TO_NSVIEW(params->handle_);
-    bool isHidden = [wh isHidden];
+  DCHECK([NSThread isMainThread]);
+
+  // The Java AWT hierarchy callback and CEF browser destruction are
+  // asynchronous with respect to one another. Resolve and retain the raw CEF
+  // window handle under the registry lock on AppKit immediately before use.
+  NSView* view = RetainRegisteredBrowserViewOnMainThread(params->handle_);
+  if (g_client_app_ && view) {
+    bool isHidden = [view isHidden];
     if (isHidden == params->isVisible_) {
-      [wh setHidden:!params->isVisible_];
-      [wh needsDisplay];
-      [[wh superview] display];
+      [view setHidden:!params->isVisible_];
+      [view setNeedsDisplay:YES];
+      [[view superview] setNeedsDisplay:YES];
     }
   }
+  [view release];
   [params release];
+}
+
++ (void)updateView:(UpdateViewParams*)params {
+  UpdateViewOnMainThread(params);
 }
 
 @end  // implementation CefHandler
@@ -321,9 +431,11 @@ bool g_handling_send_event = false;
     CefRefPtr<WindowHandler> windowHandler = clientHandler->GetWindowHandler();
     if (windowHandler.get() != nullptr) {
       CefRect rect;
-      windowHandler->GetRect(cefBrowser, rect);
-      util_mac::TranslateRect(self, rect);
-      frameRect = (NSRect){{rect.x, rect.y}, {rect.width, rect.height}};
+      bool got_rect = windowHandler->GetRect(cefBrowser, rect);
+      if (got_rect) {
+        util_mac::TranslateRect(self, rect);
+        frameRect = (NSRect){{rect.x, rect.y}, {rect.width, rect.height}};
+      }
     }
   }
   [super setFrame:frameRect];
@@ -379,6 +491,47 @@ bool g_handling_send_event = false;
 }
 
 @end  // implementation CefBrowserContentView
+
+namespace {
+
+void UpdateViewOnMainThread(UpdateViewParams* params) {
+  DCHECK([NSThread isMainThread]);
+
+  NSView* view = RetainRegisteredBrowserViewOnMainThread(params->handle_);
+  if (!view) {
+    [params release];
+    return;
+  }
+
+  CefRect content_rect = params->content_rect_;
+  CefRect browser_rect = params->browser_rect_;
+  util_mac::TranslateRect(view, content_rect);
+  browser_rect.y = content_rect.height - browser_rect.height - browser_rect.y;
+  CefBrowserContentView* browser =
+      (CefBrowserContentView*)[[view superview] retain];
+  [view release];
+
+  // Only update the view if nobody is currently resizing the main window.
+  // Otherwise the CEF view may flicker due to the delay between the native
+  // window resize event and the Java resize event.
+  if ([browser isKindOfClass:[CefBrowserContentView class]] &&
+      ![browser isLiveResizing]) {
+    NSString* content_string = [NSString
+        stringWithFormat:@"{{%d,%d},{%d,%d}", content_rect.x, content_rect.y,
+                         content_rect.width, content_rect.height];
+    NSString* browser_string = [NSString
+        stringWithFormat:@"{{%d,%d},{%d,%d}", browser_rect.x, browser_rect.y,
+                         browser_rect.width, browser_rect.height];
+    NSDictionary* rects = [NSDictionary
+        dictionaryWithObjectsAndKeys:content_string, @"content", browser_string,
+                                     @"browser", nil];
+    [browser updateView:rects];
+  }
+  [browser release];
+  [params release];
+}
+
+}  // namespace
 
 namespace util_mac {
 
@@ -456,9 +609,28 @@ void CefShutdownOnMainThread() {
 }
 
 void CefDoMessageLoopWorkOnMainThread() {
-  [[CefHandler class] performSelectorOnMainThread:@selector(doMessageLoopWork)
-                                       withObject:nil
-                                    waitUntilDone:NO];
+  int state = g_message_loop_work_state_.load(std::memory_order_acquire);
+  for (;;) {
+    if (state == MESSAGE_LOOP_WORK_QUEUED || state == MESSAGE_LOOP_WORK_RERUN) {
+      return;
+    }
+    int requested_state = state == MESSAGE_LOOP_WORK_IDLE
+                              ? MESSAGE_LOOP_WORK_QUEUED
+                              : MESSAGE_LOOP_WORK_RERUN;
+    if (g_message_loop_work_state_.compare_exchange_weak(
+            state, requested_state, std::memory_order_acq_rel)) {
+      if (requested_state == MESSAGE_LOOP_WORK_RERUN)
+        return;
+      break;
+    }
+  }
+
+  [[CefHandler class]
+      performSelector:@selector(doMessageLoopWork)
+             onThread:[NSThread mainThread]
+           withObject:nil
+        waitUntilDone:NO
+                modes:@[ NSDefaultRunLoopMode, NSEventTrackingRunLoopMode ]];
 }
 
 void SetVisibility(CefWindowHandle handle, bool isVisible) {
@@ -473,30 +645,13 @@ void SetVisibility(CefWindowHandle handle, bool isVisible) {
 void UpdateView(CefWindowHandle handle,
                 CefRect contentRect,
                 CefRect browserRect) {
-  util_mac::TranslateRect(handle, contentRect);
-  CefBrowserContentView* browser =
-      (CefBrowserContentView*)[CAST_CEF_WINDOW_HANDLE_TO_NSVIEW(handle)
-          superview];
-  browserRect.y = contentRect.height - browserRect.height - browserRect.y;
-
-  // Only update the view if nobody is currently resizing the main window.
-  // Otherwise the CefBrowser part may start flickering because there's a
-  // significant delay between the native window resize event and the java
-  // resize event
-  if (![browser isLiveResizing]) {
-    NSString* contentStr = [[NSString alloc]
-        initWithFormat:@"{{%d,%d},{%d,%d}", contentRect.x, contentRect.y,
-                       contentRect.width, contentRect.height];
-    NSString* browserStr = [[NSString alloc]
-        initWithFormat:@"{{%d,%d},{%d,%d}", browserRect.x, browserRect.y,
-                       browserRect.width, browserRect.height];
-    NSDictionary* dict = [[NSDictionary alloc]
-        initWithObjectsAndKeys:contentStr, @"content", browserStr, @"browser",
-                               nil];
-    [browser performSelectorOnMainThread:@selector(updateView:)
-                              withObject:dict
-                           waitUntilDone:NO];
-  }
+  UpdateViewParams* params = [[UpdateViewParams alloc] init];
+  params->handle_ = handle;
+  params->content_rect_ = contentRect;
+  params->browser_rect_ = browserRect;
+  [[CefHandler class] performSelectorOnMainThread:@selector(updateView:)
+                                       withObject:params
+                                    waitUntilDone:NO];
 }
 
 }  // namespace util_mac
@@ -536,6 +691,43 @@ void DestroyCefBrowser(CefRefPtr<CefBrowser> browser) {
         (CefBrowserContentView*)[handle superview];
     [browserView destroyCefBrowser];
   }
+}
+
+void SetParent(CefWindowHandle handle, jlong parentHandle, base::OnceClosure callback) {
+  // CefBrowserWindowMac keeps the AWT CPlatformWindow alive only through this
+  // JNI call. Retain the NSWindow before returning to Java, then carry it as an
+  // integer so block capture cannot add hidden Objective-C ownership.
+  NSWindow* parent_window = parentHandle ? [(NSWindow*)parentHandle retain] : nil;
+  jlong retained_parent_handle = (jlong)parent_window;
+  base::RepeatingClosure* pCallback = new base::RepeatingClosure(base::BindRepeating([](base::OnceClosure& cb) { std::move(cb).Run(); }, OwnedRef(std::move(callback))));
+  dispatch_async(dispatch_get_main_queue(), ^{
+    NSView* view = RetainRegisteredBrowserViewOnMainThread(handle);
+    if (!view) {
+      // Browser destruction won the race, so there is no parent change to
+      // report. Destroying the closure also releases its CefBrowser reference;
+      // invoking it here would emit a lifecycle callback after native close.
+      [(NSWindow*)retained_parent_handle release];
+      delete pCallback;
+      return;
+    }
+
+    CefBrowserContentView* browser_view = (CefBrowserContentView*)[[view superview] retain];
+    [view release];
+    [browser_view removeFromSuperview];
+
+    NSView* contentView;
+    if (retained_parent_handle) {
+      NSWindow* window = (NSWindow*)retained_parent_handle;
+      contentView = [window contentView];
+    } else {
+      contentView = CAST_CEF_WINDOW_HANDLE_TO_NSVIEW(TempWindow::GetWindowHandle());
+    }
+    [contentView addSubview:browser_view];
+    [(NSWindow*)retained_parent_handle release];
+    [browser_view release];
+    pCallback->Run();
+    delete pCallback;
+  });
 }
 
 }  // namespace util

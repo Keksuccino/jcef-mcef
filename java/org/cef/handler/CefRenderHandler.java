@@ -5,11 +5,13 @@
 package org.cef.handler;
 
 import org.cef.browser.CefBrowser;
+import org.cef.browser.CefPaintEvent;
 import org.cef.callback.CefDragData;
 
 import java.awt.Point;
 import java.awt.Rectangle;
 import java.nio.ByteBuffer;
+import java.util.function.Consumer;
 
 /**
  * Implement this interface to handle events when window rendering is disabled.
@@ -66,6 +68,24 @@ public interface CefRenderHandler {
             ByteBuffer buffer, int width, int height);
 
     /**
+     * Add provided listener.
+     * @param listener Code that gets executed after a frame was rendered.
+     */
+    public void addOnPaintListener(Consumer<CefPaintEvent> listener);
+
+    /**
+     * Remove existing listeners and replace with provided listener.
+     * @param listener Code that gets executed after a frame was rendered.
+     */
+    public void setOnPaintListener(Consumer<CefPaintEvent> listener);
+
+    /**
+     * Remove provided listener.
+     * @param listener Code that gets executed after a frame was rendered.
+     */
+    public void removeOnPaintListener(Consumer<CefPaintEvent> listener);
+
+    /**
      * Handle cursor changes.
      * @param browser The browser generating the event.
      * @param cursorType The new cursor type.
@@ -86,6 +106,12 @@ public interface CefRenderHandler {
      * CefBrowser.dragSourceEndedAt and CefBrowser.ragSourceSystemDragEnded either
      * synchronously or asynchronously to inform the web view that the drag
      * operation has ended.
+     *
+     * <p>When this callback is delegated by {@code CefClient} to a browser's render handler,
+     * {@code dragData} is an owned clone rather than the callback-scoped native wrapper. Ownership
+     * transfers to the delegated handler when it returns normally, independently of the returned
+     * boolean. The handler must call {@link CefDragData#dispose()} after immediate use or after any
+     * retained asynchronous use finishes.
      * @param browser The browser generating the event.
      * @param dragData Contextual information about the dragged content
      * @param mask Describes the allowed operation (none, move, copy, link).

@@ -22,8 +22,18 @@ JavaVM* GetJVM();
 // because JNIEnv::FindClass always uses the system class loader if called
 // from a non-Java thread, which will not work if the embedding Java code
 // uses a custom class loader for JCEF classes (e.g. in JavaWebStart).
-void SetJavaClassLoader(JNIEnv* env, jobject javaClassLoader);
+bool SetJavaClassLoader(JNIEnv* env, jobject javaClassLoader);
 jobject GetJavaClassLoader();
+
+// Releases process-global JNI references after failed initialization or normal
+// shutdown.
+void ClearJNIReferences(JNIEnv* env);
+
+#if defined(OS_WIN)
+HWND GetHwndOfCanvas(jobject canvas, JNIEnv* env);
+#elif defined(OS_LINUX)
+unsigned long GetDrawableOfCanvas(jobject canvas, JNIEnv* env);
+#endif
 
 // Create a new JNI object and call the default constructor.
 jobject NewJNIObject(JNIEnv* env, jclass cls);
@@ -33,14 +43,14 @@ jobject NewJNIObject(JNIEnv* env, const char* class_name, const char* sig, ...);
 // Retrieve primitive reference values
 bool GetJNIBoolRef(JNIEnv* env, jobject jboolRef);
 int GetJNIIntRef(JNIEnv* env, jobject jintRef);
+int64_t GetJNILongRef(JNIEnv* env, jobject jlongRef);
 CefString GetJNIStringRef(JNIEnv* env, jobject jstringRef);
 
 // Set primitive reference values
 void SetJNIBoolRef(JNIEnv* env, jobject jboolRef, bool boolValue);
 void SetJNIIntRef(JNIEnv* env, jobject jintRef, int intValue);
-void SetJNIStringRef(JNIEnv* env,
-                     jobject jstringRef,
-                     const CefString& initValue);
+void SetJNILongRef(JNIEnv* env, jobject jlongRef, int64_t longValue);
+bool SetJNIStringRef(JNIEnv* env, jobject jstringRef, const CefString& initValue);
 
 // Create a new String value.
 jstring NewJNIString(JNIEnv* env, const std::string& str);
@@ -81,11 +91,37 @@ void SetJNIStringMultiMap(JNIEnv* env,
                           jobject jheaderMap,
                           const std::multimap<CefString, CefString>& vals);
 
+void* GetJNIByteBufferData(JNIEnv* env, jobject jbyteBuffer);
+size_t GetJNIByteBufferLength(JNIEnv* env, jobject jbyteBuffer);
+
 CefMessageRouterConfig GetJNIMessageRouterConfig(JNIEnv* env, jobject jConfig);
+
+CefRefPtr<CefValue> GetCefValueFromJNIObject(JNIEnv* env, jobject obj);
+CefRefPtr<CefValue> GetCefValueFromJNIBoolean(JNIEnv* env, const jobject& obj);
+CefRefPtr<CefValue> GetCefValueFromJNIInteger(JNIEnv* env, const jobject& obj);
+CefRefPtr<CefValue> GetCefValueFromJNIDouble(JNIEnv* env, const jobject& obj);
+CefRefPtr<CefValue> GetCefValueFromJNIString(JNIEnv* env, const jobject& obj);
+CefRefPtr<CefValue> GetCefValueFromJNIByteBuffer(JNIEnv* env,
+                                                 const jobject& obj);
+CefRefPtr<CefValue> GetCefValueFromJNIMap(JNIEnv* env, const jobject& obj);
+CefRefPtr<CefValue> GetCefValueFromJNIList(JNIEnv* env, const jobject& obj);
 
 // Create a new JNI error code.
 jobject NewJNIErrorCode(JNIEnv* env, cef_errorcode_t errorCode);
 cef_errorcode_t GetJNIErrorCode(JNIEnv* env, jobject jerrorCode);
+
+jobject NewJNIBoolean(JNIEnv* env, const bool value);
+jobject NewJNIInteger(JNIEnv* env, const int value);
+jobject NewJNIDouble(JNIEnv* env, const double value);
+jobject NewJNIByteBuffer(JNIEnv* env, const void* data, size_t size);
+jobject NewJNIHashMap(JNIEnv* env);
+jobject NewJNIArrayList(JNIEnv* env);
+
+jobject NewJNIObjectFromCefValue(JNIEnv* env, const CefRefPtr<CefValue> value);
+
+jboolean GetJNIBoolean(JNIEnv* env, jobject jbool);
+jint GetJNIInteger(JNIEnv* env, jobject jint);
+jdouble GetJNIDouble(JNIEnv* env, jobject jdouble);
 
 bool GetJNIFieldObject(JNIEnv* env,
                        jclass cls,
@@ -157,10 +193,10 @@ bool GetJNIFieldStaticInt(JNIEnv* env,
 
 // Call a JNI method that returns an int and accepts one int argument.
 bool CallStaticJNIMethodII_V(JNIEnv* env,
-                      jclass cls,
-                      const char* method_name,
-                      int* value,
-                      int arg);
+                             jclass cls,
+                             const char* method_name,
+                             int* value,
+                             int arg);
 
 // Call a JNI method that returns an int and accepts no arguments.
 bool CallJNIMethodI_V(JNIEnv* env,

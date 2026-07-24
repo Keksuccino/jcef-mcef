@@ -50,6 +50,41 @@ class CefDownloadItem_N extends CefNativeAdapter implements CefDownloadItem {
     }
 
     @Override
+    public boolean isInterrupted() {
+        try {
+            return N_IsInterrupted(getNativeRef(null));
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+        return false;
+    }
+
+    @Override
+    public boolean isPaused() {
+        try {
+            return N_IsPaused(getNativeRef(null));
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+        return false;
+    }
+
+    @Override
+    public DownloadInterruptReason getInterruptReason() {
+        return DownloadInterruptReason.fromValue(getInterruptReasonValue());
+    }
+
+    @Override
+    public int getInterruptReasonValue() {
+        try {
+            return N_GetInterruptReason(getNativeRef(null));
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+        return DownloadInterruptReason.CEF_DOWNLOAD_INTERRUPT_REASON_NONE.getValue();
+    }
+
+    @Override
     public long getCurrentSpeed() {
         try {
             return N_GetCurrentSpeed(getNativeRef(null));
@@ -66,7 +101,7 @@ class CefDownloadItem_N extends CefNativeAdapter implements CefDownloadItem {
         } catch (UnsatisfiedLinkError ule) {
             ule.printStackTrace();
         }
-        return 0;
+        return -1;
     }
 
     @Override
@@ -126,13 +161,23 @@ class CefDownloadItem_N extends CefNativeAdapter implements CefDownloadItem {
         } catch (UnsatisfiedLinkError ule) {
             ule.printStackTrace();
         }
-        return 0;
+        return -1;
     }
 
     @Override
     public String getURL() {
         try {
             return N_GetURL(getNativeRef(null));
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+        return null;
+    }
+
+    @Override
+    public String getOriginalURL() {
+        try {
+            return N_GetOriginalURL(getNativeRef(null));
         } catch (UnsatisfiedLinkError ule) {
             ule.printStackTrace();
         }
@@ -173,6 +218,9 @@ class CefDownloadItem_N extends CefNativeAdapter implements CefDownloadItem {
     private final native boolean N_IsInProgress(long self);
     private final native boolean N_IsComplete(long self);
     private final native boolean N_IsCanceled(long self);
+    private final native boolean N_IsInterrupted(long self);
+    private final native boolean N_IsPaused(long self);
+    private final native int N_GetInterruptReason(long self);
     private final native long N_GetCurrentSpeed(long self);
     private final native int N_GetPercentComplete(long self);
     private final native long N_GetTotalBytes(long self);
@@ -182,6 +230,7 @@ class CefDownloadItem_N extends CefNativeAdapter implements CefDownloadItem {
     private final native String N_GetFullPath(long self);
     private final native int N_GetId(long self);
     private final native String N_GetURL(long self);
+    private final native String N_GetOriginalURL(long self);
     private final native String N_GetSuggestedFileName(long self);
     private final native String N_GetContentDisposition(long self);
     private final native String N_GetMimeType(long self);

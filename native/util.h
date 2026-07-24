@@ -16,10 +16,6 @@
 #include "include/cef_browser.h"
 #include "include/cef_task.h"
 
-#if defined(OS_LINUX)
-#include "critical_wait.h"
-#endif
-
 #endif  // USING_JAVA
 
 #if defined(OS_WIN)
@@ -49,18 +45,6 @@
 #endif
 
 #endif  // !OS_WIN
-
-#if defined(OS_MACOSX)
-
-// due a missing export definition within Java 7u40 (and prior)
-// for Mac OS X, we have to redefine JNIEXPORT.
-// Otherwise the JNI function names wouldn't be exported to libjcef
-#ifdef JNIEXPORT
-#undef JNIEXPORT
-#define JNIEXPORT __attribute__((visibility("default")))
-#endif  // JNIEXPORT
-
-#endif  // OS_MACOSX
 
 #define REQUIRE_UI_THREAD() ASSERT(CefCurrentlyOn(TID_UI));
 #define REQUIRE_IO_THREAD() ASSERT(CefCurrentlyOn(TID_IO));
@@ -93,7 +77,24 @@ void AddCefBrowser(CefRefPtr<CefBrowser> browser);
 // Called by CefBrowser.close(true) to destroy the native browser window.
 void DestroyCefBrowser(CefRefPtr<CefBrowser> browser);
 
-#if !defined(OS_MACOSX)
+#if defined(OS_MACOSX)
+
+// Set the parent of |browserHandle|. If the parent is nullptr the browser will
+// be parented to the TempWindow.
+void SetParent(CefWindowHandle browserHandle,
+               jlong parentHandle,
+               base::OnceClosure callback);
+
+#else  // !defined(OS_MACOSX)
+
+// Return the window handle for the specified canvas.
+CefWindowHandle GetWindowHandle(JNIEnv* env, jobject canvas);
+
+// Set the parent of |browserHandle|. If the parent is nullptr the browser will
+// be parented to the TempWindow.
+void SetParent(CefWindowHandle browserHandle,
+               CefWindowHandle parentHandle,
+               base::OnceClosure callback);
 
 // Set the window bounds for |browserHandle|.
 void SetWindowBounds(CefWindowHandle browserHandle, const CefRect& contentRect);

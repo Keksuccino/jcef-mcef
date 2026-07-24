@@ -8,6 +8,7 @@
 
 #include "jni_scoped_helpers.h"
 #include "jni_util.h"
+#include "string_visitor.h"
 
 namespace {
 
@@ -27,14 +28,14 @@ JNIEXPORT void JNICALL Java_org_cef_browser_CefFrame_1N_N_1Dispose(JNIEnv* env,
   ClearSelf(env, obj);
 }
 
-JNIEXPORT jlong JNICALL
+JNIEXPORT jstring JNICALL
 Java_org_cef_browser_CefFrame_1N_N_1GetIdentifier(JNIEnv* env,
                                                   jobject obj,
                                                   jlong self) {
   CefRefPtr<CefFrame> frame = GetSelf(self);
   if (!frame)
-    return (jlong)-1;
-  return (jlong)frame->GetIdentifier();
+    return nullptr;
+  return NewJNIString(env, frame->GetIdentifier());
 }
 
 JNIEXPORT jstring JNICALL
@@ -101,6 +102,79 @@ Java_org_cef_browser_CefFrame_1N_N_1GetParent(JNIEnv* env,
   return jparent.Release();
 }
 
+JNIEXPORT jobject JNICALL
+Java_org_cef_browser_CefFrame_1N_N_1GetBrowser(JNIEnv* env,
+                                               jobject obj,
+                                               jlong self) {
+  CefRefPtr<CefFrame> frame = GetSelf(self);
+  if (!frame)
+    return nullptr;
+  CefRefPtr<CefBrowser> browser = frame->GetBrowser();
+  if (!browser)
+    return nullptr;
+  ScopedJNIBrowser jbrowser(env, browser);
+  return jbrowser.Release();
+}
+
+JNIEXPORT void JNICALL
+Java_org_cef_browser_CefFrame_1N_N_1ViewSource(JNIEnv* env,
+                                               jobject obj,
+                                               jlong self) {
+  CefRefPtr<CefFrame> frame = GetSelf(self);
+  if (!frame)
+    return;
+  frame->ViewSource();
+}
+
+JNIEXPORT void JNICALL
+Java_org_cef_browser_CefFrame_1N_N_1GetSource(JNIEnv* env,
+                                              jobject obj,
+                                              jlong self,
+                                              jobject jvisitor) {
+  CefRefPtr<CefFrame> frame = GetSelf(self);
+  if (!frame || !jvisitor)
+    return;
+  frame->GetSource(new StringVisitor(env, jvisitor));
+}
+
+JNIEXPORT void JNICALL
+Java_org_cef_browser_CefFrame_1N_N_1GetText(JNIEnv* env,
+                                            jobject obj,
+                                            jlong self,
+                                            jobject jvisitor) {
+  CefRefPtr<CefFrame> frame = GetSelf(self);
+  if (!frame || !jvisitor)
+    return;
+  frame->GetText(new StringVisitor(env, jvisitor));
+}
+
+JNIEXPORT void JNICALL
+Java_org_cef_browser_CefFrame_1N_N_1LoadRequest(JNIEnv* env,
+                                                jobject obj,
+                                                jlong self,
+                                                jobject jrequest) {
+  CefRefPtr<CefFrame> frame = GetSelf(self);
+  if (!frame || !jrequest)
+    return;
+  ScopedJNIRequest requestObj(env);
+  requestObj.SetHandle(jrequest, false /* should_delete */);
+  CefRefPtr<CefRequest> request = requestObj.GetCefObject();
+  if (!request)
+    return;
+  frame->LoadRequest(request);
+}
+
+JNIEXPORT void JNICALL
+Java_org_cef_browser_CefFrame_1N_N_1LoadURL(JNIEnv* env,
+                                            jobject obj,
+                                            jlong self,
+                                            jstring url) {
+  CefRefPtr<CefFrame> frame = GetSelf(self);
+  if (!frame || !url)
+    return;
+  frame->LoadURL(GetJNIString(env, url));
+}
+
 JNIEXPORT void JNICALL
 Java_org_cef_browser_CefFrame_1N_N_1ExecuteJavaScript(JNIEnv* env,
                                                       jobject obj,
@@ -163,4 +237,36 @@ JNIEXPORT void JNICALL Java_org_cef_browser_CefFrame_1N_N_1Paste(JNIEnv* env,
     return;
 
   frame->Paste();
+}
+
+JNIEXPORT void JNICALL
+Java_org_cef_browser_CefFrame_1N_N_1PasteAndMatchStyle(JNIEnv* env,
+                                                       jobject obj,
+                                                       jlong self) {
+  CefRefPtr<CefFrame> frame = GetSelf(self);
+  if (!frame)
+    return;
+
+  frame->PasteAndMatchStyle();
+}
+
+JNIEXPORT void JNICALL Java_org_cef_browser_CefFrame_1N_N_1Delete(JNIEnv* env,
+                                                                  jobject obj,
+                                                                  jlong self) {
+  CefRefPtr<CefFrame> frame = GetSelf(self);
+  if (!frame)
+    return;
+
+  frame->Delete();
+}
+
+JNIEXPORT void JNICALL
+Java_org_cef_browser_CefFrame_1N_N_1SelectAll(JNIEnv* env,
+                                              jobject obj,
+                                              jlong self) {
+  CefRefPtr<CefFrame> frame = GetSelf(self);
+  if (!frame)
+    return;
+
+  frame->SelectAll();
 }

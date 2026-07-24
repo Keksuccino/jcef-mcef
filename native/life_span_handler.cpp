@@ -14,6 +14,7 @@ LifeSpanHandler::LifeSpanHandler(JNIEnv* env, jobject handler)
 // TODO(JCEF): Expose all parameters.
 bool LifeSpanHandler::OnBeforePopup(CefRefPtr<CefBrowser> browser,
                                     CefRefPtr<CefFrame> frame,
+                                    int popup_id,
                                     const CefString& target_url,
                                     const CefString& target_frame_name,
                                     WindowOpenDisposition target_disposition,
@@ -66,8 +67,14 @@ void LifeSpanHandler::OnAfterCreated(CefRefPtr<CefBrowser> browser) {
   // Add a reference to |browser| that will be released in
   // LifeSpanHandler::OnBeforeClose.
   if (SetCefForJNIObject(env, jbrowser, browser.get(), "CefBrowser")) {
+    // Creation is not complete when CefBrowserHost merely accepts the request.
+    // Publish success only after this Java wrapper owns the native reference so
+    // callers cannot issue JNI browser commands into the binding gap.
+    JNI_CALL_VOID_METHOD(env, jbrowser, "notifyBrowserCreated", "()V");
     JNI_CALL_VOID_METHOD(env, handle_, "onAfterCreated",
                          "(Lorg/cef/browser/CefBrowser;)V", jbrowser);
+  } else {
+    JNI_CALL_VOID_METHOD(env, jbrowser, "notifyBrowserCreationFailed", "()V");
   }
 
   // Release the global ref added in CefBrowser_N::create.

@@ -7,6 +7,7 @@
 
 #include "jni_scoped_helpers.h"
 #include "jni_util.h"
+#include "network_jni_util.h"
 
 namespace {
 
@@ -39,7 +40,7 @@ Java_org_cef_network_CefRequest_1N_N_1GetIdentifier(JNIEnv* env,
   CefRefPtr<CefRequest> request = GetSelf(self);
   if (!request)
     return 0;
-  return (jlong)request->GetIdentifier();
+  return SaturateUInt64ToJLong(request->GetIdentifier());
 }
 
 JNIEXPORT jboolean JNICALL
@@ -126,8 +127,12 @@ Java_org_cef_network_CefRequest_1N_N_1SetReferrer(JNIEnv* env,
       policy = REFERRER_POLICY_NO_REFERRER;
     } else if (IsJNIEnumValue(env, jpolicy,
                               "org/cef/network/CefRequest$ReferrerPolicy",
+                              "REFERRER_POLICY_NUM_VALUES")) {
+      policy = REFERRER_POLICY_NUM_VALUES;
+    } else if (IsJNIEnumValue(env, jpolicy,
+                              "org/cef/network/CefRequest$ReferrerPolicy",
                               "REFERRER_POLICY_LAST_VALUE")) {
-      policy = REFERRER_POLICY_LAST_VALUE;
+      policy = REFERRER_POLICY_NUM_VALUES;
     }
   }
 
@@ -180,8 +185,6 @@ Java_org_cef_network_CefRequest_1N_N_1GetReferrerPolicy(JNIEnv* env,
           result);
       JNI_CASE(env, "org/cef/network/CefRequest$ReferrerPolicy",
                REFERRER_POLICY_NO_REFERRER, result);
-      // REFERRER_POLICY_LAST_VALUE equals REFERRER_POLICY_NO_REFERRER as of CEF
-      // 3683
   }
   return result;
 }
@@ -288,6 +291,32 @@ Java_org_cef_network_CefRequest_1N_N_1SetHeaderMap(JNIEnv* env,
   request->SetHeaderMap(headerMap);
 }
 
+JNIEXPORT jobjectArray JNICALL
+Java_org_cef_network_CefRequest_1N_N_1GetHeaderList(JNIEnv* env,
+                                                    jobject obj,
+                                                    jlong self) {
+  CefRefPtr<CefRequest> request = GetSelf(self);
+  if (!request)
+    return nullptr;
+  CefRequest::HeaderMap header_map;
+  request->GetHeaderMap(header_map);
+  return NewJNIHeaderPairs(env, header_map);
+}
+
+JNIEXPORT void JNICALL Java_org_cef_network_CefRequest_1N_N_1SetHeaderList(
+    JNIEnv* env,
+    jobject obj,
+    jlong self,
+    jobjectArray jheader_pairs) {
+  CefRefPtr<CefRequest> request = GetSelf(self);
+  if (!request)
+    return;
+  CefRequest::HeaderMap header_map;
+  if (!GetJNIHeaderPairs(env, jheader_pairs, header_map))
+    return;
+  request->SetHeaderMap(header_map);
+}
+
 JNIEXPORT void JNICALL
 Java_org_cef_network_CefRequest_1N_N_1Set(JNIEnv* env,
                                           jobject obj,
@@ -302,8 +331,6 @@ Java_org_cef_network_CefRequest_1N_N_1Set(JNIEnv* env,
 
   CefRequest::HeaderMap headerMap;
   GetJNIStringMultiMap(env, jheaderMap, headerMap);
-  request->SetHeaderMap(headerMap);
-
   ScopedJNIPostData postDataObj(env);
   if (jpostData) {
     postDataObj.SetHandle(jpostData, false /* should_delete */);
@@ -311,6 +338,28 @@ Java_org_cef_network_CefRequest_1N_N_1Set(JNIEnv* env,
 
   request->Set(GetJNIString(env, jurl), GetJNIString(env, jmethod),
                postDataObj.GetCefObject(), headerMap);
+}
+
+JNIEXPORT void JNICALL Java_org_cef_network_CefRequest_1N_N_1SetWithHeaderList(
+    JNIEnv* env,
+    jobject obj,
+    jlong self,
+    jstring jurl,
+    jstring jmethod,
+    jobject jpost_data,
+    jobjectArray jheader_pairs) {
+  CefRefPtr<CefRequest> request = GetSelf(self);
+  if (!request)
+    return;
+
+  CefRequest::HeaderMap header_map;
+  if (!GetJNIHeaderPairs(env, jheader_pairs, header_map))
+    return;
+  ScopedJNIPostData post_data(env);
+  if (jpost_data)
+    post_data.SetHandle(jpost_data, false /* should_delete */);
+  request->Set(GetJNIString(env, jurl), GetJNIString(env, jmethod),
+               post_data.GetCefObject(), header_map);
 }
 
 JNIEXPORT jint JNICALL
@@ -331,7 +380,8 @@ Java_org_cef_network_CefRequest_1N_N_1SetFlags(JNIEnv* env,
   CefRefPtr<CefRequest> request = GetSelf(self);
   if (!request)
     return;
-  request->SetFlags((int)jflags);
+  static_assert(sizeof(jint) == sizeof(int));
+  request->SetFlags(static_cast<int>(jflags));
 }
 
 JNIEXPORT jstring JNICALL
@@ -399,17 +449,18 @@ Java_org_cef_network_CefRequest_1N_N_1GetResourceType(JNIEnv* env,
              RT_NAVIGATION_PRELOAD_MAIN_FRAME, result);
     JNI_CASE(env, "org/cef/network/CefRequest$ResourceType",
              RT_NAVIGATION_PRELOAD_SUB_FRAME, result);
+    JNI_CASE(env, "org/cef/network/CefRequest$ResourceType", RT_NUM_VALUES,
+             result);
   }
   return result;
 }
 
-JNIEXPORT jobject JNICALL
-Java_org_cef_network_CefRequest_1N_N_1GetTransitionType(JNIEnv* env,
-                                                        jobject obj,
-                                                        jlong self) {
+JNIEXPORT jint JNICALL
+Java_org_cef_network_CefRequest_1N_N_1GetTransitionTypeValue(JNIEnv* env,
+                                                             jobject obj,
+                                                             jlong self) {
   CefRefPtr<CefRequest> request = GetSelf(self);
   if (!request)
-    return nullptr;
-  ScopedJNITransitionType type(env, request->GetTransitionType());
-  return type.Release();
+    return CefTransitionToJInt(TT_EXPLICIT);
+  return CefTransitionToJInt(request->GetTransitionType());
 }

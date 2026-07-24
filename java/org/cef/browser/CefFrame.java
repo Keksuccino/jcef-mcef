@@ -4,21 +4,31 @@
 
 package org.cef.browser;
 
+import org.cef.callback.CefStringVisitor;
+import org.cef.network.CefRequest;
+
+import java.util.Objects;
+
 /**
  * Interface representing a frame.
+ *
+ * <p>Native-backed JCEF frames exist in the browser process and their operations may be called on
+ * any thread. A Java wrapper can outlive its attachment to the underlying browser frame, so callers
+ * should check {@link #isValid()} before invoking operations that modify frame state.
  */
 public interface CefFrame {
     /**
-     * Removes the native reference from an unused object.
+     * Removes the native reference from an unused object. The caller must not race this method
+     * against another operation on the same Java wrapper.
      */
     void dispose();
 
     /**
-     * Returns the globally unique identifier for this frame or < 0 if the
+     * Returns the globally unique identifier for this frame or an empty string if the
      * underlying frame does not yet exist.
      * @return The frame identifier
      */
-    long getIdentifier();
+    String getIdentifier();
 
     /**
      * Emits the URL currently loaded in this frame.
@@ -62,6 +72,82 @@ public interface CefFrame {
     CefFrame getParent();
 
     /**
+     * Returns the browser that this frame belongs to. Native popup browsers that do not have a
+     * corresponding Java browser object will return {@code null}.
+     *
+     * @return The browser that owns this frame, or {@code null} if no Java browser object exists.
+     * @throws UnsupportedOperationException if the implementation does not support this operation.
+     */
+    default CefBrowser getBrowser() {
+        throw unsupportedOperation("getBrowser");
+    }
+
+    /**
+     * Save this frame's HTML source to a temporary file and open it in the default text viewing
+     * application. This method can only be called from the browser process.
+     *
+     * @throws UnsupportedOperationException if the implementation does not support this operation.
+     */
+    default void viewSource() {
+        throw unsupportedOperation("viewSource");
+    }
+
+    /**
+     * Retrieve this frame's HTML source as a string sent to the specified visitor. The native
+     * bridge retains the visitor until its callback finishes.
+     *
+     * @param visitor Receives the frame source.
+     * @throws NullPointerException if {@code visitor} is {@code null}.
+     * @throws UnsupportedOperationException if the implementation does not support this operation.
+     */
+    default void getSource(CefStringVisitor visitor) {
+        Objects.requireNonNull(visitor, "visitor");
+        throw unsupportedOperation("getSource");
+    }
+
+    /**
+     * Retrieve this frame's display text as a string sent to the specified visitor. The native
+     * bridge retains the visitor until its callback finishes.
+     *
+     * @param visitor Receives the frame text.
+     * @throws NullPointerException if {@code visitor} is {@code null}.
+     * @throws UnsupportedOperationException if the implementation does not support this operation.
+     */
+    default void getText(CefStringVisitor visitor) {
+        Objects.requireNonNull(visitor, "visitor");
+        throw unsupportedOperation("getText");
+    }
+
+    /**
+     * Load the request represented by the request object. The request will be marked read-only
+     * after this call.
+     *
+     * <p>This method will fail with CEF's {@code INVALID_INITIATOR_ORIGIN} bad-IPC reason unless
+     * the frame has first navigated to the request origin using another mechanism such as
+     * {@link #loadURL(String)}.
+     *
+     * @param request The request to load.
+     * @throws NullPointerException if {@code request} is {@code null}.
+     * @throws UnsupportedOperationException if the implementation does not support this operation.
+     */
+    default void loadRequest(CefRequest request) {
+        Objects.requireNonNull(request, "request");
+        throw unsupportedOperation("loadRequest");
+    }
+
+    /**
+     * Load the specified URL in this frame.
+     *
+     * @param url The URL to load.
+     * @throws NullPointerException if {@code url} is {@code null}.
+     * @throws UnsupportedOperationException if the implementation does not support this operation.
+     */
+    default void loadURL(String url) {
+        Objects.requireNonNull(url, "url");
+        throw unsupportedOperation("loadURL");
+    }
+
+    /**
      * Execute a string of JavaScript code in this frame. The url
      * parameter is the URL where the script in question can be found, if any.
      * The renderer may request this URL to show the developer the source of the
@@ -98,4 +184,31 @@ public interface CefFrame {
      * Execute paste in this frame.
      */
     public void paste();
+
+    /**
+     * Execute paste and match style in this frame.
+     *
+     * @throws UnsupportedOperationException if the implementation does not support this operation.
+     */
+    default void pasteAndMatchStyle() {
+        throw unsupportedOperation("pasteAndMatchStyle");
+    }
+
+    /**
+     * Execute delete in this frame.
+     *
+     * @throws UnsupportedOperationException if the implementation does not support this operation.
+     */
+    default void delete() {
+        throw unsupportedOperation("delete");
+    }
+
+    /**
+     * Execute selectAll in this frame.
+     */
+    public void selectAll();
+
+    private static UnsupportedOperationException unsupportedOperation(String operation) {
+        return new UnsupportedOperationException("CefFrame." + operation + " is not supported");
+    }
 }

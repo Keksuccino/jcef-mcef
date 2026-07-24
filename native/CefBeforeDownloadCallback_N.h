@@ -12,12 +12,8 @@ extern "C" {
  * Method:    N_Continue
  * Signature: (JLjava/lang/String;Z)V
  */
-JNIEXPORT void JNICALL
-Java_org_cef_callback_CefBeforeDownloadCallback_1N_N_1Continue(JNIEnv*,
-                                                               jobject,
-                                                               jlong,
-                                                               jstring,
-                                                               jboolean);
+JNIEXPORT void JNICALL Java_org_cef_callback_CefBeforeDownloadCallback_1N_N_1Continue
+  (JNIEnv *, jobject, jlong, jstring, jboolean);
 
 #ifdef __cplusplus
 }

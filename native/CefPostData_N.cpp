@@ -8,6 +8,7 @@
 
 #include "jni_scoped_helpers.h"
 #include "jni_util.h"
+#include "network_jni_util.h"
 
 namespace {
 
@@ -43,6 +44,16 @@ Java_org_cef_network_CefPostData_1N_N_1IsReadOnly(JNIEnv* env,
   return postData->IsReadOnly() ? JNI_TRUE : JNI_FALSE;
 }
 
+JNIEXPORT jboolean JNICALL
+Java_org_cef_network_CefPostData_1N_N_1HasExcludedElements(JNIEnv* env,
+                                                           jobject obj,
+                                                           jlong self) {
+  CefRefPtr<CefPostData> postData = GetSelf(self);
+  if (!postData)
+    return JNI_FALSE;
+  return postData->HasExcludedElements() ? JNI_TRUE : JNI_FALSE;
+}
+
 JNIEXPORT jint JNICALL
 Java_org_cef_network_CefPostData_1N_N_1GetElementCount(JNIEnv* env,
                                                        jobject obj,
@@ -50,7 +61,7 @@ Java_org_cef_network_CefPostData_1N_N_1GetElementCount(JNIEnv* env,
   CefRefPtr<CefPostData> postData = GetSelf(self);
   if (!postData)
     return 0;
-  return (jint)postData->GetElementCount();
+  return SaturateSizeToJInt(postData->GetElementCount());
 }
 
 JNIEXPORT void JNICALL

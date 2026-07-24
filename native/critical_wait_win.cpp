@@ -42,7 +42,7 @@ bool CriticalWait::Wait(unsigned int maxWaitMs) {
   lock_->Unlock();
   DWORD result = WaitForSingleObject(cond_, (DWORD)maxWaitMs);
   lock_->Lock();
-  return result != WAIT_FAILED;
+  return result == WAIT_OBJECT_0;
 }
 
 void CriticalWait::WakeUp() {

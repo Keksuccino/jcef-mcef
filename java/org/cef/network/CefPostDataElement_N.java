@@ -72,6 +72,7 @@ class CefPostDataElement_N extends CefPostDataElement implements CefNative {
 
     @Override
     public void setToBytes(int size, byte[] bytes) {
+        validateByteRange(size, bytes);
         try {
             N_SetToBytes(N_CefHandle, size, bytes);
         } catch (UnsatisfiedLinkError ule) {
@@ -111,6 +112,7 @@ class CefPostDataElement_N extends CefPostDataElement implements CefNative {
 
     @Override
     public int getBytes(int size, byte[] bytes) {
+        validateByteRange(size, bytes);
         try {
             return N_GetBytes(N_CefHandle, size, bytes);
         } catch (UnsatisfiedLinkError ule) {

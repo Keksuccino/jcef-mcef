@@ -28,7 +28,6 @@ void LoadHandler::OnLoadingStateChange(CefRefPtr<CefBrowser> browser,
                        (canGoForward ? JNI_TRUE : JNI_FALSE));
 }
 
-// TODO(jcef): Expose the |transition_type| argument.
 void LoadHandler::OnLoadStart(CefRefPtr<CefBrowser> browser,
                               CefRefPtr<CefFrame> frame,
                               TransitionType transition_type) {
@@ -39,12 +38,12 @@ void LoadHandler::OnLoadStart(CefRefPtr<CefBrowser> browser,
   ScopedJNIBrowser jbrowser(env, browser);
   ScopedJNIFrame jframe(env, frame);
   jframe.SetTemporary();
-  ScopedJNITransitionType jtransitionType(env, transition_type);
+  ScopedJNITransition jtransition(env, transition_type);
 
   JNI_CALL_VOID_METHOD(env, handle_, "onLoadStart",
                        "(Lorg/cef/browser/CefBrowser;Lorg/cef/browser/"
-                       "CefFrame;Lorg/cef/network/CefRequest$TransitionType;)V",
-                       jbrowser.get(), jframe.get(), jtransitionType.get());
+                       "CefFrame;Lorg/cef/network/CefRequest$Transition;)V",
+                       jbrowser.get(), jframe.get(), jtransition.get());
 }
 
 void LoadHandler::OnLoadEnd(CefRefPtr<CefBrowser> browser,
@@ -76,14 +75,14 @@ void LoadHandler::OnLoadError(CefRefPtr<CefBrowser> browser,
   ScopedJNIBrowser jbrowser(env, browser);
   ScopedJNIFrame jframe(env, frame);
   jframe.SetTemporary();
-  ScopedJNIObjectLocal jErrorCode(env, NewJNIErrorCode(env, errorCode));
   ScopedJNIString jerrorText(env, errorText);
   ScopedJNIString jfailedUrl(env, failedUrl);
 
+  static_assert(sizeof(ErrorCode) == sizeof(jint));
   JNI_CALL_VOID_METHOD(
       env, handle_, "onLoadError",
-      "(Lorg/cef/browser/CefBrowser;Lorg/cef/browser/CefFrame;Lorg/cef/handler/"
-      "CefLoadHandler$ErrorCode;Ljava/lang/String;Ljava/lang/String;)V",
-      jbrowser.get(), jframe.get(), jErrorCode.get(), jerrorText.get(),
-      jfailedUrl.get());
+      "(Lorg/cef/browser/CefBrowser;Lorg/cef/browser/CefFrame;ILjava/lang/"
+      "String;Ljava/lang/String;)V",
+      jbrowser.get(), jframe.get(), static_cast<jint>(errorCode),
+      jerrorText.get(), jfailedUrl.get());
 }

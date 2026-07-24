@@ -4,6 +4,8 @@
 
 package org.cef.network;
 
+import java.util.Objects;
+
 /**
  * Class used to represent a single element in the request post data. The
  * methods of this class may be called on any thread.
@@ -16,6 +18,7 @@ public abstract class CefPostDataElement {
         PDE_TYPE_EMPTY,
         PDE_TYPE_BYTES,
         PDE_TYPE_FILE,
+        PDE_TYPE_NUM_VALUES,
     }
 
     // This CTOR can't be called directly. Call method create() instead.
@@ -81,6 +84,13 @@ public abstract class CefPostDataElement {
      */
     public abstract int getBytes(int size, byte[] bytes);
 
+    static void validateByteRange(int size, byte[] bytes) {
+        Objects.requireNonNull(bytes, "bytes");
+        if (size < 0 || size > bytes.length) {
+            throw new IllegalArgumentException("size must be between 0 and bytes.length");
+        }
+    }
+
     @Override
     public String toString() {
         return toString(null);
@@ -88,10 +98,7 @@ public abstract class CefPostDataElement {
 
     public String toString(String mimeType) {
         int bytesCnt = getBytesCount();
-        byte[] bytes = null;
-        if (bytesCnt > 0) {
-            bytes = new byte[bytesCnt];
-        }
+        byte[] bytes = new byte[bytesCnt];
 
         boolean asText = false;
         if (mimeType != null) {

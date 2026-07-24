@@ -4,10 +4,11 @@
 
 package org.cef.network;
 
-import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
-import java.util.Set;
+import java.util.Objects;
+import java.util.Optional;
 
 /**
  * Class used to represent a web request. The methods of this class may be
@@ -41,6 +42,7 @@ public abstract class CefRequest {
         RT_NAVIGATION_PRELOAD_MAIN_FRAME, //!< A main-frame service worker navigation preload
                                           //!< request.
         RT_NAVIGATION_PRELOAD_SUB_FRAME, //!< A sub-frame service worker navigation preload request.
+        RT_NUM_VALUES,
     }
 
     /**
@@ -62,6 +64,9 @@ public abstract class CefRequest {
          */
         TT_EXPLICIT(1),
 
+        /** User selected a suggestion in the UI. Chrome style only. */
+        TT_AUTO_BOOKMARK(2),
+
         /**
          * Source is a subframe navigation. This is any content that is automatically
          * loaded in a non-toplevel frame. For example, if a page consists of several
@@ -80,6 +85,12 @@ public abstract class CefRequest {
          */
         TT_MANUAL_SUBFRAME(4),
 
+        /** User selected a generated suggestion that did not look like a URL. */
+        TT_GENERATED(5),
+
+        /** Automatically loaded top-level content. Chrome style only. */
+        TT_AUTO_TOPLEVEL(6),
+
         /**
          * Source is a form submission by the user. NOTE: In some situations
          * submitting a form does not result in this transition type. This can happen
@@ -92,20 +103,29 @@ public abstract class CefRequest {
          * the same URL. NOTE: This is distinct from the concept of whether a
          * particular load uses "reload semantics" (i.e. bypasses cached data).
          */
-        TT_RELOAD(8);
+        TT_RELOAD(8),
 
-        private int value;
+        /** User navigated using a non-default replaceable keyword. */
+        TT_KEYWORD(9),
+
+        /** Visit generated for a keyword. */
+        TT_KEYWORD_GENERATED(10),
+
+        /** Sentinel immediately after the last CEF 151 transition source. */
+        TT_NUM_VALUES(11);
+
+        private final int source;
         private TransitionType(int source) {
-            value = source;
+            this.source = source;
         }
 
         /**
-         * Returns the integer representation of this enum, containing the source
-         * and the qualifier as one value.
-         * @return The integer value of the enum with all its qualifiers.
+         * Returns this enum's source value. Enum constants cannot contain per-event qualifiers;
+         * use {@link Transition#getValue()} for the complete source-and-qualifier bitfield.
+         * @return The integer source value.
          */
         public int getValue() {
-            return value;
+            return source;
         }
 
         /**
@@ -113,23 +133,25 @@ public abstract class CefRequest {
          * @return Integer representation of the set source.
          */
         public int getSource() {
-            return (value & 0xFF);
+            return source;
         }
 
         /**
-         * Any of the core values above can be augmented by one or more qualifiers
-         * defined as TransitionFlags.
-         * These qualifiers further define the transition.
+         * @deprecated Enum constants are global singletons and cannot safely carry per-event
+         *         qualifiers. Use {@link #withQualifier(TransitionFlags)} or
+         *         {@link Transition#fromRawValue(int)}.
          */
+        @Deprecated
         public void addQualifier(TransitionFlags flag) {
-            value |= flag.getValue();
+            throw immutableTransitionException();
         }
 
         /**
-         * Add qualifiers as integer value
+         * @deprecated Enum constants are immutable. Use {@link Transition#withQualifiers(int)}.
          */
+        @Deprecated
         public void addQualifiers(int flags) {
-            value |= (flags & 0xFFFFFF00);
+            throw immutableTransitionException();
         }
 
         /**
@@ -137,29 +159,133 @@ public abstract class CefRequest {
          * @return Integer representation of the set qualifiers.
          */
         public int getQualifiers() {
-            return (value & 0xFFFFFF00);
+            return 0;
         }
 
         /**
-         * Removes a qualifier from the enum.
-         * @param The qualifier to be removed.
+         * @deprecated Enum constants are immutable. Use {@link Transition#withoutQualifier}.
          */
+        @Deprecated
         public void removeQualifier(TransitionFlags flag) {
-            value &= ~flag.getValue();
+            throw immutableTransitionException();
         }
 
         /**
          * Tests if a qualifier is set.
          */
         public boolean isSet(TransitionFlags flag) {
-            return (value & flag.getValue()) != 0;
+            Objects.requireNonNull(flag, "flag");
+            return false;
         }
 
         /**
          * Tests if one of the redirect qualifiers is set.
          */
         public boolean isRedirect() {
-            return (value & 0xC0000000) != 0;
+            return false;
+        }
+
+        /** Returns an immutable transition value containing only this source. */
+        public Transition asTransition() {
+            return Transition.fromRawValue(source);
+        }
+
+        /** Returns an immutable transition value containing this source and {@code flag}. */
+        public Transition withQualifier(TransitionFlags flag) {
+            return asTransition().withQualifier(flag);
+        }
+
+        /** Returns the known source for {@code rawValue}, or {@code null} for a future source. */
+        public static TransitionType fromRawValue(int rawValue) {
+            int rawSource = rawValue & Transition.TT_SOURCE_MASK;
+            for (TransitionType type : values()) {
+                if (type.source == rawSource) return type;
+            }
+            return null;
+        }
+
+        private UnsupportedOperationException immutableTransitionException() {
+            return new UnsupportedOperationException(
+                    "TransitionType enum constants are immutable; use CefRequest.Transition");
+        }
+    }
+
+    /**
+     * Immutable raw {@code cef_transition_type_t} value. This representation preserves qualifiers
+     * and future source/qualifier bits without changing shared {@link TransitionType} singletons.
+     */
+    public static final class Transition {
+        public static final int TT_SOURCE_MASK = 0x000000FF;
+        public static final int TT_IS_REDIRECT_MASK = 0xC0000000;
+        public static final int TT_QUALIFIER_MASK = 0xFFFFFF00;
+
+        private final int value_;
+
+        public Transition(int value) {
+            value_ = value;
+        }
+
+        public static Transition fromRawValue(int value) {
+            return new Transition(value);
+        }
+
+        public int getValue() {
+            return value_;
+        }
+
+        public int getSource() {
+            return value_ & TT_SOURCE_MASK;
+        }
+
+        /** Returns the known source enum, or {@code null} when a newer CEF reports a new source. */
+        public TransitionType getType() {
+            return TransitionType.fromRawValue(value_);
+        }
+
+        public Optional<TransitionType> getKnownType() {
+            return Optional.ofNullable(getType());
+        }
+
+        public int getQualifiers() {
+            return value_ & TT_QUALIFIER_MASK;
+        }
+
+        public Transition withQualifier(TransitionFlags flag) {
+            return new Transition(value_ | Objects.requireNonNull(flag, "flag").getValue());
+        }
+
+        /** Adds all qualifier bits from {@code flags}; source bits in {@code flags} are ignored. */
+        public Transition withQualifiers(int flags) {
+            return new Transition(value_ | (flags & TT_QUALIFIER_MASK));
+        }
+
+        public Transition withoutQualifier(TransitionFlags flag) {
+            return new Transition(value_ & ~Objects.requireNonNull(flag, "flag").getValue());
+        }
+
+        public boolean isSet(TransitionFlags flag) {
+            return (value_ & Objects.requireNonNull(flag, "flag").getValue()) != 0;
+        }
+
+        public boolean isRedirect() {
+            return (value_ & TT_IS_REDIRECT_MASK) != 0;
+        }
+
+        @Override
+        public boolean equals(Object object) {
+            return object instanceof Transition && value_ == ((Transition) object).value_;
+        }
+
+        @Override
+        public int hashCode() {
+            return Integer.hashCode(value_);
+        }
+
+        @Override
+        public String toString() {
+            TransitionType type = getType();
+            String source = type == null ? "UNKNOWN_SOURCE(" + getSource() + ")" : type.name();
+            return source + "[raw=0x" + Integer.toHexString(value_) + "]";
         }
     }
 
@@ -175,32 +301,65 @@ public abstract class CefRequest {
         public static final int UR_FLAG_SKIP_CACHE = 1 << 0;
 
         /**
-         * If set user name, password, and cookies may be sent with the request, and
-         * cookies may be saved from the response.
+         * If set the request will fail if it cannot be served from a cache or equivalent local
+         * store.
          */
-        public static final int UR_FLAG_ALLOW_CACHED_CREDENTIALS = 1 << 1;
+        public static final int UR_FLAG_ONLY_FROM_CACHE = 1 << 1;
+
+        /** If set the cache will not be used at all. */
+        public static final int UR_FLAG_DISABLE_CACHE = 1 << 2;
+
+        /**
+         * If set user name, password, and cookies may be sent with the request, and cookies may be
+         * saved from the response.
+         */
+        public static final int UR_FLAG_ALLOW_STORED_CREDENTIALS = 1 << 3;
 
         /**
          * If set upload progress events will be generated when a request has a body.
          */
-        public static final int UR_FLAG_REPORT_UPLOAD_PROGRESS = 1 << 3;
-
-        /**
-         * If set the headers sent and received for the request will be recorded.
-         */
-        public static final int UR_FLAG_REPORT_RAW_HEADERS = 1 << 5;
+        public static final int UR_FLAG_REPORT_UPLOAD_PROGRESS = 1 << 4;
 
         /**
          *  If set the CefURLRequestClient.onDownloadData method will not be called.
          */
-        public static final int UR_FLAG_NO_DOWNLOAD_DATA = 1 << 6;
+        public static final int UR_FLAG_NO_DOWNLOAD_DATA = 1 << 5;
 
         /**
          * If set 5XX redirect errors will be propagated to the observer instead of
          * automatically re-tried. This currently only applies for requests
          * originated in the browser process.
          */
-        public static final int UR_FLAG_NO_RETRY_ON_5XX = 1 << 7;
+        public static final int UR_FLAG_NO_RETRY_ON_5XX = 1 << 6;
+
+        /** If set 3XX responses stop the fetch instead of following the redirect. */
+        public static final int UR_FLAG_STOP_ON_REDIRECT = 1 << 7;
+
+        /** Mask containing every flag defined by CEF 151. */
+        public static final int UR_FLAG_KNOWN_MASK = UR_FLAG_SKIP_CACHE | UR_FLAG_ONLY_FROM_CACHE
+                | UR_FLAG_DISABLE_CACHE | UR_FLAG_ALLOW_STORED_CREDENTIALS
+                | UR_FLAG_REPORT_UPLOAD_PROGRESS | UR_FLAG_NO_DOWNLOAD_DATA
+                | UR_FLAG_NO_RETRY_ON_5XX | UR_FLAG_STOP_ON_REDIRECT;
+
+        /**
+         * @deprecated CEF renamed this behavior. Use {@link #UR_FLAG_ALLOW_STORED_CREDENTIALS}.
+         */
+        @Deprecated
+        public static final int UR_FLAG_ALLOW_CACHED_CREDENTIALS = UR_FLAG_ALLOW_STORED_CREDENTIALS;
+
+        /**
+         * @deprecated CEF no longer exposes raw-header reporting as a request flag. This no-op
+         *         value preserves source compatibility without colliding with a CEF 151 flag.
+         */
+        @Deprecated
+        public static final int UR_FLAG_REPORT_RAW_HEADERS = UR_FLAG_NONE;
+
+        private CefUrlRequestFlags() {}
+
+        /** Returns raw bits not currently defined by CEF 151. */
+        public static int getUnknownFlags(int flags) {
+            return flags & ~UR_FLAG_KNOWN_MASK;
+        }
     }
 
     /**
@@ -218,6 +377,15 @@ public abstract class CefRequest {
          * Used the Forward or Back function to navigate among browsing history.
          */
         TT_FORWARD_BACK_FLAG(0x01000000),
+
+        /** Loaded directly through CreateBrowser, LoadURL or LoadRequest. */
+        TT_DIRECT_LOAD_FLAG(0x02000000),
+
+        /** User navigated to the home page. */
+        TT_HOME_PAGE_FLAG(0x04000000),
+
+        /** Transition originated from an external application. */
+        TT_FROM_API_FLAG(0x08000000),
 
         /**
          * The beginning of a navigation chain.
@@ -317,7 +485,14 @@ public abstract class CefRequest {
         /**
          * Always the last value in this enumeration.
          */
-        REFERRER_POLICY_LAST_VALUE
+        REFERRER_POLICY_NUM_VALUES,
+
+        /**
+         * Historical name for {@link #REFERRER_POLICY_NUM_VALUES}.
+         *
+         * @deprecated Use {@link #REFERRER_POLICY_NUM_VALUES}.
+         */
+        @Deprecated REFERRER_POLICY_LAST_VALUE
     }
 
     // This CTOR can't be called directly. Call method create() instead.
@@ -420,20 +595,40 @@ public abstract class CefRequest {
     public abstract void setHeaderByName(String name, String value, boolean overwrite);
 
     /**
-     * Get the header values.
+     * Get the header values into a map. Duplicate names are collapsed because a Java map can hold
+     * only one value per key. Use {@link #getHeaderList(List)} when duplicate values matter.
      */
     public abstract void getHeaderMap(Map<String, String> headerMap);
 
     /**
-     * Set the header values.
+     * Set the header values from a map. Use {@link #setHeaderList(List)} to set duplicate names.
      */
     public abstract void setHeaderMap(Map<String, String> headerMap);
+
+    /**
+     * Append all header name/value pairs to {@code headerList}. CEF's native multimap determines
+     * global key ordering; values with equivalent names retain their relative order.
+     */
+    public abstract void getHeaderList(List<CefHeader> headerList);
+
+    /**
+     * Set all header name/value pairs. CEF's native multimap determines global key ordering, while
+     * values with equivalent names retain their relative input order.
+     */
+    public abstract void setHeaderList(List<CefHeader> headerList);
 
     /**
      * Set all values at one time.
      */
     public abstract void set(
             String url, String method, CefPostData postData, Map<String, String> headerMap);
+
+    /**
+     * Set all values at one time using headers with duplicate-value ordering as documented by
+     * {@link #setHeaderList(List)}.
+     */
+    public abstract void setWithHeaderList(
+            String url, String method, CefPostData postData, List<CefHeader> headerList);
 
     /**
      * Get the flags used in combination with CefURLRequest. See
@@ -470,28 +665,37 @@ public abstract class CefRequest {
      * process and only applies to requests that represent a main frame or
      * sub-frame navigation.
      */
-    public abstract TransitionType getTransitionType();
+    public TransitionType getTransitionType() {
+        return TransitionType.fromRawValue(getTransitionTypeValue());
+    }
+
+    /** Returns the exact raw {@code cef_transition_type_t}, including future values. */
+    public abstract int getTransitionTypeValue();
+
+    /** Returns the immutable source-and-qualifier representation for this request. */
+    public Transition getTransition() {
+        return Transition.fromRawValue(getTransitionTypeValue());
+    }
 
     @Override
     public String toString() {
         String returnValue = "\nHTTP-Request";
         returnValue += "\n  flags: " + getFlags();
         returnValue += "\n  resourceType: " + getResourceType();
-        returnValue += "\n  transitionType: " + getTransitionType();
+        returnValue += "\n  transitionType: " + getTransition();
         returnValue += "\n  firstPartyForCookies: " + getFirstPartyForCookies();
         returnValue += "\n  referrerURL: " + getReferrerURL();
         returnValue += "\n  referrerPolicy: " + getReferrerPolicy();
         returnValue += "\n    " + getMethod() + " " + getURL() + " HTTP/1.1\n";
 
-        Map<String, String> headerMap = new HashMap<>();
-        getHeaderMap(headerMap);
-        Set<Entry<String, String>> entrySet = headerMap.entrySet();
+        List<CefHeader> headerList = new ArrayList<CefHeader>();
+        getHeaderList(headerList);
         String mimeType = null;
-        for (Entry<String, String> entry : entrySet) {
-            String key = entry.getKey();
-            returnValue += "    " + key + "=" + entry.getValue() + "\n";
+        for (CefHeader header : headerList) {
+            String key = header.getName();
+            returnValue += "    " + key + "=" + header.getValue() + "\n";
             if (key.equals("Content-Type")) {
-                mimeType = entry.getValue();
+                mimeType = header.getValue();
             }
         }
 

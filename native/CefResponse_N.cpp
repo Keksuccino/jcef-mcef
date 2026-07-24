@@ -8,6 +8,7 @@
 
 #include "jni_scoped_helpers.h"
 #include "jni_util.h"
+#include "network_jni_util.h"
 
 namespace {
 
@@ -43,28 +44,27 @@ Java_org_cef_network_CefResponse_1N_N_1IsReadOnly(JNIEnv* env,
   return response->IsReadOnly() ? JNI_TRUE : JNI_FALSE;
 }
 
-JNIEXPORT jobject JNICALL
-Java_org_cef_network_CefResponse_1N_N_1GetError(JNIEnv* env,
-                                                jobject obj,
-                                                jlong self) {
+JNIEXPORT jint JNICALL
+Java_org_cef_network_CefResponse_1N_N_1GetErrorCode(JNIEnv* env,
+                                                    jobject obj,
+                                                    jlong self) {
   CefRefPtr<CefResponse> response = GetSelf(self);
   if (!response)
-    return nullptr;
-  return NewJNIErrorCode(env, response->GetError());
+    return ERR_NONE;
+  static_assert(sizeof(cef_errorcode_t) == sizeof(jint));
+  return static_cast<jint>(response->GetError());
 }
 
 JNIEXPORT void JNICALL
-Java_org_cef_network_CefResponse_1N_N_1SetError(JNIEnv* env,
-                                                jobject obj,
-                                                jlong self,
-                                                jobject jerrorCode) {
+Java_org_cef_network_CefResponse_1N_N_1SetErrorCode(JNIEnv* env,
+                                                    jobject obj,
+                                                    jlong self,
+                                                    jint jerror_code) {
   CefRefPtr<CefResponse> response = GetSelf(self);
   if (!response)
     return;
-
-  if (!jerrorCode)
-    return;
-  response->SetError(GetJNIErrorCode(env, jerrorCode));
+  static_assert(sizeof(cef_errorcode_t) == sizeof(jint));
+  response->SetError(static_cast<cef_errorcode_t>(jerror_code));
 }
 
 JNIEXPORT jint JNICALL
@@ -85,7 +85,8 @@ Java_org_cef_network_CefResponse_1N_N_1SetStatus(JNIEnv* env,
   CefRefPtr<CefResponse> response = GetSelf(self);
   if (!response)
     return;
-  return response->SetStatus(jstatus);
+  static_assert(sizeof(jint) == sizeof(int));
+  response->SetStatus(static_cast<int>(jstatus));
 }
 
 JNIEXPORT jstring JNICALL
@@ -128,6 +129,27 @@ Java_org_cef_network_CefResponse_1N_N_1SetMimeType(JNIEnv* env,
   if (!response)
     return;
   response->SetMimeType(GetJNIString(env, jmimeType));
+}
+
+JNIEXPORT jstring JNICALL
+Java_org_cef_network_CefResponse_1N_N_1GetCharset(JNIEnv* env,
+                                                  jobject obj,
+                                                  jlong self) {
+  CefRefPtr<CefResponse> response = GetSelf(self);
+  if (!response)
+    return nullptr;
+  return NewJNIString(env, response->GetCharset());
+}
+
+JNIEXPORT void JNICALL
+Java_org_cef_network_CefResponse_1N_N_1SetCharset(JNIEnv* env,
+                                                  jobject obj,
+                                                  jlong self,
+                                                  jstring jcharset) {
+  CefRefPtr<CefResponse> response = GetSelf(self);
+  if (!response)
+    return;
+  response->SetCharset(GetJNIString(env, jcharset));
 }
 
 JNIEXPORT jstring JNICALL
@@ -182,4 +204,51 @@ Java_org_cef_network_CefResponse_1N_N_1SetHeaderMap(JNIEnv* env,
   CefResponse::HeaderMap headerMap;
   GetJNIStringMultiMap(env, jheaderMap, headerMap);
   response->SetHeaderMap(headerMap);
+}
+
+JNIEXPORT jobjectArray JNICALL
+Java_org_cef_network_CefResponse_1N_N_1GetHeaderList(JNIEnv* env,
+                                                     jobject obj,
+                                                     jlong self) {
+  CefRefPtr<CefResponse> response = GetSelf(self);
+  if (!response)
+    return nullptr;
+  CefResponse::HeaderMap header_map;
+  response->GetHeaderMap(header_map);
+  return NewJNIHeaderPairs(env, header_map);
+}
+
+JNIEXPORT void JNICALL Java_org_cef_network_CefResponse_1N_N_1SetHeaderList(
+    JNIEnv* env,
+    jobject obj,
+    jlong self,
+    jobjectArray jheader_pairs) {
+  CefRefPtr<CefResponse> response = GetSelf(self);
+  if (!response)
+    return;
+  CefResponse::HeaderMap header_map;
+  if (!GetJNIHeaderPairs(env, jheader_pairs, header_map))
+    return;
+  response->SetHeaderMap(header_map);
+}
+
+JNIEXPORT jstring JNICALL
+Java_org_cef_network_CefResponse_1N_N_1GetURL(JNIEnv* env,
+                                              jobject obj,
+                                              jlong self) {
+  CefRefPtr<CefResponse> response = GetSelf(self);
+  if (!response)
+    return nullptr;
+  return NewJNIString(env, response->GetURL());
+}
+
+JNIEXPORT void JNICALL
+Java_org_cef_network_CefResponse_1N_N_1SetURL(JNIEnv* env,
+                                              jobject obj,
+                                              jlong self,
+                                              jstring jurl) {
+  CefRefPtr<CefResponse> response = GetSelf(self);
+  if (!response)
+    return;
+  response->SetURL(GetJNIString(env, jurl));
 }

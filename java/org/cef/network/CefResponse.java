@@ -6,10 +6,10 @@ package org.cef.network;
 
 import org.cef.handler.CefLoadHandler.ErrorCode;
 
-import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
-import java.util.Set;
+import java.util.Objects;
 
 /**
  * Class used to represent a web response. The methods of this class may be
@@ -43,14 +43,25 @@ public abstract class CefResponse {
     public abstract boolean isReadOnly();
 
     /**
-     * Get the response error code. Returns ERR_NONE if there was no error.
+     * Get the known response error enum, or {@code null} if native CEF reports a newer raw value.
      */
-    public abstract ErrorCode getError();
+    public ErrorCode getError() {
+        return ErrorCode.findByCode(getErrorCode());
+    }
 
     /**
-     * Get the response error code. Returns ERR_NONE if there was no error.
+     * Set the response error code. Use {@link #setErrorCode(int)} when preserving an unknown raw
+     * value.
      */
-    public abstract void setError(ErrorCode errorCode);
+    public void setError(ErrorCode errorCode) {
+        setErrorCode(Objects.requireNonNull(errorCode, "errorCode").getCode());
+    }
+
+    /** Returns the exact raw {@code cef_errorcode_t}, including future values. */
+    public abstract int getErrorCode();
+
+    /** Sets the exact raw {@code cef_errorcode_t}, including future values. */
+    public abstract void setErrorCode(int errorCode);
 
     /**
      * Get the response status code.
@@ -82,6 +93,12 @@ public abstract class CefResponse {
      */
     public abstract void setMimeType(String mimeType);
 
+    /** Get the response charset. */
+    public abstract String getCharset();
+
+    /** Set the response charset. */
+    public abstract void setCharset(String charset);
+
     /**
      * Get the value for the specified response header field. Use getHeaderMap instead if there
      * might be multiple values.
@@ -100,29 +117,50 @@ public abstract class CefResponse {
     public abstract void setHeaderByName(String name, String value, boolean overwrite);
 
     /**
-     * Get all response header fields.
+     * Get response header fields into a map. Duplicate names are collapsed; use
+     * {@link #getHeaderList(List)} when duplicate values matter.
      */
     public abstract void getHeaderMap(Map<String, String> headerMap);
 
     /**
-     * Set all response header fields.
+     * Set response header fields from a map. Use {@link #setHeaderList(List)} for duplicate names.
      */
     public abstract void setHeaderMap(Map<String, String> headerMap);
+
+    /**
+     * Append all response headers. CEF's native multimap determines global key ordering; values
+     * with equivalent names retain their relative order.
+     */
+    public abstract void getHeaderList(List<CefHeader> headerList);
+
+    /**
+     * Set all response headers. CEF's native multimap determines global key ordering, while values
+     * with equivalent names retain their relative input order.
+     */
+    public abstract void setHeaderList(List<CefHeader> headerList);
+
+    /** Get the resolved URL after redirects or HSTS rewriting. */
+    public abstract String getURL();
+
+    /** Set the resolved URL after redirects or HSTS rewriting. */
+    public abstract void setURL(String url);
 
     @Override
     public String toString() {
         String returnValue = "\nHTTP-Response:";
 
-        returnValue += "\n  error: " + getError();
+        int errorCode = getErrorCode();
+        ErrorCode error = ErrorCode.findByCode(errorCode);
+        returnValue += "\n  error: " + (error == null ? errorCode : error);
         returnValue += "\n  readOnly: " + isReadOnly();
         returnValue += "\n    HTTP/1.1 " + getStatus() + " " + getStatusText();
-        returnValue += "\n    Content-Type: " + getMimeType();
+        returnValue += "\n    Content-Type: " + getMimeType() + "; charset=" + getCharset();
+        returnValue += "\n    URL: " + getURL();
 
-        Map<String, String> headerMap = new HashMap<>();
-        getHeaderMap(headerMap);
-        Set<Entry<String, String>> entrySet = headerMap.entrySet();
-        for (Entry<String, String> entry : entrySet) {
-            returnValue += "    " + entry.getKey() + "=" + entry.getValue() + "\n";
+        List<CefHeader> headerList = new ArrayList<CefHeader>();
+        getHeaderList(headerList);
+        for (CefHeader header : headerList) {
+            returnValue += "    " + header.getName() + "=" + header.getValue() + "\n";
         }
 
         return returnValue;

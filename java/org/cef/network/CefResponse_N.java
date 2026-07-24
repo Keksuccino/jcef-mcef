@@ -5,8 +5,8 @@
 package org.cef.network;
 
 import org.cef.callback.CefNative;
-import org.cef.handler.CefLoadHandler.ErrorCode;
 
+import java.util.List;
 import java.util.Map;
 
 class CefResponse_N extends CefResponse implements CefNative {
@@ -56,19 +56,19 @@ class CefResponse_N extends CefResponse implements CefNative {
     }
 
     @Override
-    public ErrorCode getError() {
+    public int getErrorCode() {
         try {
-            return N_GetError(N_CefHandle);
+            return N_GetErrorCode(N_CefHandle);
         } catch (UnsatisfiedLinkError ule) {
             ule.printStackTrace();
         }
-        return null;
+        return 0;
     }
 
     @Override
-    public void setError(ErrorCode errorCode) {
+    public void setErrorCode(int errorCode) {
         try {
-            N_SetError(N_CefHandle, errorCode);
+            N_SetErrorCode(N_CefHandle, errorCode);
         } catch (UnsatisfiedLinkError ule) {
             ule.printStackTrace();
         }
@@ -132,6 +132,25 @@ class CefResponse_N extends CefResponse implements CefNative {
     }
 
     @Override
+    public String getCharset() {
+        try {
+            return N_GetCharset(N_CefHandle);
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+        return null;
+    }
+
+    @Override
+    public void setCharset(String charset) {
+        try {
+            N_SetCharset(N_CefHandle, charset);
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+    }
+
+    @Override
     public String getHeaderByName(String name) {
         try {
             return N_GetHeaderByName(N_CefHandle, name);
@@ -168,20 +187,65 @@ class CefResponse_N extends CefResponse implements CefNative {
         }
     }
 
+    @Override
+    public void getHeaderList(List<CefHeader> headerList) {
+        try {
+            String[] pairs = N_GetHeaderList(N_CefHandle);
+            if (pairs != null) CefHeader.addNativePairs(headerList, pairs);
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+    }
+
+    @Override
+    public void setHeaderList(List<CefHeader> headerList) {
+        String[] pairs = CefHeader.toNativePairs(headerList);
+        try {
+            N_SetHeaderList(N_CefHandle, pairs);
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+    }
+
+    @Override
+    public String getURL() {
+        try {
+            return N_GetURL(N_CefHandle);
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+        return null;
+    }
+
+    @Override
+    public void setURL(String url) {
+        try {
+            N_SetURL(N_CefHandle, url);
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+    }
+
     private final native static CefResponse_N N_Create();
     private final native void N_Dispose(long self);
     private final native boolean N_IsReadOnly(long self);
-    private final native ErrorCode N_GetError(long self);
-    private final native void N_SetError(long self, ErrorCode errorCode);
+    private final native int N_GetErrorCode(long self);
+    private final native void N_SetErrorCode(long self, int errorCode);
     private final native int N_GetStatus(long self);
     private final native void N_SetStatus(long self, int status);
     private final native String N_GetStatusText(long self);
     private final native void N_SetStatusText(long self, String statusText);
     private final native String N_GetMimeType(long self);
     private final native void N_SetMimeType(long self, String mimeType);
+    private final native String N_GetCharset(long self);
+    private final native void N_SetCharset(long self, String charset);
     private final native String N_GetHeaderByName(long self, String name);
     private final native void N_SetHeaderByName(
             long self, String name, String value, boolean overwrite);
     private final native void N_GetHeaderMap(long self, Map<String, String> headerMap);
     private final native void N_SetHeaderMap(long self, Map<String, String> headerMap);
+    private final native String[] N_GetHeaderList(long self);
+    private final native void N_SetHeaderList(long self, String[] headerPairs);
+    private final native String N_GetURL(long self);
+    private final native void N_SetURL(long self, String url);
 }

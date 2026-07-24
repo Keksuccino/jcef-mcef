@@ -58,6 +58,16 @@ class CefPostData_N extends CefPostData implements CefNative {
     }
 
     @Override
+    public boolean hasExcludedElements() {
+        try {
+            return N_HasExcludedElements(N_CefHandle);
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+        return false;
+    }
+
+    @Override
     public int getElementCount() {
         try {
             return N_GetElementCount(N_CefHandle);
@@ -108,6 +118,7 @@ class CefPostData_N extends CefPostData implements CefNative {
     private final native static CefPostData_N N_Create();
     private final native void N_Dispose(long self);
     private final native boolean N_IsReadOnly(long self);
+    private final native boolean N_HasExcludedElements(long self);
     private final native int N_GetElementCount(long self);
     private final native void N_GetElements(long self, Vector<CefPostDataElement> elements);
     private final native boolean N_RemoveElement(long self, CefPostDataElement element);

@@ -33,6 +33,7 @@ public interface CefContextMenuParams {
         CM_MEDIATYPE_IMAGE, //!< An image node is selected.
         CM_MEDIATYPE_VIDEO, //!< A video node is selected.
         CM_MEDIATYPE_AUDIO, //!< An audio node is selected.
+        CM_MEDIATYPE_CANVAS, //!< A canvas node is selected.
         CM_MEDIATYPE_FILE, //!< A file node is selected.
         CM_MEDIATYPE_PLUGIN, //!< A plugin node is selected.
     }
@@ -42,16 +43,31 @@ public interface CefContextMenuParams {
      */
     public static final class MediaStateFlags {
         public final static int CM_MEDIAFLAG_NONE = 0;
-        public final static int CM_MEDIAFLAG_ERROR = 1 << 0;
+        public final static int CM_MEDIAFLAG_IN_ERROR = 1 << 0;
         public final static int CM_MEDIAFLAG_PAUSED = 1 << 1;
         public final static int CM_MEDIAFLAG_MUTED = 1 << 2;
         public final static int CM_MEDIAFLAG_LOOP = 1 << 3;
         public final static int CM_MEDIAFLAG_CAN_SAVE = 1 << 4;
         public final static int CM_MEDIAFLAG_HAS_AUDIO = 1 << 5;
-        public final static int CM_MEDIAFLAG_HAS_VIDEO = 1 << 6;
-        public final static int CM_MEDIAFLAG_CONTROL_ROOT_ELEMENT = 1 << 7;
+        public final static int CM_MEDIAFLAG_CAN_TOGGLE_CONTROLS = 1 << 6;
+        public final static int CM_MEDIAFLAG_CONTROLS = 1 << 7;
         public final static int CM_MEDIAFLAG_CAN_PRINT = 1 << 8;
         public final static int CM_MEDIAFLAG_CAN_ROTATE = 1 << 9;
+        public final static int CM_MEDIAFLAG_CAN_PICTURE_IN_PICTURE = 1 << 10;
+        public final static int CM_MEDIAFLAG_PICTURE_IN_PICTURE = 1 << 11;
+        public final static int CM_MEDIAFLAG_CAN_LOOP = 1 << 12;
+
+        /** @deprecated Use {@link #CM_MEDIAFLAG_IN_ERROR}. */
+        @Deprecated
+        public final static int CM_MEDIAFLAG_ERROR = CM_MEDIAFLAG_IN_ERROR;
+
+        /** @deprecated CEF 151 uses this bit for {@link #CM_MEDIAFLAG_CAN_TOGGLE_CONTROLS}. */
+        @Deprecated
+        public final static int CM_MEDIAFLAG_HAS_VIDEO = CM_MEDIAFLAG_CAN_TOGGLE_CONTROLS;
+
+        /** @deprecated CEF 151 uses this bit for {@link #CM_MEDIAFLAG_CONTROLS}. */
+        @Deprecated
+        public final static int CM_MEDIAFLAG_CONTROL_ROOT_ELEMENT = CM_MEDIAFLAG_CONTROLS;
     }
 
     /**
@@ -67,6 +83,7 @@ public interface CefContextMenuParams {
         public final static int CM_EDITFLAG_CAN_DELETE = 1 << 5;
         public final static int CM_EDITFLAG_CAN_SELECT_ALL = 1 << 6;
         public final static int CM_EDITFLAG_CAN_TRANSLATE = 1 << 7;
+        public final static int CM_EDITFLAG_CAN_EDIT_RICHLY = 1 << 8;
     }
 
     /**
@@ -110,6 +127,11 @@ public interface CefContextMenuParams {
      * non-empty contents.
      */
     boolean hasImageContents();
+
+    /**
+     * Returns the title text, or the alt text when the context menu was invoked on an image.
+     */
+    String getTitleText();
 
     /**
      * Returns the URL of the top level page that the context menu was invoked on.
@@ -177,4 +199,9 @@ public interface CefContextMenuParams {
      * values.
      */
     int getEditStateFlags();
+
+    /**
+     * Returns true if the context menu contains items supplied by the renderer process.
+     */
+    boolean isCustomMenu();
 }

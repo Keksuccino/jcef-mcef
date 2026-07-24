@@ -12,36 +12,256 @@ extern "C" {
  * Method:    N_GetGlobalContext
  * Signature: ()Lorg/cef/browser/CefRequestContext_N;
  */
-JNIEXPORT jobject JNICALL
-Java_org_cef_browser_CefRequestContext_1N_N_1GetGlobalContext(JNIEnv*, jclass);
+JNIEXPORT jobject JNICALL Java_org_cef_browser_CefRequestContext_1N_N_1GetGlobalContext
+  (JNIEnv *, jclass);
 
 /*
  * Class:     org_cef_browser_CefRequestContext_N
  * Method:    N_CreateContext
- * Signature:
- * (Lorg/cef/handler/CefRequestContextHandler;)Lorg/cef/browser/CefRequestContext_N;
+ * Signature: (Lorg/cef/CefRequestContextSettings;Lorg/cef/handler/CefRequestContextHandler;)Lorg/cef/browser/CefRequestContext_N;
  */
-JNIEXPORT jobject JNICALL
-Java_org_cef_browser_CefRequestContext_1N_N_1CreateContext(JNIEnv*,
-                                                           jclass,
-                                                           jobject);
+JNIEXPORT jobject JNICALL Java_org_cef_browser_CefRequestContext_1N_N_1CreateContext
+  (JNIEnv *, jclass, jobject, jobject);
+
+/*
+ * Class:     org_cef_browser_CefRequestContext_N
+ * Method:    N_CreateContextShared
+ * Signature: (Lorg/cef/browser/CefRequestContext;Lorg/cef/handler/CefRequestContextHandler;)Lorg/cef/browser/CefRequestContext_N;
+ */
+JNIEXPORT jobject JNICALL Java_org_cef_browser_CefRequestContext_1N_N_1CreateContextShared
+  (JNIEnv *, jclass, jobject, jobject);
+
+/*
+ * Class:     org_cef_browser_CefRequestContext_N
+ * Method:    N_IsSame
+ * Signature: (Lorg/cef/browser/CefRequestContext;)Z
+ */
+JNIEXPORT jboolean JNICALL Java_org_cef_browser_CefRequestContext_1N_N_1IsSame
+  (JNIEnv *, jobject, jobject);
+
+/*
+ * Class:     org_cef_browser_CefRequestContext_N
+ * Method:    N_IsSharingWith
+ * Signature: (Lorg/cef/browser/CefRequestContext;)Z
+ */
+JNIEXPORT jboolean JNICALL Java_org_cef_browser_CefRequestContext_1N_N_1IsSharingWith
+  (JNIEnv *, jobject, jobject);
 
 /*
  * Class:     org_cef_browser_CefRequestContext_N
  * Method:    N_IsGlobal
  * Signature: ()Z
  */
-JNIEXPORT jboolean JNICALL
-Java_org_cef_browser_CefRequestContext_1N_N_1IsGlobal(JNIEnv*, jobject);
+JNIEXPORT jboolean JNICALL Java_org_cef_browser_CefRequestContext_1N_N_1IsGlobal
+  (JNIEnv *, jobject);
+
+/*
+ * Class:     org_cef_browser_CefRequestContext_N
+ * Method:    N_GetCachePath
+ * Signature: ()Ljava/lang/String;
+ */
+JNIEXPORT jstring JNICALL Java_org_cef_browser_CefRequestContext_1N_N_1GetCachePath
+  (JNIEnv *, jobject);
+
+/*
+ * Class:     org_cef_browser_CefRequestContext_N
+ * Method:    N_GetCookieManager
+ * Signature: (Lorg/cef/callback/CefCompletionCallback;)Lorg/cef/network/CefCookieManager;
+ */
+JNIEXPORT jobject JNICALL Java_org_cef_browser_CefRequestContext_1N_N_1GetCookieManager
+  (JNIEnv *, jobject, jobject);
+
+/*
+ * Class:     org_cef_browser_CefRequestContext_N
+ * Method:    N_RegisterSchemeHandlerFactory
+ * Signature: (Ljava/lang/String;Ljava/lang/String;Lorg/cef/callback/CefSchemeHandlerFactory;)Z
+ */
+JNIEXPORT jboolean JNICALL Java_org_cef_browser_CefRequestContext_1N_N_1RegisterSchemeHandlerFactory
+  (JNIEnv *, jobject, jstring, jstring, jobject);
+
+/*
+ * Class:     org_cef_browser_CefRequestContext_N
+ * Method:    N_ClearSchemeHandlerFactories
+ * Signature: ()Z
+ */
+JNIEXPORT jboolean JNICALL Java_org_cef_browser_CefRequestContext_1N_N_1ClearSchemeHandlerFactories
+  (JNIEnv *, jobject);
+
+/*
+ * Class:     org_cef_browser_CefRequestContext_N
+ * Method:    N_ClearCertificateExceptions
+ * Signature: (Lorg/cef/callback/CefCompletionCallback;)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefRequestContext_1N_N_1ClearCertificateExceptions
+  (JNIEnv *, jobject, jobject);
+
+/*
+ * Class:     org_cef_browser_CefRequestContext_N
+ * Method:    N_ClearHttpCache
+ * Signature: (Lorg/cef/callback/CefCompletionCallback;)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefRequestContext_1N_N_1ClearHttpCache
+  (JNIEnv *, jobject, jobject);
+
+/*
+ * Class:     org_cef_browser_CefRequestContext_N
+ * Method:    N_ClearHttpAuthCredentials
+ * Signature: (Lorg/cef/callback/CefCompletionCallback;)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefRequestContext_1N_N_1ClearHttpAuthCredentials
+  (JNIEnv *, jobject, jobject);
+
+/*
+ * Class:     org_cef_browser_CefRequestContext_N
+ * Method:    N_CloseAllConnections
+ * Signature: (Lorg/cef/callback/CefCompletionCallback;)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefRequestContext_1N_N_1CloseAllConnections
+  (JNIEnv *, jobject, jobject);
+
+/*
+ * Class:     org_cef_browser_CefRequestContext_N
+ * Method:    N_ResolveHost
+ * Signature: (Ljava/lang/String;Lorg/cef/callback/CefResolveCallback;)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefRequestContext_1N_N_1ResolveHost
+  (JNIEnv *, jobject, jstring, jobject);
+
+/*
+ * Class:     org_cef_browser_CefRequestContext_N
+ * Method:    N_GetWebsiteSetting
+ * Signature: (Ljava/lang/String;Ljava/lang/String;I)Ljava/lang/Object;
+ */
+JNIEXPORT jobject JNICALL Java_org_cef_browser_CefRequestContext_1N_N_1GetWebsiteSetting
+  (JNIEnv *, jobject, jstring, jstring, jint);
+
+/*
+ * Class:     org_cef_browser_CefRequestContext_N
+ * Method:    N_SetWebsiteSetting
+ * Signature: (Ljava/lang/String;Ljava/lang/String;ILjava/lang/Object;)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefRequestContext_1N_N_1SetWebsiteSetting
+  (JNIEnv *, jobject, jstring, jstring, jint, jobject);
+
+/*
+ * Class:     org_cef_browser_CefRequestContext_N
+ * Method:    N_GetContentSetting
+ * Signature: (Ljava/lang/String;Ljava/lang/String;I)I
+ */
+JNIEXPORT jint JNICALL Java_org_cef_browser_CefRequestContext_1N_N_1GetContentSetting
+  (JNIEnv *, jobject, jstring, jstring, jint);
+
+/*
+ * Class:     org_cef_browser_CefRequestContext_N
+ * Method:    N_SetContentSetting
+ * Signature: (Ljava/lang/String;Ljava/lang/String;II)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefRequestContext_1N_N_1SetContentSetting
+  (JNIEnv *, jobject, jstring, jstring, jint, jint);
+
+/*
+ * Class:     org_cef_browser_CefRequestContext_N
+ * Method:    N_AddSettingObserver
+ * Signature: (Lorg/cef/browser/CefSettingObserver;)Lorg/cef/browser/CefRegistration;
+ */
+JNIEXPORT jobject JNICALL Java_org_cef_browser_CefRequestContext_1N_N_1AddSettingObserver
+  (JNIEnv *, jobject, jobject);
+
+/*
+ * Class:     org_cef_browser_CefRequestContext_N
+ * Method:    N_SetChromeColorScheme
+ * Signature: (II)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefRequestContext_1N_N_1SetChromeColorScheme
+  (JNIEnv *, jobject, jint, jint);
+
+/*
+ * Class:     org_cef_browser_CefRequestContext_N
+ * Method:    N_GetChromeColorSchemeMode
+ * Signature: ()I
+ */
+JNIEXPORT jint JNICALL Java_org_cef_browser_CefRequestContext_1N_N_1GetChromeColorSchemeMode
+  (JNIEnv *, jobject);
+
+/*
+ * Class:     org_cef_browser_CefRequestContext_N
+ * Method:    N_GetChromeColorSchemeColor
+ * Signature: ()I
+ */
+JNIEXPORT jint JNICALL Java_org_cef_browser_CefRequestContext_1N_N_1GetChromeColorSchemeColor
+  (JNIEnv *, jobject);
+
+/*
+ * Class:     org_cef_browser_CefRequestContext_N
+ * Method:    N_GetChromeColorSchemeVariant
+ * Signature: ()I
+ */
+JNIEXPORT jint JNICALL Java_org_cef_browser_CefRequestContext_1N_N_1GetChromeColorSchemeVariant
+  (JNIEnv *, jobject);
+
+/*
+ * Class:     org_cef_browser_CefRequestContext_N
+ * Method:    N_HasPreference
+ * Signature: (Ljava/lang/String;)Z
+ */
+JNIEXPORT jboolean JNICALL Java_org_cef_browser_CefRequestContext_1N_N_1HasPreference
+  (JNIEnv *, jobject, jstring);
+
+/*
+ * Class:     org_cef_browser_CefRequestContext_N
+ * Method:    N_GetPreference
+ * Signature: (Ljava/lang/String;)Ljava/lang/Object;
+ */
+JNIEXPORT jobject JNICALL Java_org_cef_browser_CefRequestContext_1N_N_1GetPreference
+  (JNIEnv *, jobject, jstring);
+
+/*
+ * Class:     org_cef_browser_CefRequestContext_N
+ * Method:    N_GetAllPreferences
+ * Signature: (Z)Ljava/util/Map;
+ */
+JNIEXPORT jobject JNICALL Java_org_cef_browser_CefRequestContext_1N_N_1GetAllPreferences
+  (JNIEnv *, jobject, jboolean);
+
+/*
+ * Class:     org_cef_browser_CefRequestContext_N
+ * Method:    N_CanSetPreference
+ * Signature: (Ljava/lang/String;)Z
+ */
+JNIEXPORT jboolean JNICALL Java_org_cef_browser_CefRequestContext_1N_N_1CanSetPreference
+  (JNIEnv *, jobject, jstring);
+
+/*
+ * Class:     org_cef_browser_CefRequestContext_N
+ * Method:    N_SetPreference
+ * Signature: (Ljava/lang/String;Ljava/lang/Object;)Ljava/lang/String;
+ */
+JNIEXPORT jstring JNICALL Java_org_cef_browser_CefRequestContext_1N_N_1SetPreference
+  (JNIEnv *, jobject, jstring, jobject);
+
+/*
+ * Class:     org_cef_browser_CefRequestContext_N
+ * Method:    N_RoundTripPreferenceValueForTesting
+ * Signature: (Ljava/lang/Object;)Ljava/lang/Object;
+ */
+JNIEXPORT jobject JNICALL Java_org_cef_browser_CefRequestContext_1N_N_1RoundTripPreferenceValueForTesting
+  (JNIEnv *, jclass, jobject);
+
+/*
+ * Class:     org_cef_browser_CefRequestContext_N
+ * Method:    N_IsPreferenceResetForTesting
+ * Signature: (Ljava/lang/Object;)Z
+ */
+JNIEXPORT jboolean JNICALL Java_org_cef_browser_CefRequestContext_1N_N_1IsPreferenceResetForTesting
+  (JNIEnv *, jclass, jobject);
 
 /*
  * Class:     org_cef_browser_CefRequestContext_N
  * Method:    N_CefRequestContext_DTOR
  * Signature: ()V
  */
-JNIEXPORT void JNICALL
-Java_org_cef_browser_CefRequestContext_1N_N_1CefRequestContext_1DTOR(JNIEnv*,
-                                                                     jobject);
+JNIEXPORT void JNICALL Java_org_cef_browser_CefRequestContext_1N_N_1CefRequestContext_1DTOR
+  (JNIEnv *, jobject);
 
 #ifdef __cplusplus
 }

@@ -15,11 +15,35 @@ import org.cef.callback.CefDownloadItemCallback;
  * This class exists as convenience for creating handler objects.
  */
 public abstract class CefDownloadHandlerAdapter implements CefDownloadHandler {
-    @Override
-    public void onBeforeDownload(CefBrowser browser, CefDownloadItem downloadItem,
-            String suggestedName, CefBeforeDownloadCallback callback) {}
+    private static final ClassValue<Boolean> LEGACY_BEFORE_DOWNLOAD_OVERRIDDEN =
+            new ClassValue<Boolean>() {
+                @Override
+                protected Boolean computeValue(Class<?> type) {
+                    try {
+                        return type.getMethod("onBeforeDownload", CefBrowser.class, CefDownloadItem.class, String.class, CefBeforeDownloadCallback.class).getDeclaringClass() != CefDownloadHandlerAdapter.class;
+                    } catch (NoSuchMethodException exception) {
+                        throw new ExceptionInInitializerError(exception);
+                    }
+                }
+            };
 
     @Override
-    public void onDownloadUpdated(
-            CefBrowser browser, CefDownloadItem downloadItem, CefDownloadItemCallback callback) {}
+    @Deprecated
+    public void onBeforeDownload(CefBrowser browser, CefDownloadItem downloadItem, String suggestedName, CefBeforeDownloadCallback callback) {}
+
+    /**
+     * Preserve callback ownership for subclasses that override the deprecated hook while allowing
+     * a genuinely no-op adapter to select CEF's default behavior.
+     */
+    @Override
+    public boolean onBeforeDownloadWithDecision(CefBrowser browser, CefDownloadItem downloadItem, String suggestedName, CefBeforeDownloadCallback callback) {
+        if (!LEGACY_BEFORE_DOWNLOAD_OVERRIDDEN.get(getClass())) {
+            return false;
+        }
+        onBeforeDownload(browser, downloadItem, suggestedName, callback);
+        return true;
+    }
+
+    @Override
+    public void onDownloadUpdated(CefBrowser browser, CefDownloadItem downloadItem, CefDownloadItemCallback callback) {}
 }

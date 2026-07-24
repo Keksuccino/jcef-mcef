@@ -88,6 +88,16 @@ Java_org_cef_callback_CefContextMenuParams_1N_N_1HasImageContents(JNIEnv* env,
 }
 
 JNIEXPORT jstring JNICALL
+Java_org_cef_callback_CefContextMenuParams_1N_N_1GetTitleText(JNIEnv* env,
+                                                              jobject obj,
+                                                              jlong self) {
+  CefRefPtr<CefContextMenuParams> menu_params = GetSelf(self);
+  if (!menu_params)
+    return nullptr;
+  return NewJNIString(env, menu_params->GetTitleText());
+}
+
+JNIEXPORT jstring JNICALL
 Java_org_cef_callback_CefContextMenuParams_1N_N_1GetPageUrl(JNIEnv* env,
                                                             jobject obj,
                                                             jlong self) {
@@ -136,6 +146,8 @@ Java_org_cef_callback_CefContextMenuParams_1N_N_1GetMediaType(JNIEnv* env,
              CM_MEDIATYPE_VIDEO, result);
     JNI_CASE(env, "org/cef/callback/CefContextMenuParams$MediaType",
              CM_MEDIATYPE_AUDIO, result);
+    JNI_CASE(env, "org/cef/callback/CefContextMenuParams$MediaType",
+             CM_MEDIATYPE_CANVAS, result);
     JNI_CASE(env, "org/cef/callback/CefContextMenuParams$MediaType",
              CM_MEDIATYPE_FILE, result);
     JNI_CASE(env, "org/cef/callback/CefContextMenuParams$MediaType",
@@ -228,4 +240,12 @@ Java_org_cef_callback_CefContextMenuParams_1N_N_1GetEditStateFlags(JNIEnv* env,
   if (!menuParams)
     return 0;
   return (jint)menuParams->GetEditStateFlags();
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_cef_callback_CefContextMenuParams_1N_N_1IsCustomMenu(JNIEnv* env,
+                                                              jobject obj,
+                                                              jlong self) {
+  CefRefPtr<CefContextMenuParams> menu_params = GetSelf(self);
+  return menu_params && menu_params->IsCustomMenu() ? JNI_TRUE : JNI_FALSE;
 }

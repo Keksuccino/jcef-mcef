@@ -7,8 +7,20 @@ package org.cef.callback;
 import org.cef.misc.BoolRef;
 import org.cef.misc.IntRef;
 
+import java.util.Objects;
+
 class CefMenuModel_N extends CefNativeAdapter implements CefMenuModel {
     public CefMenuModel_N() {}
+
+    @Override
+    public boolean isSubMenu() {
+        try {
+            return N_IsSubMenu(getNativeRef(null));
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+        return false;
+    }
 
     @Override
     public boolean clear() {
@@ -157,7 +169,7 @@ class CefMenuModel_N extends CefNativeAdapter implements CefMenuModel {
         } catch (UnsatisfiedLinkError ule) {
             ule.printStackTrace();
         }
-        return 0;
+        return -1;
     }
 
     @Override
@@ -167,7 +179,7 @@ class CefMenuModel_N extends CefNativeAdapter implements CefMenuModel {
         } catch (UnsatisfiedLinkError ule) {
             ule.printStackTrace();
         }
-        return 0;
+        return -1;
     }
 
     @Override
@@ -227,7 +239,7 @@ class CefMenuModel_N extends CefNativeAdapter implements CefMenuModel {
         } catch (UnsatisfiedLinkError ule) {
             ule.printStackTrace();
         }
-        return null;
+        return MenuItemType.MENUITEMTYPE_NONE;
     }
 
     @Override
@@ -237,7 +249,7 @@ class CefMenuModel_N extends CefNativeAdapter implements CefMenuModel {
         } catch (UnsatisfiedLinkError ule) {
             ule.printStackTrace();
         }
-        return null;
+        return MenuItemType.MENUITEMTYPE_NONE;
     }
 
     @Override
@@ -247,7 +259,7 @@ class CefMenuModel_N extends CefNativeAdapter implements CefMenuModel {
         } catch (UnsatisfiedLinkError ule) {
             ule.printStackTrace();
         }
-        return 0;
+        return -1;
     }
 
     @Override
@@ -257,7 +269,7 @@ class CefMenuModel_N extends CefNativeAdapter implements CefMenuModel {
         } catch (UnsatisfiedLinkError ule) {
             ule.printStackTrace();
         }
-        return 0;
+        return -1;
     }
 
     @Override
@@ -508,6 +520,73 @@ class CefMenuModel_N extends CefNativeAdapter implements CefMenuModel {
         return false;
     }
 
+    @Override
+    public boolean setColor(int command_id, MenuColorType color_type, int color) {
+        Objects.requireNonNull(color_type, "color_type");
+        try {
+            return N_SetColor(getNativeRef(null), command_id, color_type.getValue(), color);
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+        return false;
+    }
+
+    @Override
+    public boolean setColorAt(int index, MenuColorType color_type, int color) {
+        Objects.requireNonNull(color_type, "color_type");
+        try {
+            return N_SetColorAt(getNativeRef(null), index, color_type.getValue(), color);
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+        return false;
+    }
+
+    @Override
+    public boolean getColor(int command_id, MenuColorType color_type, IntRef color) {
+        Objects.requireNonNull(color_type, "color_type");
+        Objects.requireNonNull(color, "color");
+        try {
+            return N_GetColor(getNativeRef(null), command_id, color_type.getValue(), color);
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+        return false;
+    }
+
+    @Override
+    public boolean getColorAt(int index, MenuColorType color_type, IntRef color) {
+        Objects.requireNonNull(color_type, "color_type");
+        Objects.requireNonNull(color, "color");
+        try {
+            return N_GetColorAt(getNativeRef(null), index, color_type.getValue(), color);
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+        return false;
+    }
+
+    @Override
+    public boolean setFontList(int command_id, String font_list) {
+        try {
+            return N_SetFontList(getNativeRef(null), command_id, font_list);
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+        return false;
+    }
+
+    @Override
+    public boolean setFontListAt(int index, String font_list) {
+        try {
+            return N_SetFontListAt(getNativeRef(null), index, font_list);
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+        return false;
+    }
+
+    private final native boolean N_IsSubMenu(long self);
     private final native boolean N_Clear(long self);
     private final native int N_GetCount(long self);
     private final native boolean N_AddSeparator(long self);
@@ -565,4 +644,10 @@ class CefMenuModel_N extends CefNativeAdapter implements CefMenuModel {
             BoolRef shift_pressed, BoolRef ctrl_pressed, BoolRef alt_pressed);
     private final native boolean N_GetAcceleratorAt(long self, int index, IntRef key_code,
             BoolRef shift_pressed, BoolRef ctrl_pressed, BoolRef alt_pressed);
+    private final native boolean N_SetColor(long self, int command_id, int color_type, int color);
+    private final native boolean N_SetColorAt(long self, int index, int color_type, int color);
+    private final native boolean N_GetColor(long self, int command_id, int color_type, IntRef color);
+    private final native boolean N_GetColorAt(long self, int index, int color_type, IntRef color);
+    private final native boolean N_SetFontList(long self, int command_id, String font_list);
+    private final native boolean N_SetFontListAt(long self, int index, String font_list);
 }

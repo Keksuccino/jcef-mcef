@@ -49,14 +49,33 @@ class ScopedJNIDownloadItemCallback
 DownloadHandler::DownloadHandler(JNIEnv* env, jobject handler)
     : handle_(env, handler) {}
 
-void DownloadHandler::OnBeforeDownload(
+bool DownloadHandler::CanDownload(CefRefPtr<CefBrowser> browser,
+                                  const CefString& url,
+                                  const CefString& request_method) {
+  ScopedJNIEnv env;
+  if (!env)
+    return true;
+
+  ScopedJNIBrowser jbrowser(env, browser);
+  ScopedJNIString jurl(env, url);
+  ScopedJNIString jrequest_method(env, request_method);
+  jboolean jresult = JNI_TRUE;
+
+  JNI_CALL_BOOLEAN_METHOD(
+      jresult, env, handle_, "canDownload",
+      "(Lorg/cef/browser/CefBrowser;Ljava/lang/String;Ljava/lang/String;)Z",
+      jbrowser.get(), jurl.get(), jrequest_method.get());
+  return jresult != JNI_FALSE;
+}
+
+bool DownloadHandler::OnBeforeDownload(
     CefRefPtr<CefBrowser> browser,
     CefRefPtr<CefDownloadItem> download_item,
     const CefString& suggested_name,
     CefRefPtr<CefBeforeDownloadCallback> callback) {
   ScopedJNIEnv env;
   if (!env)
-    return;
+    return false;
 
   ScopedJNIBrowser jbrowser(env, browser);
   ScopedJNIDownloadItem jdownloadItem(env, download_item);
@@ -64,12 +83,18 @@ void DownloadHandler::OnBeforeDownload(
   ScopedJNIString jsuggestedName(env, suggested_name);
   ScopedJNIBeforeDownloadCallback jcallback(env, callback);
 
-  JNI_CALL_VOID_METHOD(
-      env, handle_, "onBeforeDownload",
+  jboolean jresult = 0;
+
+  JNI_CALL_BOOLEAN_METHOD(
+      jresult, env, handle_, "onBeforeDownloadWithDecision",
       "(Lorg/cef/browser/CefBrowser;Lorg/cef/callback/CefDownloadItem;"
-      "Ljava/lang/String;Lorg/cef/callback/CefBeforeDownloadCallback;)V",
+      "Ljava/lang/String;Lorg/cef/callback/CefBeforeDownloadCallback;)Z",
       jbrowser.get(), jdownloadItem.get(), jsuggestedName.get(),
       jcallback.get());
+
+  if (jresult == JNI_FALSE)
+    jcallback.SetTemporary();
+  return jresult != JNI_FALSE;
 }
 
 void DownloadHandler::OnDownloadUpdated(

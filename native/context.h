@@ -25,6 +25,10 @@ class Context {
   // Returns the singleton instance of this object.
   static Context* GetInstance();
 
+  // Exercises the same Java-to-native CefSettings conversion used by
+  // Initialize without starting a second CEF process during native tests.
+  static int GetLogSeverityForTesting(JNIEnv* env, jobject settings);
+
   bool PreInitialize(JNIEnv* env, jobject c);
   bool Initialize(JNIEnv* env,
                   jobject c,
@@ -33,6 +37,13 @@ class Context {
   void OnContextInitialized();
   void DoMessageLoopWork();
   void Shutdown();
+
+#if defined(OS_MACOSX)
+  // Must be called on the AppKit main thread before CefShutdown. Context itself
+  // is destroyed on the Java lifecycle thread, which is not necessarily the
+  // AppKit thread on macOS.
+  void DestroyTempWindowOnMainThread();
+#endif
 
  private:
   Context();

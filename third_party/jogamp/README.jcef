@@ -1,16 +1,35 @@
 Name: Java™ libraries for 3D Graphics, Multimedia and Processing
 Short Name: jogamp
 URL: http://jogamp.org/
-Version: jogl-2.4-b1506-20200306, gluegen-2.4-b937-20200306
+Version: jogl-2.4.0, gluegen-2.4.0
 License: Mixed (see LICENSE.txt files)
 
 Description:
 This library is used to provide OpenGL bindings. Download the platform 7z
-files from https://jogamp.org/deployment/autobuilds/master/ and extract the
+files from https://jogamp.org/deployment/v2.4.0/jar/ and extract the
 required jar files from the jar/ directory.
 
 See http://jogamp.org/wiki/index.php/Downloading_and_installing_JOGL for
 related documentation.
 
+The matching Linux AArch64 native artifacts are published in JogAmp's official
+2.4.0 Maven repository. Their upstream SHA-1 and locally computed SHA-256 values
+are:
+
+gluegen-rt-natives-linux-aarch64.jar
+  SHA-1:   c90d224d7514e5feda571dfdc96d4b30d3e7e89a
+  SHA-256: ca90ff903029693955ed30e1363f7b60aa6c9b526fe6e43d552d90ab7f0da7dc
+jogl-all-natives-linux-aarch64.jar
+  SHA-1:   099f4b691a719be7a0ca1f909405c0754722561f
+  SHA-256: 4da6e01870a603d6722a7ef81eb5cee537e2f9d93b4f5c8f1c21d2bd07a2a257
+
+JogAmp 2.4.0 and 2.6.0 do not publish Windows ARM64 native jars. Do not
+substitute AMD64 artifacts for that target. The macosx-universal 2.4.0 native
+jars contain both x86_64 and arm64 Mach-O slices.
+
 Local Modifications:
-None.
+Patch OSXUtil.DestroyNSWindow in jogl-all.jar to dispatch via
+RunOnMainThread when called from a background thread, matching how
+CreateNSWindow is already handled. The issue includes a script for
+applying this patch to the original 2.4.0 jar version.
+https://github.com/chromiumembedded/java-cef/issues/514#issuecomment-3825848565

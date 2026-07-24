@@ -1,11 +1,15 @@
 Name: JUnit
 Short Name: junit
-URL: https://junit.org/junit5/
-Version: 5.4.2
-License: Mixed (see LICENSE.txt files in *.jar)
+URL: https://junit.org/
+Version: 6.1.2
+License: EPL-2.0
 
 Description:
 Command-line Java application for launching the JUnit Platform from the console.
+
+Artifact:
+https://repo.maven.apache.org/maven2/org/junit/platform/junit-platform-console-standalone/6.1.2/junit-platform-console-standalone-6.1.2.jar
+SHA-256: 1a80b327b0f3bd536d28aecc857eee6948184eb35889357f5a937507f2c0dbb3
 
 Local Modifications:
 None.

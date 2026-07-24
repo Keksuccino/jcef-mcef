@@ -76,6 +76,10 @@ class CefBrowserOsrPresentationStateTest {
 
             observePaint.set(true);
             browser.setWindowVisibility(true);
+            // CEF stops layout and painting while hidden, so repeat the resize notification after
+            // WasHidden(false). The geometry update above still verifies that resizing while hidden
+            // is safe, while this notification deterministically schedules the resumed frame.
+            browser.notifyResized(RESUMED_WIDTH, RESUMED_HEIGHT);
             browser.notifyScreenInfoChanged();
             browser.invalidate(CefPaintElementType.PET_VIEW);
 
@@ -109,6 +113,10 @@ class CefBrowserOsrPresentationStateTest {
 
         private void resize(int width, int height) {
             updateViewGeometry(0, 0, width, height, new Point(0, 0));
+            notifyResized(width, height);
+        }
+
+        private void notifyResized(int width, int height) {
             wasResized(width, height);
         }
     }

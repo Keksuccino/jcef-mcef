@@ -6,6 +6,7 @@ package tests.junittests;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import static tests.junittests.TestSetupContext.debugPrint;
 
@@ -13,6 +14,7 @@ import org.cef.CefApp;
 import org.cef.CefClient;
 import org.cef.browser.CefBrowser;
 import org.cef.browser.CefFrame;
+import org.cef.browser.CefRequestContext;
 import org.cef.callback.CefAuthCallback;
 import org.cef.callback.CefCallback;
 import org.cef.handler.CefCookieAccessFilter;
@@ -34,6 +36,7 @@ import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.util.HashMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import javax.swing.JFrame;
 
@@ -104,9 +107,18 @@ class TestFrame extends JFrame implements CefLifeSpanHandler, CefLoadHandler, Ce
     }
 
     protected void createBrowser(String startURL) {
+        createBrowser(startURL, null);
+    }
+
+    protected void createBrowser(String startURL, CefRequestContext requestContext) {
         assertNull(browser_);
-        browser_ = client_.createBrowser(startURL, false /* isTransparent */);
+        // The two-argument MCEF overload intentionally creates a headless OSR browser. Integration
+        // tests need the upstream windowed path so AWT realizes the browser and native creation is
+        // triggered by the heavyweight component lifecycle.
+        browser_ = client_.createBrowser(startURL, false /* isOffscreenRendered */,
+                false /* isTransparent */, requestContext);
         assertNotNull(browser_);
+        getContentPane().add(browser_.getUIComponent(), BorderLayout.CENTER);
 
         pack();
         setSize(800, 600);
@@ -135,8 +147,11 @@ class TestFrame extends JFrame implements CefLifeSpanHandler, CefLoadHandler, Ce
     // Block until the test completes.
     public final void awaitCompletion() {
         try {
-            countdown_.await();
+            assertTrue(countdown_.await(30, TimeUnit.SECONDS),
+                    "Timed out waiting for the CEF integration test to complete");
         } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("Interrupted while waiting for the CEF integration test", e);
         }
         if (debugPrint()) System.out.println("awaitCompletion returned");
     }
@@ -242,7 +257,8 @@ class TestFrame extends JFrame implements CefLifeSpanHandler, CefLoadHandler, Ce
     }
 
     @Override
-    public void onRenderProcessTerminated(CefBrowser browser, TerminationStatus status) {}
+    public void onRenderProcessTerminated(
+            CefBrowser browser, TerminationStatus status, int error_code, String error_string) {}
 
     // CefResourceRequestHandler methods:
 

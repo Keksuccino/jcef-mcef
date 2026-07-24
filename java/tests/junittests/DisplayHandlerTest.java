@@ -12,10 +12,9 @@ import org.cef.browser.CefBrowser;
 import org.cef.browser.CefFrame;
 import org.cef.handler.CefDisplayHandlerAdapter;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
 
 // Test the DisplayHandler implementation.
-@ExtendWith(TestSetupExtension.class)
+@NativeCefTest
 class DisplayHandlerTest {
     private final String testUrl_ = "http://test.com/test.html";
     private final String testContent_ =

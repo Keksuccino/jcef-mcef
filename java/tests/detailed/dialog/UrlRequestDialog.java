@@ -167,17 +167,14 @@ public class UrlRequestDialog extends JDialog {
         JPanel flagsPanel = createPanelWithTitle("Flags", 0, 1);
         addRequestFlag(flagsPanel, "Skip cache", CefUrlRequestFlags.UR_FLAG_SKIP_CACHE,
                 "If set the cache will be skipped when handling the request", false);
-        addRequestFlag(flagsPanel, "Allow cached credentials",
-                CefUrlRequestFlags.UR_FLAG_ALLOW_CACHED_CREDENTIALS,
+        addRequestFlag(flagsPanel, "Allow stored credentials",
+                CefUrlRequestFlags.UR_FLAG_ALLOW_STORED_CREDENTIALS,
                 "If set user name, password, and cookies may be sent with the request, "
                         + "and cookies may be saved from the response.",
                 false);
         addRequestFlag(flagsPanel, "Report Upload Progress",
                 CefUrlRequestFlags.UR_FLAG_REPORT_UPLOAD_PROGRESS,
                 "If set upload progress events will be generated when a request has a body", false);
-        addRequestFlag(flagsPanel, "Report RawHeaders",
-                CefUrlRequestFlags.UR_FLAG_REPORT_RAW_HEADERS,
-                "If set the headers sent and received for the request will be recorded", false);
         addRequestFlag(flagsPanel, "No download data", CefUrlRequestFlags.UR_FLAG_NO_DOWNLOAD_DATA,
                 "If set the CefURLRequestClient.onDownloadData method will not be called", false);
         addRequestFlag(flagsPanel, "No retry on 5xx", CefUrlRequestFlags.UR_FLAG_NO_RETRY_ON_5XX,

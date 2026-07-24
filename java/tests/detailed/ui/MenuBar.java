@@ -4,10 +4,9 @@
 
 package tests.detailed.ui;
 
-import org.cef.CefApp;
-import org.cef.CefClient;
 import org.cef.OS;
 import org.cef.browser.CefBrowser;
+import org.cef.browser.CefDevToolsClient;
 import org.cef.callback.CefPdfPrintCallback;
 import org.cef.callback.CefRunFileDialogCallback;
 import org.cef.callback.CefStringVisitor;
@@ -21,12 +20,8 @@ import java.awt.Component;
 import java.awt.Container;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
-import java.awt.Frame;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
-import java.awt.event.ComponentAdapter;
-import java.awt.event.ComponentEvent;
-import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.awt.image.BufferedImage;
 import java.io.File;
@@ -40,10 +35,10 @@ import java.util.concurrent.TimeUnit;
 
 import javax.swing.ImageIcon;
 import javax.swing.JButton;
+import javax.swing.JCheckBoxMenuItem;
 import javax.swing.JFileChooser;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
-import javax.swing.JLayeredPane;
 import javax.swing.JMenu;
 import javax.swing.JMenuBar;
 import javax.swing.JMenuItem;
@@ -55,7 +50,6 @@ import javax.swing.SwingUtilities;
 import tests.detailed.BrowserFrame;
 import tests.detailed.MainFrame;
 import tests.detailed.dialog.CookieManagerDialog;
-import tests.detailed.dialog.DevToolsDialog;
 import tests.detailed.dialog.DownloadDialog;
 import tests.detailed.dialog.SearchDialog;
 import tests.detailed.dialog.ShowTextDialog;
@@ -65,7 +59,7 @@ import tests.detailed.util.DataUri;
 @SuppressWarnings("serial")
 public class MenuBar extends JMenuBar {
     class SaveAs implements CefStringVisitor {
-        private PrintWriter fileWriter_;
+        private final PrintWriter fileWriter_;
 
         public SaveAs(String fName) throws FileNotFoundException, UnsupportedEncodingException {
             fileWriter_ = new PrintWriter(fName, "UTF-8");
@@ -86,6 +80,7 @@ public class MenuBar extends JMenuBar {
     private final DownloadDialog downloadDialog_;
     private final CefCookieManager cookieManager_;
     private boolean reparentPending_ = false;
+    private CefDevToolsClient devToolsClient_;
 
     public MenuBar(MainFrame owner, CefBrowser browser, ControlPanel control_pane,
             DownloadDialog downloadDialog, CefCookieManager cookieManager) {
@@ -369,18 +364,41 @@ public class MenuBar extends JMenuBar {
         showDevTools.addActionListener(new ActionListener() {
             @Override
             public void actionPerformed(ActionEvent e) {
-                DevToolsDialog devToolsDlg = new DevToolsDialog(owner_, "DEV Tools", browser_);
-                devToolsDlg.addComponentListener(new ComponentAdapter() {
-                    @Override
-                    public void componentHidden(ComponentEvent e) {
-                        showDevTools.setEnabled(true);
-                    }
-                });
-                devToolsDlg.setVisible(true);
-                showDevTools.setEnabled(false);
+                browser.openDevTools();
             }
         });
         testMenu.add(showDevTools);
+
+        JMenu devToolsProtocolMenu = new JMenu("DevTools Protocol");
+        JMenuItem autoDarkMode = devToolsProtocolMenu.add(new JCheckBoxMenuItem("Auto Dark Mode"));
+        autoDarkMode.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                // Toggle the auto dark mode override
+                String params = String.format("{ \"enabled\": %s }", autoDarkMode.isSelected());
+                executeDevToolsMethod("Emulation.setAutoDarkModeOverride", params);
+            }
+        });
+        JMenuItem checkContrast = devToolsProtocolMenu.add(new JMenuItem("Check Contrast"));
+        checkContrast.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                // Check contrast, which usually triggers a series of Audits.issueAdded events
+                executeDevToolsMethod("Audits.checkContrast");
+            }
+        });
+        JMenuItem enableCSS = devToolsProtocolMenu.add(new JMenuItem("Enable CSS Agent"));
+        enableCSS.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                // Enable the CSS agent, which usually triggers a series of CSS.styleSheetAdded
+                // events. We can only enable the CSS agent if the DOM agent is enabled first, so we
+                // need to chain the two commands.
+                executeDevToolsMethod("DOM.enable")
+                        .thenCompose(unused -> executeDevToolsMethod("CSS.enable"));
+            }
+        });
+        testMenu.add(devToolsProtocolMenu);
 
         JMenuItem testURLRequest = new JMenuItem("URL Request");
         testURLRequest.addActionListener(new ActionListener() {
@@ -402,11 +420,14 @@ public class MenuBar extends JMenuBar {
                 reparentButton.addActionListener(new ActionListener() {
                     @Override
                     public void actionPerformed(ActionEvent e) {
-                        if (reparentPending_) return;
+                        if (reparentPending_) {
+                            return;
+                        }
                         reparentPending_ = true;
 
                         if (reparentButton.getText().equals("Reparent <")) {
                             owner_.removeBrowser(new Runnable() {
+                                @Override
                                 public void run() {
                                     newFrame.setBrowser(browser_);
                                     reparentButton.setText("Reparent >");
@@ -415,6 +436,7 @@ public class MenuBar extends JMenuBar {
                             });
                         } else {
                             newFrame.removeBrowser(new Runnable() {
+                                @Override
                                 public void run() {
                                     JRootPane rootPane = (JRootPane) owner_.getComponent(0);
                                     Container container = rootPane.getContentPane();
@@ -439,7 +461,7 @@ public class MenuBar extends JMenuBar {
         newwindow.addActionListener(new ActionListener() {
             @Override
             public void actionPerformed(ActionEvent e) {
-                final MainFrame frame = new MainFrame(OS.isLinux(), false, false, null);
+                final MainFrame frame = new MainFrame(OS.isLinux(), false, false, 0, null);
                 frame.setSize(800, 600);
                 frame.setVisible(true);
             }
@@ -509,12 +531,16 @@ public class MenuBar extends JMenuBar {
     }
 
     public void addBookmark(String name, String URL) {
-        if (bookmarkMenu_ == null) return;
+        if (bookmarkMenu_ == null) {
+            return;
+        }
 
         // Test if the bookmark already exists. If yes, update URL
         Component[] entries = bookmarkMenu_.getMenuComponents();
         for (Component itemEntry : entries) {
-            if (!(itemEntry instanceof JMenuItem)) continue;
+            if (!(itemEntry instanceof JMenuItem)) {
+                continue;
+            }
 
             JMenuItem item = (JMenuItem) itemEntry;
             if (item.getText().equals(name)) {
@@ -545,6 +571,26 @@ public class MenuBar extends JMenuBar {
         frame.add(label);
         frame.setVisible(true);
         frame.pack();
+    }
+
+    private CompletableFuture<String> executeDevToolsMethod(String methodName) {
+        return executeDevToolsMethod(methodName, null);
+    }
+
+    private CompletableFuture<String> executeDevToolsMethod(
+            String methodName, String paramsAsJson) {
+        if (devToolsClient_ == null) {
+            devToolsClient_ = browser_.getDevToolsClient();
+            devToolsClient_.addEventListener(
+                    (method, json) -> System.out.println("CDP event " + method + ": " + json));
+        }
+
+        return devToolsClient_.executeDevToolsMethod(methodName, paramsAsJson)
+                .handle((error, json) -> {
+                    System.out.println(
+                            "CDP result of " + methodName + ": " + (error != null ? error : json));
+                    return null;
+                });
     }
 
     public void addBookmarkSeparator() {

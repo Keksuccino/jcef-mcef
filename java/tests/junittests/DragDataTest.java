@@ -11,12 +11,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.cef.callback.CefDragData;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.Vector;
 
 // Test the TestFrame implementation.
-@ExtendWith(TestSetupExtension.class)
+@NativeCefTest
 class DragDataTest {
     @Test
     void createEmpty() {
@@ -56,7 +55,8 @@ class DragDataTest {
         dragData.setLinkTitle(linkTitle);
         assertEquals(linkTitle, dragData.getLinkTitle());
 
-        final String linkMetadata = "something";
+        // CEF 151 parses download metadata as MIME-type:suggested-file-name:URL.
+        final String linkMetadata = "text/plain:test.txt:http://test.com/test.txt";
         dragData.setLinkMetadata(linkMetadata);
         assertEquals(linkMetadata, dragData.getLinkMetadata());
 
@@ -81,11 +81,16 @@ class DragDataTest {
         dragData.addFile(path2, "File 2");
 
         Vector<String> fileNames = new Vector<>();
+        Vector<String> filePaths = new Vector<>();
         assertTrue(dragData.getFileNames(fileNames));
+        assertTrue(dragData.getFilePaths(filePaths));
 
         assertEquals(2, fileNames.size());
-        assertEquals(path1, fileNames.get(0));
-        assertEquals(path2, fileNames.get(1));
+        assertEquals("File 1", fileNames.get(0));
+        assertEquals("File 2", fileNames.get(1));
+        assertEquals(2, filePaths.size());
+        assertEquals(path1, filePaths.get(0));
+        assertEquals(path2, filePaths.get(1));
 
         assertFalse(dragData.isLink());
         assertTrue(dragData.isFile());

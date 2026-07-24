@@ -8,12 +8,15 @@ import static org.junit.jupiter.api.extension.ExtensionContext.Namespace.GLOBAL;
 
 import org.cef.CefApp;
 import org.cef.CefApp.CefAppState;
+import org.cef.CefClient;
 import org.cef.CefSettings;
 import org.cef.handler.CefAppHandlerAdapter;
 import org.junit.jupiter.api.extension.BeforeAllCallback;
+import org.junit.jupiter.api.extension.ExtensionConfigurationException;
 import org.junit.jupiter.api.extension.ExtensionContext;
 
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 // All test cases must install this extension for CEF to be properly initialized
 // and shut down.
@@ -27,16 +30,36 @@ import java.util.concurrent.CountDownLatch;
 //   }
 //
 // This code is based on https://stackoverflow.com/a/51556718.
-public class TestSetupExtension
-        implements BeforeAllCallback, ExtensionContext.Store.CloseableResource {
+public class TestSetupExtension implements BeforeAllCallback, AutoCloseable {
+    private static final long SHUTDOWN_TIMEOUT_SECONDS = 30;
     private static boolean initialized_ = false;
-    private static CountDownLatch countdown_ = new CountDownLatch(1);
+    private static Throwable initializationFailure_ = null;
+
+    private final CountDownLatch shutdownComplete_ = new CountDownLatch(1);
+    private CefApp app_;
+
+    // CefApp initializes native CEF on the first createClient() call. Retaining
+    // this client keeps that initialization alive for native-only tests that do
+    // not create their own browser client.
+    private CefClient bootstrapClient_;
 
     @Override
     public void beforeAll(ExtensionContext context) {
-        if (!initialized_) {
+        synchronized (TestSetupExtension.class) {
+            if (initialized_) {
+                if (initializationFailure_ != null) {
+                    throw new ExtensionConfigurationException("JCEF test initialization previously failed", initializationFailure_);
+                }
+                return;
+            }
+
             initialized_ = true;
-            initialize(context);
+            try {
+                initialize(context);
+            } catch (RuntimeException | Error exception) {
+                initializationFailure_ = exception;
+                throw exception;
+            }
         }
     }
 
@@ -53,8 +76,7 @@ public class TestSetupExtension
 
         // Perform startup initialization on platforms that require it.
         if (!CefApp.startup(null)) {
-            System.out.println("Startup initialization failed!");
-            return;
+            throw new ExtensionConfigurationException("CEF startup initialization failed");
         }
 
         CefApp.addAppHandler(new CefAppHandlerAdapter(null) {
@@ -62,29 +84,44 @@ public class TestSetupExtension
             public void stateHasChanged(org.cef.CefApp.CefAppState state) {
                 if (state == CefAppState.TERMINATED) {
                     // Signal completion of CEF shutdown.
-                    countdown_.countDown();
+                    shutdownComplete_.countDown();
                 }
             }
         });
 
-        // Initialize the singleton CefApp instance.
+        // Creating the singleton alone leaves CEF in NEW state. A retained
+        // client forces synchronous N_Initialize/CefInitialize before any test
+        // can construct a native CEF object such as CefDragData.
         CefSettings settings = new CefSettings();
-        CefApp.getInstance(settings);
+        app_ = CefApp.getInstance(settings);
+        bootstrapClient_ = app_.createClient();
+        if (CefApp.getState() != CefAppState.INITIALIZED) {
+            throw new ExtensionConfigurationException("CEF initialization failed with state " + CefApp.getState());
+        }
     }
 
     // Executed after all tests have completed.
     @Override
-    public void close() {
+    public void close() throws Exception {
         if (TestSetupContext.debugPrint()) {
             System.out.println("TestSetupExtension.close");
         }
 
-        CefApp.getInstance().dispose();
+        if (app_ == null) return;
+        app_.dispose();
 
-        // Wait for CEF shutdown to complete.
+        // Native shutdown normally completes synchronously, while the state
+        // callback is posted to AWT. Keep the wait bounded so a lifecycle
+        // regression cannot hang the test process indefinitely.
         try {
-            countdown_.await();
+            if (!shutdownComplete_.await(SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("Timed out waiting for CEF shutdown after " + SHUTDOWN_TIMEOUT_SECONDS + " seconds; state=" + CefApp.getState());
+            }
         } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while waiting for CEF shutdown", e);
         }
+        bootstrapClient_ = null;
+        app_ = null;
     }
 }

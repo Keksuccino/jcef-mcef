@@ -152,23 +152,33 @@ class PlatformToolingContractTest(unittest.TestCase):
     self.assertIn('%JUNIT_LAUNCHER_CLASS% %CHROMIUM_PROCESS_ARGUMENT% execute', runner)
 
   def test_windows_arm64_browser_process_mitigations_remain_test_only(self):
+    helper = (REPOSITORY_ROOT / 'java' / 'tests' / 'junittests' / 'WindowsArm64TestCommandLine.java').read_text(encoding='utf-8')
     setup = (REPOSITORY_ROOT / 'java' / 'tests' / 'junittests' /
              'TestSetupExtension.java').read_text(encoding='utf-8')
-    self.assertIn(
-        'if (!processType.isEmpty() || !windows || !isArm64Architecture(architecture)) return;',
-        setup)
-    self.assertIn(
-        'WINDOWS_SOFTWARE_UNEXPORTABLE_KEYS_FEATURE = "WebAuthenticationUseInsecureSoftwareUnexportableKeys"',
-        setup)
-    self.assertIn(
-        'WINDOWS_KEY_CREDENTIAL_TELEMETRY_FEATURE = "ReportKeyCredentialManagerSupportWin"',
-        setup)
-    self.assertIn(
-        'appendCommaSeparatedSwitchValue(commandLine, ENABLE_FEATURES_SWITCH, WINDOWS_SOFTWARE_UNEXPORTABLE_KEYS_FEATURE);',
-        setup)
-    self.assertIn(
-        'appendCommaSeparatedSwitchValue(commandLine, DISABLE_FEATURES_SWITCH, WINDOWS_KEY_CREDENTIAL_TELEMETRY_FEATURE);',
-        setup)
+    retry_process = (REPOSITORY_ROOT / 'java' / 'tests' / 'junittests' / 'CefPreInitializationRetryProcess.java').read_text(encoding='utf-8')
+    retry_test = (REPOSITORY_ROOT / 'java' / 'tests' / 'junittests' / 'CefPreInitializationRetryTest.java').read_text(encoding='utf-8')
+    self.assertIn('if (!processType.isEmpty() || !usesMitigations(windows, architecture)) return;', helper)
+    self.assertIn('DISABLE_BEST_EFFORT_TASKS_SWITCH = "--disable-best-effort-tasks"', helper)
+    self.assertIn('WINDOWS_SOFTWARE_UNEXPORTABLE_KEYS_FEATURE = "WebAuthenticationUseInsecureSoftwareUnexportableKeys"', helper)
+    self.assertIn('WINDOWS_KEY_CREDENTIAL_TELEMETRY_FEATURE = "ReportKeyCredentialManagerSupportWin"', helper)
+    self.assertIn('appendCommaSeparatedSwitchValue(commandLine, ENABLE_FEATURES_SWITCH, WINDOWS_SOFTWARE_UNEXPORTABLE_KEYS_FEATURE);', helper)
+    self.assertIn('appendCommaSeparatedSwitchValue(commandLine, DISABLE_FEATURES_SWITCH, WINDOWS_KEY_CREDENTIAL_TELEMETRY_FEATURE);', helper)
+    callback = 'WindowsArm64TestCommandLine.configureBrowserProcess(processType, commandLine);'
+    self.assertIn(callback, setup)
+    self.assertIn(callback, retry_process)
+    early_switch = retry_test.index('WindowsArm64TestCommandLine.appendEarlyProcessSwitch(command);')
+    self.assertIn('setStaticField("appHandler_", null);', retry_process)
+    main_class = retry_test.index('command.add(CefPreInitializationRetryProcess.class.getName());')
+    child_arguments = retry_test.index('Path rootCache =')
+    reset = retry_process.index('resetJavaConstructorState(abandoned);')
+    handler = retry_process.index('CefApp.addAppHandler(retryHandler);')
+    assertion = retry_process.index('assertRetryHandlerInstalled(retryHandler);')
+    retry = retry_process.index('CefApp retried = CefApp.getInstance(settings);')
+    self.assertLess(main_class, early_switch)
+    self.assertLess(early_switch, child_arguments)
+    self.assertLess(reset, handler)
+    self.assertLess(handler, assertion)
+    self.assertLess(assertion, retry)
 
   def test_github_actions_are_pinned_to_immutable_commits(self):
     workflow = (

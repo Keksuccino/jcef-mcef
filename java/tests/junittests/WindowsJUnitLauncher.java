@@ -20,7 +20,7 @@ import java.util.List;
  * keeps that required process token from being rejected as an unknown JUnit option.
  */
 public final class WindowsJUnitLauncher {
-    static final String DISABLE_BEST_EFFORT_TASKS_SWITCH = "--disable-best-effort-tasks";
+    static final String DISABLE_BEST_EFFORT_TASKS_SWITCH = WindowsArm64TestCommandLine.DISABLE_BEST_EFFORT_TASKS_SWITCH;
 
     private WindowsJUnitLauncher() {}
 

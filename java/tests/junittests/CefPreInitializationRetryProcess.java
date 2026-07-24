@@ -8,6 +8,7 @@ import org.cef.CefApp;
 import org.cef.CefClient;
 import org.cef.CefSettings;
 import org.cef.OS;
+import org.cef.callback.CefCommandLine;
 import org.cef.handler.CefAppHandlerAdapter;
 
 import java.lang.reflect.Field;
@@ -29,12 +30,20 @@ public final class CefPreInitializationRetryProcess {
         resetJavaConstructorState(abandoned);
 
         CountDownLatch terminated = new CountDownLatch(1);
-        CefApp.addAppHandler(new CefAppHandlerAdapter(null) {
+        CefAppHandlerAdapter retryHandler = new CefAppHandlerAdapter(null) {
+            @Override
+            public void onBeforeCommandLineProcessing(String processType, CefCommandLine commandLine) {
+                super.onBeforeCommandLineProcessing(processType, commandLine);
+                WindowsArm64TestCommandLine.configureBrowserProcess(processType, commandLine);
+            }
+
             @Override
             public void stateHasChanged(CefApp.CefAppState state) {
                 if (state == CefApp.CefAppState.TERMINATED) terminated.countDown();
             }
-        });
+        };
+        CefApp.addAppHandler(retryHandler);
+        assertRetryHandlerInstalled(retryHandler);
         CefSettings settings = new CefSettings();
         settings.root_cache_path = getRootCachePath(args);
         CefApp retried = CefApp.getInstance(settings);
@@ -85,6 +94,11 @@ public final class CefPreInitializationRetryProcess {
             setStaticField("startupSucceeded_", Boolean.FALSE);
             setStaticField("startupRetryRequired_", Boolean.TRUE);
         }
+    }
+
+    private static void assertRetryHandlerInstalled(CefAppHandlerAdapter retryHandler) throws Exception {
+        if (getField("appHandler_").get(null) != retryHandler)
+            throw new IllegalStateException("Retry command-line handler was discarded after constructor reset");
     }
 
     private static Field getField(String name) throws Exception {

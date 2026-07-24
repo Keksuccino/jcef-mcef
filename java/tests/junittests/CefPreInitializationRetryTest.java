@@ -39,6 +39,7 @@ class CefPreInitializationRetryTest {
         command.add("-cp");
         command.add(ChildProcessSupport.classPathFor(CefPreInitializationRetryProcess.class, CefApp.class));
         command.add(CefPreInitializationRetryProcess.class.getName());
+        WindowsArm64TestCommandLine.appendEarlyProcessSwitch(command);
         Path rootCache = tempDirectory_.resolve("cef-root-cache").toAbsolutePath();
         command.add(CefPreInitializationRetryProcess.ROOT_CACHE_ARGUMENT + rootCache);
         command.add("-ApplePersistenceIgnoreState");

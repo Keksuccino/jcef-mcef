@@ -10,14 +10,12 @@ import org.cef.CefApp;
 import org.cef.CefApp.CefAppState;
 import org.cef.CefClient;
 import org.cef.CefSettings;
-import org.cef.OS;
 import org.cef.callback.CefCommandLine;
 import org.cef.handler.CefAppHandlerAdapter;
 import org.junit.jupiter.api.extension.BeforeAllCallback;
 import org.junit.jupiter.api.extension.ExtensionConfigurationException;
 import org.junit.jupiter.api.extension.ExtensionContext;
 
-import java.util.Locale;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -34,10 +32,6 @@ import java.util.concurrent.TimeUnit;
 //
 // This code is based on https://stackoverflow.com/a/51556718.
 public class TestSetupExtension implements BeforeAllCallback, AutoCloseable {
-    static final String WINDOWS_SOFTWARE_UNEXPORTABLE_KEYS_FEATURE = "WebAuthenticationUseInsecureSoftwareUnexportableKeys";
-    static final String WINDOWS_KEY_CREDENTIAL_TELEMETRY_FEATURE = "ReportKeyCredentialManagerSupportWin";
-    private static final String ENABLE_FEATURES_SWITCH = "enable-features";
-    private static final String DISABLE_FEATURES_SWITCH = "disable-features";
     private static final long SHUTDOWN_TIMEOUT_SECONDS = 30;
     private static boolean initialized_ = false;
     private static Throwable initializationFailure_ = null;
@@ -90,7 +84,7 @@ public class TestSetupExtension implements BeforeAllCallback, AutoCloseable {
             @Override
             public void onBeforeCommandLineProcessing(String processType, CefCommandLine commandLine) {
                 super.onBeforeCommandLineProcessing(processType, commandLine);
-                configureCommandLine(processType, commandLine, OS.isWindows(), System.getProperty("os.arch", ""));
+                WindowsArm64TestCommandLine.configureBrowserProcess(processType, commandLine);
             }
 
             @Override
@@ -112,47 +106,6 @@ public class TestSetupExtension implements BeforeAllCallback, AutoCloseable {
         if (CefApp.getState() != CefAppState.INITIALIZED) {
             throw new ExtensionConfigurationException("CEF initialization failed with state " + CefApp.getState());
         }
-    }
-
-    static void configureCommandLine(String processType, CefCommandLine commandLine, boolean windows, String architecture) {
-        if (!processType.isEmpty() || !windows || !isArm64Architecture(architecture)) return;
-
-        // Chromium 151 eagerly initializes PasskeyUnlockManager during browser startup. Enabling
-        // software unexportable keys makes EnclaveManager post its support result asynchronously
-        // without entering Windows KeyCredentialManager.IsSupportedAsync, whose ngcksp.dll path
-        // can terminate native Windows ARM64 CI startup with NTE_BAD_KEYSET (0x80090016). This
-        // deliberately changes WebAuthn unexportable-key capability semantics only inside the
-        // Windows ARM64 JUnit browser process.
-        appendCommaSeparatedSwitchValue(commandLine, ENABLE_FEATURES_SWITCH, WINDOWS_SOFTWARE_UNEXPORTABLE_KEYS_FEATURE);
-
-        // Chromium 151 enables this metrics-only WinRT probe by default. On GitHub's native
-        // Windows ARM64 runners KeyCredentialManager.IsSupportedAsync can enter ngcksp.dll and
-        // terminate startup with NTE_BAD_KEYSET (0x80090016). Keep this independent reporter
-        // defense as well. Production command lines are unaffected because this handler belongs
-        // exclusively to the JUnit bootstrap.
-        appendCommaSeparatedSwitchValue(commandLine, DISABLE_FEATURES_SWITCH, WINDOWS_KEY_CREDENTIAL_TELEMETRY_FEATURE);
-    }
-
-    private static void appendCommaSeparatedSwitchValue(CefCommandLine commandLine, String switchName, String requiredValue) {
-        String values = commandLine.getSwitchValue(switchName);
-        String updatedValues = appendCommaSeparatedValue(values, requiredValue);
-        if (updatedValues.equals(values)) return;
-        commandLine.removeSwitch(switchName);
-        commandLine.appendSwitchWithValue(switchName, updatedValues);
-    }
-
-    static boolean isArm64Architecture(String architecture) {
-        if (architecture == null) return false;
-        String normalizedArchitecture = architecture.trim().toLowerCase(Locale.ROOT);
-        return normalizedArchitecture.equals("aarch64") || normalizedArchitecture.equals("arm64");
-    }
-
-    static String appendCommaSeparatedValue(String values, String requiredValue) {
-        if (values == null || values.isBlank()) return requiredValue;
-        for (String value : values.split(",")) {
-            if (value.trim().equals(requiredValue)) return values;
-        }
-        return values.endsWith(",") ? values + requiredValue : values + "," + requiredValue;
     }
 
     // Executed after all tests have completed.

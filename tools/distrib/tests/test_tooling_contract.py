@@ -130,6 +130,18 @@ class PlatformToolingContractTest(unittest.TestCase):
         workflow)
     self.assertIn('Release --headless --select-package', workflow)
 
+  def test_macos_app_bundle_uses_complete_internal_awt_option_order(self):
+    build = (REPOSITORY_ROOT / 'build.xml').read_text(encoding='utf-8')
+    options = re.findall(r'<option value="(--[^"]+)"/>', build)
+    expected_options = [
+        '--add-opens=java.desktop/sun.awt=ALL-UNNAMED',
+        '--add-opens=java.desktop/sun.lwawt=ALL-UNNAMED',
+        '--add-opens=java.desktop/sun.lwawt.macosx=ALL-UNNAMED',
+        '--add-opens=java.desktop/java.awt=ALL-UNNAMED',
+        '--enable-native-access=ALL-UNNAMED',
+    ]
+    self.assertEqual(expected_options, options)
+
   def test_windows_java_check_uses_release_metadata_and_exact_prefix(self):
     helper = (TOOLS_ROOT / 'distrib' / 'java17_check.bat').read_text(
         encoding='utf-8')

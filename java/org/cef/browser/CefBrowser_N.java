@@ -658,6 +658,7 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     @Override
     public void setFocus(boolean enable) {
         if (!enable) clearAwtKeyRepeatState();
+        if (!isNativeInputEligible()) return;
         try {
             N_SetFocus(enable);
         } catch (UnsatisfiedLinkError ule) {
@@ -863,12 +864,12 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
      */
     protected final void sendAwtKeyEvent(java.awt.event.KeyEvent e) {
         if (e == null) return;
-        if (!isAwtKeyInputEligible()) {
+        if (!isNativeInputEligible()) {
             clearAwtKeyRepeatState();
             return;
         }
         boolean repeated = awtKeyRepeatTracker_.update(e);
-        if (!isAwtKeyInputEligible()) {
+        if (!isNativeInputEligible()) {
             clearAwtKeyRepeatState();
             return;
         }
@@ -880,12 +881,20 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
         }
     }
 
-    private boolean isAwtKeyInputEligible() {
+    private boolean isNativeInputEligible() {
         // Native publishes the browser reference before transitioning the synchronized creation
         // controller to CREATED. Reading the controller first therefore also makes that reference
         // visible and prevents input rejected during NEW/PENDING from poisoning repeat state.
         return !isClosing_ && !isClosed_ && creationController_.isCreated()
                 && getNativeRef("CefBrowser") != 0;
+    }
+
+    /** Forwards focus from a retained AWT listener only while its native browser is fully live. */
+    protected final boolean sendAwtFocusEvent(boolean enable) {
+        if (!enable) clearAwtKeyRepeatState();
+        if (!isNativeInputEligible()) return false;
+        setFocus(enable);
+        return true;
     }
 
     private void clearAwtKeyRepeatState() {

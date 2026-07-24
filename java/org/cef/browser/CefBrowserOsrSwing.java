@@ -35,13 +35,7 @@ import java.awt.dnd.DragSource;
 import java.awt.dnd.DragSourceAdapter;
 import java.awt.dnd.DragSourceDropEvent;
 import java.awt.dnd.DropTarget;
-import java.awt.event.FocusAdapter;
-import java.awt.event.FocusEvent;
-import java.awt.event.KeyAdapter;
-import java.awt.event.KeyEvent;
-import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
-import java.awt.event.MouseWheelEvent;
 import java.awt.geom.AffineTransform;
 import java.awt.image.AffineTransformOp;
 import java.awt.image.BufferedImage;
@@ -53,7 +47,6 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
-import javax.swing.MenuSelectionManager;
 import javax.swing.SwingUtilities;
 
 /**
@@ -179,80 +172,7 @@ class CefBrowserOsrSwing extends CefBrowserOsr {
             }
         });
 
-        MouseAdapter mouseListener = new MouseAdapter() {
-            @Override
-            public void mousePressed(MouseEvent event) {
-                sendAwtMouseEvent(event);
-            }
-
-            @Override
-            public void mouseReleased(MouseEvent event) {
-                sendAwtMouseEvent(event);
-            }
-
-            @Override
-            public void mouseEntered(MouseEvent event) {
-                sendAwtMouseEvent(event);
-            }
-
-            @Override
-            public void mouseExited(MouseEvent event) {
-                sendAwtMouseEvent(event);
-            }
-
-            @Override
-            public void mouseClicked(MouseEvent event) {
-                sendAwtMouseEvent(event);
-            }
-
-            @Override
-            public void mouseMoved(MouseEvent event) {
-                sendAwtMouseEvent(event);
-            }
-
-            @Override
-            public void mouseDragged(MouseEvent event) {
-                sendAwtMouseEvent(event);
-            }
-
-            @Override
-            public void mouseWheelMoved(MouseWheelEvent event) {
-                sendAwtMouseWheelEvent(event);
-            }
-        };
-        canvas_.addMouseListener(mouseListener);
-        canvas_.addMouseMotionListener(mouseListener);
-        canvas_.addMouseWheelListener(mouseListener);
-        canvas_.addKeyListener(new KeyAdapter() {
-            @Override
-            public void keyTyped(KeyEvent event) {
-                sendAwtKeyEvent(event);
-            }
-
-            @Override
-            public void keyPressed(KeyEvent event) {
-                sendAwtKeyEvent(event);
-            }
-
-            @Override
-            public void keyReleased(KeyEvent event) {
-                sendAwtKeyEvent(event);
-            }
-        });
-        canvas_.setFocusable(true);
-        canvas_.setFocusTraversalKeysEnabled(false);
-        canvas_.addFocusListener(new FocusAdapter() {
-            @Override
-            public void focusLost(FocusEvent event) {
-                setFocus(false);
-            }
-
-            @Override
-            public void focusGained(FocusEvent event) {
-                MenuSelectionManager.defaultManager().clearSelectedPath();
-                setFocus(true);
-            }
-        });
+        installAwtInputListeners(canvas_);
         new DropTarget(canvas_, new CefDropTargetListener(this));
     }
 

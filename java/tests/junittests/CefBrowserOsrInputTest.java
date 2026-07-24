@@ -4,11 +4,13 @@
 
 package tests.junittests;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import org.cef.CefClient;
 import org.cef.OS;
 import org.cef.browser.CefBrowser;
 import org.cef.browser.CefBrowserOsr;
@@ -19,8 +21,9 @@ import org.cef.event.CefMouseEvent;
 import org.cef.handler.CefDisplayHandlerAdapter;
 import org.junit.jupiter.api.Test;
 
-import java.awt.BorderLayout;
+import java.awt.Canvas;
 import java.awt.Component;
+import java.awt.Point;
 import java.awt.event.FocusEvent;
 import java.awt.event.FocusListener;
 import java.awt.event.InputEvent;
@@ -38,9 +41,14 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
+import javax.swing.JMenu;
+import javax.swing.JMenuItem;
+import javax.swing.MenuElement;
+import javax.swing.MenuSelectionManager;
 import javax.swing.SwingUtilities;
 
 @NativeCefTest
@@ -48,10 +56,12 @@ class CefBrowserOsrInputTest {
     private static final int INPUT_TIMEOUT_SECONDS = 30;
     private static final int KEY_MODIFIERS = InputEvent.SHIFT_DOWN_MASK | InputEvent.CTRL_DOWN_MASK
             | InputEvent.ALT_DOWN_MASK | InputEvent.META_DOWN_MASK | InputEvent.ALT_GRAPH_DOWN_MASK;
+    private static final String PAGE_READY_TITLE = "jcef-awt-input-page-ready";
+    private static final String INPUT_READY_TITLE = "jcef-awt-input-focus-ready";
     private static final String SUCCESS_TITLE = "jcef-awt-input-complete";
 
     @Test
-    void swingOsrForwardsAwtInputWithoutLwjglAndStopsAfterClose() throws Exception {
+    void componentBackedOsrForwardsAwtInputWithoutGraphicsBindingsAndStopsAfterClose() throws Exception {
         assertThrows(ClassNotFoundException.class, () -> Class.forName("org.lwjgl.glfw.GLFW", false, CefBrowserOsrInputTest.class.getClassLoader()));
 
         String testUrl = "http://test.com/osr-awt-input.html";
@@ -70,22 +80,27 @@ class CefBrowserOsrInputTest {
                 frame[0] = new TestFrame() {
                     private final AtomicBoolean loaded_ = new AtomicBoolean();
                     private final AtomicBoolean painted_ = new AtomicBoolean();
+                    private final AtomicBoolean inputReady_ = new AtomicBoolean();
                     private final AtomicBoolean inputDispatched_ = new AtomicBoolean();
                     private final AtomicBoolean terminationRequested_ = new AtomicBoolean();
                     private Component inputComponent_;
 
                     @Override
                     protected void setupTest() {
-                        client_.addDisplayHandler(new InputDisplayHandler(() -> browser_, lastTitle, pageInputComplete, this::maybeFinish));
+                        client_.addDisplayHandler(new InputDisplayHandler(() -> browser_, lastTitle, pageInputComplete, this::focusInputPage, this::markInputReady, this::maybeFinish));
                         addResource(testUrl, createInputPage(), "text/html");
-                        browser_ = client_.createBrowser(testUrl, true, false, null);
-                        inputComponent_ = browser_.getUIComponent();
-                        ((CefBrowserOsr) browser_).addOnPaintListener(event -> markPainted());
-                        getContentPane().add(inputComponent_, BorderLayout.CENTER);
-                        pack();
-                        setSize(800, 600);
-                        setVisible(true);
+                        AwtInputBrowser browser = new AwtInputBrowser(client_, testUrl);
+                        browser_ = browser;
+                        inputComponent_ = browser.getUIComponent();
+                        browser.addOnPaintListener(event -> markPainted());
+                        browser.createImmediately();
                         super.setupTest();
+                    }
+
+                    @Override
+                    public void onAfterCreated(CefBrowser browser) {
+                        super.onAfterCreated(browser);
+                        if (browser == browser_) ((AwtInputBrowser) browser).notifyInitialSize();
                     }
 
                     @Override
@@ -106,17 +121,38 @@ class CefBrowserOsrInputTest {
                         maybeDispatchInput();
                     }
 
+                    private void focusInputPage() {
+                        SwingUtilities.invokeLater(() -> {
+                            try {
+                                for (FocusListener listener : inputComponent_.getFocusListeners())
+                                    listener.focusGained(new FocusEvent(inputComponent_, FocusEvent.FOCUS_GAINED));
+                                CefFrame mainFrame = browser_.getMainFrame();
+                                if (mainFrame == null)
+                                    throw new AssertionError("OSR browser has no main frame after page readiness");
+                                try {
+                                    mainFrame.executeJavaScript("document.getElementById('i').focus();document.title='" + INPUT_READY_TITLE + "';", testUrl, 1);
+                                } finally {
+                                    mainFrame.dispose();
+                                }
+                            } catch (Throwable throwable) {
+                                failure.compareAndSet(null, throwable);
+                                requestTermination();
+                            }
+                        });
+                    }
+
+                    private void markInputReady() {
+                        inputReady_.set(true);
+                        maybeDispatchInput();
+                    }
+
                     private void maybeDispatchInput() {
-                        if (!loaded_.get() || !painted_.get()
-                                || !inputDispatched_.compareAndSet(false, true))
-                            return;
+                        if (!loaded_.get() || !painted_.get() || !inputReady_.get() || !inputDispatched_.compareAndSet(false, true)) return;
                         SwingUtilities.invokeLater(this::sendSyntheticInput);
                     }
 
                     private void sendSyntheticInput() {
                         try {
-                            browser_.setFocus(true);
-                            inputComponent_.requestFocusInWindow();
                             dispatchKeySequence(inputComponent_);
                             dispatchMouseSequence(inputComponent_);
                             dispatchLegacyInput(browser_);
@@ -135,12 +171,19 @@ class CefBrowserOsrInputTest {
                     }
 
                     private void verifyClosedInputIsIgnored() {
+                        MenuSelectionManager menuManager = MenuSelectionManager.defaultManager();
+                        MenuElement[] selectedPath = createMenuSelectionPath();
+                        menuManager.setSelectedPath(selectedPath);
                         try {
+                            int focusCalls = ((AwtInputBrowser) browser_).getForwardedFocusCallCount();
                             dispatchClosedInput(inputComponent_);
+                            assertTrue(focusCalls == ((AwtInputBrowser) browser_).getForwardedFocusCallCount(), "Retained focus listeners forwarded input after browser close");
+                            assertArrayEquals(selectedPath, menuManager.getSelectedPath(), "Retained focus listeners cleared global menu selection after browser close");
                             postCloseInputSafe.set(true);
                         } catch (Throwable throwable) {
                             failure.compareAndSet(null, throwable);
                         } finally {
+                            menuManager.clearSelectedPath();
                             postCloseInputComplete.countDown();
                         }
                     }
@@ -215,8 +258,13 @@ class CefBrowserOsrInputTest {
             listener.keyReleased(focusResetReleased);
 
         assertFalse(component.getFocusTraversalKeysEnabled(), "OSR input component must deliver traversal keys to CEF");
-        component.dispatchEvent(new KeyEvent(component, KeyEvent.KEY_PRESSED, 10L, 0, KeyEvent.VK_TAB, '\t', KeyEvent.KEY_LOCATION_STANDARD));
-        component.dispatchEvent(new KeyEvent(component, KeyEvent.KEY_RELEASED, 11L, 0, KeyEvent.VK_TAB, '\t', KeyEvent.KEY_LOCATION_STANDARD));
+        KeyEvent tabPressed = new KeyEvent(component, KeyEvent.KEY_PRESSED, 10L, 0, KeyEvent.VK_TAB, '\t', KeyEvent.KEY_LOCATION_STANDARD);
+        KeyEvent tabReleased = new KeyEvent(component, KeyEvent.KEY_RELEASED, 11L, 0, KeyEvent.VK_TAB, '\t', KeyEvent.KEY_LOCATION_STANDARD);
+        // The intentionally unrealized Canvas keeps this test independent of JOGL and platform
+        // graphics bindings. AWT's focus manager intercepts dispatched Tab events before they reach
+        // component listeners, so invoke the production-installed listeners directly for this key.
+        for (KeyListener listener : component.getKeyListeners()) listener.keyPressed(tabPressed);
+        for (KeyListener listener : component.getKeyListeners()) listener.keyReleased(tabReleased);
 
         KeyEvent unicodePressed = new KeyEvent(component, KeyEvent.KEY_PRESSED, 12L, 0, KeyEvent.VK_O, '\u03A9', KeyEvent.KEY_LOCATION_STANDARD);
         KeyEvent unicode = new KeyEvent(component, KeyEvent.KEY_TYPED, 13L, 0, KeyEvent.VK_UNDEFINED, '\u03A9', KeyEvent.KEY_LOCATION_UNKNOWN);
@@ -300,11 +348,22 @@ class CefBrowserOsrInputTest {
         KeyEvent key = new KeyEvent(component, KeyEvent.KEY_PRESSED, 11L, 0, KeyEvent.VK_Z, 'z');
         MouseEvent mouse = new MouseEvent(component, MouseEvent.MOUSE_MOVED, 12L, 0, 1, 1, 0, false, MouseEvent.NOBUTTON);
         MouseWheelEvent wheel = new MouseWheelEvent(component, MouseEvent.MOUSE_WHEEL, 13L, 0, 1, 1, 0, false, MouseWheelEvent.WHEEL_UNIT_SCROLL, 1, 1);
+        FocusEvent focusLost = new FocusEvent(component, FocusEvent.FOCUS_LOST);
+        FocusEvent focusGained = new FocusEvent(component, FocusEvent.FOCUS_GAINED);
         for (KeyListener listener : component.getKeyListeners()) listener.keyPressed(key);
         for (MouseMotionListener listener : component.getMouseMotionListeners())
             listener.mouseMoved(mouse);
         for (MouseWheelListener listener : component.getMouseWheelListeners())
             listener.mouseWheelMoved(wheel);
+        for (FocusListener listener : component.getFocusListeners()) listener.focusLost(focusLost);
+        for (FocusListener listener : component.getFocusListeners()) listener.focusGained(focusGained);
+    }
+
+    private static MenuElement[] createMenuSelectionPath() {
+        JMenu menu = new JMenu("OSR input lifecycle");
+        JMenuItem item = new JMenuItem("retained selection");
+        menu.add(item);
+        return new MenuElement[] {menu, menu.getPopupMenu(), item};
     }
 
     private static void dispatchLegacyInput(CefBrowser browser) throws Exception {
@@ -350,7 +409,7 @@ class CefBrowserOsrInputTest {
         // identity but does not surface as the DOM NumLock toggle state.
         // The same bridge normalizes EVENTFLAG_SCROLL_BY_PAGE to DOM pixel mode; Aura preserves
         // DOM_DELTA_PAGE. In both cases the rounded page magnitude remains observable.
-        return "<!doctype html><html><head><meta charset=utf-8><style>html,body{width:100%;height:100%;margin:0}</style></head><body><input id=i autofocus><input id=tabTarget><script>"
+        return "<!doctype html><html><head><meta charset=utf-8><style>html,body{width:100%;height:100%;margin:0}</style></head><body><input id=i><input id=tabTarget><script>"
                 + "const expectDomRepeat=" + expectDomRepeat + ";"
                 + "const expectDomNumLock=" + expectDomNumLock + ";"
                 + "const seen={mFirst:false,mRepeat:false,mReset:false,nFirst:false,nReset:false,tab:false,tabFocus:false,unicode:false,arrowDown:false,arrowUp:false,keypadLeftDown:false,keypadLeftUp:false,leftShift:false,rightControl:false,numpad:false,legacyTyped:false,legacyTypedExact:false,legacyRepeat:false,legacyTab:false,legacyRight:false,legacyKeypad:false,legacyLocks:false,legacyLower:false,legacyShift:false,legacyCaps:false,legacyShiftCaps:false,move:false,legacyMove:false,middleDown:false,middleUp:false,rightDown:false,rightUp:false,vertical:false,horizontal:false,page:false,pageMagnitude:false,minimum:false};"
@@ -377,21 +436,59 @@ class CefBrowserOsrInputTest {
                 + "&&e.deltaX===0&&e.deltaY===3)seen.pageMagnitude=true;if(wheelIndex===4&&e.deltaMode===0&&e.deltaX===0&&e.deltaY===-"
                 + minimumMagnitude
                 + ")seen.minimum=true;wheelIndex++;e.preventDefault();report();},{passive:false});"
-                + "const input=document.getElementById('i');document.getElementById('tabTarget').addEventListener('focus',()=>{seen.tabFocus=true;input.focus();report();});input.focus();"
-                + "report();"
+                + "const input=document.getElementById('i');document.getElementById('tabTarget').addEventListener('focus',()=>{seen.tabFocus=true;input.focus();report();});"
+                + "document.title='" + PAGE_READY_TITLE + "';"
                 + "</script></body></html>";
+    }
+
+    private static final class AwtInputBrowser extends CefBrowserOsr {
+        private static final int WIDTH = 800;
+        private static final int HEIGHT = 600;
+        private final Component inputComponent_ = new Canvas();
+        private final AtomicInteger forwardedFocusCalls_ = new AtomicInteger();
+
+        private AwtInputBrowser(CefClient client, String url) {
+            super(client, url, false, null);
+            updateViewGeometry(0, 0, WIDTH, HEIGHT, new Point(0, 0));
+            installAwtInputListeners(inputComponent_);
+        }
+
+        @Override
+        public Component getUIComponent() {
+            return inputComponent_;
+        }
+
+        @Override
+        public void setFocus(boolean enable) {
+            forwardedFocusCalls_.incrementAndGet();
+            super.setFocus(enable);
+        }
+
+        private int getForwardedFocusCallCount() {
+            return forwardedFocusCalls_.get();
+        }
+
+        private void notifyInitialSize() {
+            wasResized(WIDTH, HEIGHT);
+        }
     }
 
     private static final class InputDisplayHandler extends CefDisplayHandlerAdapter {
         private final Supplier<CefBrowser> browser_;
         private final AtomicReference<String> lastTitle_;
         private final AtomicBoolean complete_;
+        private final AtomicBoolean pageReady_ = new AtomicBoolean();
+        private final AtomicBoolean inputReady_ = new AtomicBoolean();
+        private final Runnable onPageReady_;
+        private final Runnable onInputReady_;
         private final Runnable onComplete_;
 
-        private InputDisplayHandler(Supplier<CefBrowser> browser, AtomicReference<String> lastTitle, AtomicBoolean complete, Runnable onComplete) {
+        private InputDisplayHandler(Supplier<CefBrowser> browser, AtomicReference<String> lastTitle, AtomicBoolean complete, Runnable onPageReady, Runnable onInputReady, Runnable onComplete) {
             browser_ = browser;
             lastTitle_ = lastTitle;
             complete_ = complete;
+            onPageReady_ = onPageReady;
+            onInputReady_ = onInputReady;
             onComplete_ = onComplete;
         }
 
@@ -399,6 +496,14 @@ class CefBrowserOsrInputTest {
         public void onTitleChange(CefBrowser browser, String title) {
             if (browser != browser_.get()) return;
             lastTitle_.set(title);
+            if (PAGE_READY_TITLE.equals(title) && pageReady_.compareAndSet(false, true)) {
+                onPageReady_.run();
+                return;
+            }
+            if (INPUT_READY_TITLE.equals(title) && inputReady_.compareAndSet(false, true)) {
+                onInputReady_.run();
+                return;
+            }
             if (SUCCESS_TITLE.equals(title) && complete_.compareAndSet(false, true))
                 onComplete_.run();
         }

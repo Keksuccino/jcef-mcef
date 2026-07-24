@@ -69,6 +69,15 @@ public class CefBrowserOsr extends CefBrowser_N implements CefRenderHandler {
         return null;
     }
 
+    /**
+     * Installs the production Swing OSR input bridge on {@code component}. Subclasses that provide
+     * an AWT surface must call this exactly once for that surface: AWT listener registrations are
+     * intentionally retained for the component lifetime and become harmless no-ops after close.
+     */
+    protected final void installAwtInputListeners(Component component) {
+        CefBrowserOsrAwtInput.install(component, this);
+    }
+
     @Override
     public CefRenderHandler getRenderHandler() {
         return this;

@@ -3,37 +3,23 @@
 # reserved. Use of this source code is governed by a BSD-style license
 # that can be found in the LICENSE file.
 
-if [ -z "$1" ]; then
-  echo "ERROR: Please specify a target platform: linux32, linux64 or macosx64"
-else
-  DIR="$( cd "$( dirname "$0" )" && pwd )"
-  "${DIR}"/make_jni_header.sh $1 org.cef.CefApp
-  "${DIR}"/make_jni_header.sh $1 org.cef.browser.CefBrowser_N
-  "${DIR}"/make_jni_header.sh $1 org.cef.browser.CefFrame_N
-  "${DIR}"/make_jni_header.sh $1 org.cef.browser.CefMessageRouter_N
-  "${DIR}"/make_jni_header.sh $1 org.cef.browser.CefRequestContext_N
-  "${DIR}"/make_jni_header.sh $1 org.cef.callback.CefAuthCallback_N
-  "${DIR}"/make_jni_header.sh $1 org.cef.callback.CefBeforeDownloadCallback_N
-  "${DIR}"/make_jni_header.sh $1 org.cef.callback.CefCommandLine_N
-  "${DIR}"/make_jni_header.sh $1 org.cef.callback.CefCallback_N
-  "${DIR}"/make_jni_header.sh $1 org.cef.callback.CefContextMenuParams_N
-  "${DIR}"/make_jni_header.sh $1 org.cef.callback.CefDownloadItem_N
-  "${DIR}"/make_jni_header.sh $1 org.cef.callback.CefDownloadItemCallback_N
-  "${DIR}"/make_jni_header.sh $1 org.cef.callback.CefDragData_N
-  "${DIR}"/make_jni_header.sh $1 org.cef.callback.CefFileDialogCallback_N
-  "${DIR}"/make_jni_header.sh $1 org.cef.callback.CefJSDialogCallback_N
-  "${DIR}"/make_jni_header.sh $1 org.cef.callback.CefMenuModel_N
-  "${DIR}"/make_jni_header.sh $1 org.cef.callback.CefPrintDialogCallback_N
-  "${DIR}"/make_jni_header.sh $1 org.cef.callback.CefPrintJobCallback_N
-  "${DIR}"/make_jni_header.sh $1 org.cef.callback.CefQueryCallback_N
-  "${DIR}"/make_jni_header.sh $1 org.cef.callback.CefSchemeRegistrar_N
-  "${DIR}"/make_jni_header.sh $1 org.cef.handler.CefClientHandler
-  "${DIR}"/make_jni_header.sh $1 org.cef.misc.CefPrintSettings_N
-  "${DIR}"/make_jni_header.sh $1 org.cef.network.CefCookieManager_N
-  "${DIR}"/make_jni_header.sh $1 org.cef.network.CefPostData_N
-  "${DIR}"/make_jni_header.sh $1 org.cef.network.CefPostDataElement_N
-  "${DIR}"/make_jni_header.sh $1 org.cef.network.CefRequest_N
-  "${DIR}"/make_jni_header.sh $1 org.cef.network.CefResponse_N
-  "${DIR}"/make_jni_header.sh $1 org.cef.network.CefURLRequest_N
+set -euo pipefail
+
+if [ "$#" -gt 1 ]; then
+  echo "ERROR: Usage: make_all_jni_headers.sh [--verify]" >&2
+  exit 1
+fi
+if [ "$#" -eq 1 ] && [ "$1" != "--verify" ]; then
+  echo "ERROR: Unknown option: $1" >&2
+  exit 1
 fi
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# javac -h generates platform-independent headers directly from production
+# sources, so accepting a target would imply an architecture distinction that
+# does not exist.
+if [ "$#" -eq 1 ]; then
+  python3 "${SCRIPT_DIR}/make_jni_headers.py" --verify
+else
+  python3 "${SCRIPT_DIR}/make_jni_headers.py"
+fi

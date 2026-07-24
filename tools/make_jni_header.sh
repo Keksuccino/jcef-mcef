@@ -3,27 +3,23 @@
 # reserved. Use of this source code is governed by a BSD-style license
 # that can be found in the LICENSE file.
 
-if [ -z "$1" ]; then
-  echo "ERROR: Please specify a target platform: linux32, linux64 or macosx64"
-else
-  if [ -z "$2" ]; then
-    echo "ERROR: Please specify a class name"
-  else
-    DIR="$( cd "$( dirname "$0" )" && cd .. && pwd )"
-    if [ $1 == "macosx64" ]; then
-      CLS_OUT_PATH="${DIR}/jcef_build/native/Release"
-      if [ ! -d "$CLS_OUT_PATH" ]; then
-        CLS_OUT_PATH="${DIR}/jcef_build/native/Debug"
-      fi
-    else
-      CLS_OUT_PATH="${DIR}/out/$1"
-    fi
+set -euo pipefail
 
-    HEADER_PATH="${DIR}/native"
-    CLS_PATH="${DIR}/third_party/jogamp/jar/*:${CLS_OUT_PATH}"
-    CLS_NAME="${2##*.}"
-
-    javah -force -classpath "$CLS_PATH" -o "$HEADER_PATH/$CLS_NAME.h" $2
-  fi
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+  echo "ERROR: Usage: make_jni_header.sh <class-name> [--verify]" >&2
+  exit 1
+fi
+if [ "$#" -eq 2 ] && [ "$2" != "--verify" ]; then
+  echo "ERROR: Unknown option: $2" >&2
+  exit 1
 fi
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# javac -h generates platform-independent headers directly from production
+# sources, so no target argument is accepted.
+ARGS=(--class-name "$1")
+if [ "$#" -eq 2 ]; then
+  ARGS+=(--verify)
+fi
+
+python3 "${SCRIPT_DIR}/make_jni_headers.py" "${ARGS[@]}"

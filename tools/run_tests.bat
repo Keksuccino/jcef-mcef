@@ -76,8 +76,21 @@ if not defined HAS_SELECTOR set "DEFAULT_SELECTOR=--select-package=tests.junitte
 :run
 set "CLASS_PATH=%OUT_PATH%;%ROOT_DIR%\third_party\jogamp\jar\gluegen-rt.jar;%ROOT_DIR%\third_party\jogamp\jar\jogl-all.jar"
 set "PATH=%LIB_PATH%;%JAVA_HOME%\bin;%PATH%"
+set "JUNIT_LAUNCHER_OPTION=-jar"
+set "JUNIT_LAUNCHER_PATH=%JUNIT_JAR%"
+set "JUNIT_LAUNCHER_CLASS="
+set "CHROMIUM_PROCESS_ARGUMENT="
+if /I "%PLATFORM%" == "windows_arm64" (
+  rem Chromium constructs its browser ThreadPool before CEF's command-line callback. Keep this
+  rem switch on java.exe's original process command line, then remove it in the wrapper before
+  rem JUnit parses application arguments.
+  set "JUNIT_LAUNCHER_OPTION=-cp"
+  set "JUNIT_LAUNCHER_PATH=%JUNIT_JAR%;%CLASS_PATH%"
+  set "JUNIT_LAUNCHER_CLASS=tests.junittests.WindowsJUnitLauncher"
+  set "CHROMIUM_PROCESS_ARGUMENT=--disable-best-effort-tasks"
+)
 echo Running JUnit 6.1.2 for %PLATFORM%/%CONFIGURATION% ^(headless=%HEADLESS%^)
-"%JAVA_HOME%\bin\java.exe" --enable-native-access=ALL-UNNAMED "-Djava.awt.headless=%HEADLESS%" "-Djava.library.path=%LIB_PATH%" "-Djcef.path=%LIB_PATH%" -Djcef.external_message_pump=false -jar "%JUNIT_JAR%" execute --disable-ansi-colors --disable-banner --details=summary --fail-if-no-tests --class-path "%CLASS_PATH%" %DEFAULT_SELECTOR% %REST_ARGS%
+"%JAVA_HOME%\bin\java.exe" --enable-native-access=ALL-UNNAMED "-Djava.awt.headless=%HEADLESS%" "-Djava.library.path=%LIB_PATH%" "-Djcef.path=%LIB_PATH%" -Djcef.external_message_pump=false %JUNIT_LAUNCHER_OPTION% "%JUNIT_LAUNCHER_PATH%" %JUNIT_LAUNCHER_CLASS% %CHROMIUM_PROCESS_ARGUMENT% execute --disable-ansi-colors --disable-banner --details=summary --fail-if-no-tests --class-path "%CLASS_PATH%" %DEFAULT_SELECTOR% %REST_ARGS%
 set "TEST_EXIT_CODE=%ERRORLEVEL%"
 exit /B %TEST_EXIT_CODE%
 

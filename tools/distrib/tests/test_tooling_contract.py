@@ -138,6 +138,19 @@ class PlatformToolingContractTest(unittest.TestCase):
     self.assertIn('if "%JAVA_VERSION:~0,3%" == "17."', helper)
     self.assertNotIn('java.exe" -version', helper)
 
+  def test_windows_arm64_places_chromium_fence_on_original_process_command_line(self):
+    runner = (TOOLS_ROOT / 'run_tests.bat').read_text(encoding='utf-8')
+    arm64_block = re.search(r'if /I "%PLATFORM%" == "windows_arm64" \((.*?)\n\)', runner, re.DOTALL)
+    self.assertIsNotNone(arm64_block)
+    self.assertIn('set "JUNIT_LAUNCHER_OPTION=-cp"', arm64_block.group(1))
+    self.assertIn('set "JUNIT_LAUNCHER_PATH=%JUNIT_JAR%;%CLASS_PATH%"', arm64_block.group(1))
+    self.assertIn('set "JUNIT_LAUNCHER_CLASS=tests.junittests.WindowsJUnitLauncher"', arm64_block.group(1))
+    self.assertIn('set "CHROMIUM_PROCESS_ARGUMENT=--disable-best-effort-tasks"', arm64_block.group(1))
+    self.assertEqual(1, runner.count('--disable-best-effort-tasks'))
+    self.assertIn('set "JUNIT_LAUNCHER_OPTION=-jar"', runner)
+    self.assertIn('set "CHROMIUM_PROCESS_ARGUMENT="', runner)
+    self.assertIn('%JUNIT_LAUNCHER_CLASS% %CHROMIUM_PROCESS_ARGUMENT% execute', runner)
+
   def test_github_actions_are_pinned_to_immutable_commits(self):
     workflow = (
         REPOSITORY_ROOT / '.github' / 'workflows' / 'build-jcef.yml').read_text(

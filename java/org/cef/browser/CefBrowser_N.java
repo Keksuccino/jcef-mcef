@@ -40,6 +40,12 @@ import javax.swing.SwingUtilities;
  * CefBrowser instance, please use CefBrowserFactory.
  */
 public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowser {
+    // javac exports these values to the generated JNI header, where AudioMuteQueryResult consumes
+    // them directly. -1 distinguishes query failure from the two valid boolean results.
+    private static final int AUDIO_MUTE_QUERY_FAILED = -1;
+    private static final int AUDIO_MUTE_QUERY_UNMUTED = 0;
+    private static final int AUDIO_MUTE_QUERY_MUTED = 1;
+
     private final CefBrowserCreationController creationController_ =
             new CefBrowserCreationController();
     private final CefAwtKeyRepeatTracker awtKeyRepeatTracker_ = new CefAwtKeyRepeatTracker();
@@ -1063,6 +1069,37 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
         return future;
     }
 
+    @Override
+    public void setAudioMuted(boolean muted) {
+        try {
+            N_SetAudioMuted(muted);
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+    }
+
+    @Override
+    public CompletableFuture<Boolean> isAudioMuted() {
+        CompletableFuture<Boolean> future = new CompletableFuture<Boolean>();
+        try {
+            N_IsAudioMuted(result -> {
+                if (result == AUDIO_MUTE_QUERY_UNMUTED) {
+                    future.complete(Boolean.FALSE);
+                } else if (result == AUDIO_MUTE_QUERY_MUTED) {
+                    future.complete(Boolean.TRUE);
+                } else if (result == AUDIO_MUTE_QUERY_FAILED) {
+                    future.completeExceptionally(new IllegalStateException("Failed to query browser audio mute state"));
+                } else {
+                    future.completeExceptionally(new IllegalStateException("Unexpected browser audio mute query result: " + result));
+                }
+            });
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+            future.completeExceptionally(ule);
+        }
+        return future;
+    }
+
     private interface IntCallback {
         void onComplete(int value);
     }
@@ -1140,4 +1177,6 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     private final native void N_NotifyMoveOrResizeStarted();
     private final native void N_SetWindowlessFrameRate(int frameRate);
     private final native void N_GetWindowlessFrameRate(IntCallback frameRateCallback);
+    private final native void N_SetAudioMuted(boolean muted);
+    private final native void N_IsAudioMuted(IntCallback callback);
 }

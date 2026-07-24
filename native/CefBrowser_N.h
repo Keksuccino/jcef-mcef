@@ -7,6 +7,12 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+#undef org_cef_browser_CefBrowser_N_AUDIO_MUTE_QUERY_FAILED
+#define org_cef_browser_CefBrowser_N_AUDIO_MUTE_QUERY_FAILED -1L
+#undef org_cef_browser_CefBrowser_N_AUDIO_MUTE_QUERY_UNMUTED
+#define org_cef_browser_CefBrowser_N_AUDIO_MUTE_QUERY_UNMUTED 0L
+#undef org_cef_browser_CefBrowser_N_AUDIO_MUTE_QUERY_MUTED
+#define org_cef_browser_CefBrowser_N_AUDIO_MUTE_QUERY_MUTED 1L
 /*
  * Class:     org_cef_browser_CefBrowser_N
  * Method:    N_CreateBrowser
@@ -509,6 +515,22 @@ JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1SetWindowlessFrameR
  * Signature: (Lorg/cef/browser/CefBrowser_N/IntCallback;)V
  */
 JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1GetWindowlessFrameRate
+  (JNIEnv *, jobject, jobject);
+
+/*
+ * Class:     org_cef_browser_CefBrowser_N
+ * Method:    N_SetAudioMuted
+ * Signature: (Z)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1SetAudioMuted
+  (JNIEnv *, jobject, jboolean);
+
+/*
+ * Class:     org_cef_browser_CefBrowser_N
+ * Method:    N_IsAudioMuted
+ * Signature: (Lorg/cef/browser/CefBrowser_N/IntCallback;)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1IsAudioMuted
   (JNIEnv *, jobject, jobject);
 
 #ifdef __cplusplus

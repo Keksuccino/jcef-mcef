@@ -3272,6 +3272,33 @@ void getZoomLevel(CefRefPtr<CefBrowserHost> host,
   result->Complete(host->GetZoomLevel());
 }
 
+// Use the constants generated from CefBrowser_N.java so query failure remains
+// distinguishable from a valid unmuted result without duplicating JNI values.
+enum AudioMuteQueryResult {
+  kAudioMuteQueryFailed = org_cef_browser_CefBrowser_N_AUDIO_MUTE_QUERY_FAILED,
+  kAudioMuteQueryUnmuted = org_cef_browser_CefBrowser_N_AUDIO_MUTE_QUERY_UNMUTED,
+  kAudioMuteQueryMuted = org_cef_browser_CefBrowser_N_AUDIO_MUTE_QUERY_MUTED,
+};
+
+// CefBrowserHost::IsAudioMuted is UI-thread-only. Keep the browser and Java
+// callback alive across the posted task, then recheck validity because
+// OnBeforeClose may run before this task does.
+void queryAudioMuted(CefRefPtr<CefBrowser> browser, CefRefPtr<IntCallback> callback) {
+  REQUIRE_UI_THREAD();
+  if (!browser.get() || !browser->IsValid()) {
+    callback->onComplete(kAudioMuteQueryFailed);
+    return;
+  }
+
+  CefRefPtr<CefBrowserHost> host = browser->GetHost();
+  if (!host.get()) {
+    callback->onComplete(kAudioMuteQueryFailed);
+    return;
+  }
+
+  callback->onComplete(host->IsAudioMuted() ? kAudioMuteQueryMuted : kAudioMuteQueryUnmuted);
+}
+
 void executeDevToolsMethod(CefRefPtr<CefBrowserHost> host,
                            const CefString& method,
                            const CefString& parametersAsJson,
@@ -4180,4 +4207,31 @@ Java_org_cef_browser_CefBrowser_1N_N_1GetWindowlessFrameRate(
   } else {
     CefPostTask(TID_UI, base::BindOnce(getWindowlessFrameRate, host, callback));
   }
+}
+
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1SetAudioMuted(JNIEnv* env, jobject jbrowser, jboolean muted) {
+  CefRefPtr<CefBrowser> browser = GetJNIBrowser(env, jbrowser);
+  if (!browser.get() || !browser->IsValid())
+    return;
+
+  CefRefPtr<CefBrowserHost> host = browser->GetHost();
+  if (host.get())
+    host->SetAudioMuted(muted != JNI_FALSE);
+}
+
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1IsAudioMuted(JNIEnv* env, jobject jbrowser, jobject jintCallback) {
+  CefRefPtr<IntCallback> callback = new IntCallback(env, jintCallback);
+  CefRefPtr<CefBrowser> browser = GetJNIBrowser(env, jbrowser);
+  if (!browser.get() || !browser->IsValid()) {
+    callback->onComplete(kAudioMuteQueryFailed);
+    return;
+  }
+
+  if (CefCurrentlyOn(TID_UI)) {
+    queryAudioMuted(browser, callback);
+    return;
+  }
+
+  if (!CefPostTask(TID_UI, base::BindOnce(queryAudioMuted, browser, callback)))
+    callback->onComplete(kAudioMuteQueryFailed);
 }

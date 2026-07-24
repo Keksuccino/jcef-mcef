@@ -422,4 +422,22 @@ public interface CefBrowser {
      * @throws UnsupportedOperationException if not supported
      */
     public CompletableFuture<Integer> getWindowlessFrameRate();
+
+    /**
+     * Set whether this browser's audio is muted.
+     *
+     * @param muted true to mute browser audio
+     */
+    public void setAudioMuted(boolean muted);
+
+    /**
+     * Returns whether this browser's audio is muted.
+     *
+     * <p>The native query runs on the CEF UI thread. Code that drives CEF's external message pump
+     * must not block that pump while waiting for the returned future.
+     *
+     * @return a future containing the current mute state; the future completes exceptionally if
+     *         the native browser is unavailable or the UI-thread query cannot be scheduled
+     */
+    public CompletableFuture<Boolean> isAudioMuted();
 }

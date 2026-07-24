@@ -43,6 +43,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 import javax.swing.JMenu;
@@ -61,6 +62,43 @@ class CefBrowserOsrInputTest {
     private static final String FOCUS_READY_TITLE = "jcef-awt-input-focus-ready";
     private static final String INPUT_READY_TITLE = "jcef-awt-input-route-ready";
     private static final String SUCCESS_TITLE = "jcef-awt-input-complete";
+
+    /**
+     * Ordered renderer acknowledgements for the synthetic input stream. The enum order is the wire
+     * protocol: Java never dispatches a phase until Chromium has published the preceding title.
+     */
+    private enum InputPhase {
+        AWT_KEY_M("jcef-awt-input-phase-awt-key-m"),
+        AWT_TAB("jcef-awt-input-phase-awt-tab"),
+        AWT_KEYS("jcef-awt-input-phase-awt-keys"),
+        AWT_MOUSE("jcef-awt-input-phase-awt-mouse"),
+        AWT_WHEEL("jcef-awt-input-phase-awt-wheel"),
+        LEGACY_KEYS("jcef-awt-input-phase-legacy-keys"),
+        LEGACY_MOUSE(SUCCESS_TITLE);
+
+        private static final InputPhase[] VALUES = values();
+        private final String title_;
+
+        InputPhase(String title) {
+            title_ = title;
+        }
+
+        private String getTitle() {
+            return title_;
+        }
+
+        private InputPhase next() {
+            int nextOrdinal = ordinal() + 1;
+            return nextOrdinal < VALUES.length ? VALUES[nextOrdinal] : null;
+        }
+
+        private static InputPhase fromTitle(String title) {
+            for (InputPhase phase : VALUES) {
+                if (phase.title_.equals(title)) return phase;
+            }
+            return null;
+        }
+    }
 
     @Test
     void componentBackedOsrForwardsAwtInputWithoutGraphicsBindingsAndStopsAfterClose() throws Exception {
@@ -83,16 +121,17 @@ class CefBrowserOsrInputTest {
                     private final AtomicBoolean loaded_ = new AtomicBoolean();
                     private final AtomicBoolean painted_ = new AtomicBoolean();
                     private final AtomicBoolean inputReady_ = new AtomicBoolean();
-                    private final AtomicBoolean inputDispatched_ = new AtomicBoolean();
+                    private final AtomicBoolean inputPhasesStarted_ = new AtomicBoolean();
                     private final AtomicBoolean inputProbeAcknowledged_ = new AtomicBoolean();
                     private final AtomicBoolean inputProbePending_ = new AtomicBoolean();
                     private final AtomicBoolean terminationRequested_ = new AtomicBoolean();
+                    private final AtomicReference<InputPhase> expectedInputPhase_ = new AtomicReference<InputPhase>();
                     private Component inputComponent_;
                     private volatile ScheduledFuture<?> inputProbe_;
 
                     @Override
                     protected void setupTest() {
-                        client_.addDisplayHandler(new InputDisplayHandler(() -> browser_, lastTitle, pageInputComplete, this::focusInputPage, this::startInputProbe, this::markInputReady, this::maybeFinish));
+                        client_.addDisplayHandler(new InputDisplayHandler(() -> browser_, lastTitle, this::focusInputPage, this::startInputProbe, this::markInputReady, this::acknowledgeInputPhase));
                         addResource(testUrl, createInputPage(), "text/html");
                         AwtInputBrowser browser = new AwtInputBrowser(client_, testUrl);
                         browser_ = browser;
@@ -136,10 +175,11 @@ class CefBrowserOsrInputTest {
                                 if (mainFrame == null)
                                     throw new AssertionError("OSR browser has no main frame after page readiness");
                                 try {
-                                    // BrowserHost.SetFocus crosses the CEF UI/renderer boundary asynchronously.
-                                    // Do not begin the input-route handshake until the renderer confirms both
-                                    // document focus and the intended active element. BrowserHost.SetFocus can
-                                    // otherwise still be in flight when JavaScript has already executed.
+                                    // BrowserHost.SetFocus crosses the CEF UI/renderer boundary
+                                    // asynchronously. Do not begin the input-route handshake until
+                                    // the renderer confirms both document focus and the intended
+                                    // active element. BrowserHost.SetFocus can otherwise still be
+                                    // in flight when JavaScript has already executed.
                                     mainFrame.executeJavaScript("(()=>{const target=document.getElementById('i');const awaitFocus=()=>{target.focus();if(document.hasFocus()&&document.activeElement===target){document.title='" + FOCUS_READY_TITLE + "';return;}setTimeout(awaitFocus,10);};awaitFocus();})();", testUrl, 1);
                                 } finally {
                                     mainFrame.dispose();
@@ -163,7 +203,9 @@ class CefBrowserOsrInputTest {
                     }
 
                     private void enqueueInputProbe() {
-                        if (inputProbeAcknowledged_.get() || !inputProbePending_.compareAndSet(false, true)) return;
+                        if (inputProbeAcknowledged_.get()
+                                || !inputProbePending_.compareAndSet(false, true))
+                            return;
                         try {
                             SwingUtilities.invokeLater(() -> {
                                 inputProbePending_.set(false);
@@ -203,19 +245,81 @@ class CefBrowserOsrInputTest {
                     }
 
                     private void maybeDispatchInput() {
-                        if (!loaded_.get() || !painted_.get() || !inputReady_.get() || !inputDispatched_.compareAndSet(false, true)) return;
-                        SwingUtilities.invokeLater(this::sendSyntheticInput);
+                        if (!loaded_.get() || !painted_.get() || !inputReady_.get()
+                                || !inputPhasesStarted_.compareAndSet(false, true))
+                            return;
+                        expectedInputPhase_.set(InputPhase.AWT_KEY_M);
+                        enqueueInputPhase(InputPhase.AWT_KEY_M);
                     }
 
-                    private void sendSyntheticInput() {
+                    private void enqueueInputPhase(InputPhase phase) {
                         try {
-                            dispatchKeySequence(inputComponent_);
-                            dispatchMouseSequence(inputComponent_);
-                            dispatchLegacyInput(browser_);
+                            SwingUtilities.invokeLater(() -> dispatchInputPhase(phase));
                         } catch (Throwable throwable) {
                             failure.compareAndSet(null, throwable);
                             requestTermination();
                         }
+                    }
+
+                    private void dispatchInputPhase(InputPhase phase) {
+                        if (terminationRequested_.get()) return;
+                        InputPhase expected = expectedInputPhase_.get();
+                        if (phase != expected) {
+                            failInputPhase(new AssertionError("Refusing to dispatch stale OSR input phase " + phase + "; expected " + expected));
+                            return;
+                        }
+                        try {
+                            switch (phase) {
+                                case AWT_KEY_M:
+                                    dispatchAwtKeyMSequence(inputComponent_);
+                                    break;
+                                case AWT_TAB:
+                                    dispatchAwtTabSequence(inputComponent_);
+                                    break;
+                                case AWT_KEYS:
+                                    dispatchRemainingAwtKeys(inputComponent_);
+                                    break;
+                                case AWT_MOUSE:
+                                    dispatchAwtMouseSequence(inputComponent_);
+                                    break;
+                                case AWT_WHEEL:
+                                    dispatchAwtWheelSequence(inputComponent_);
+                                    break;
+                                case LEGACY_KEYS:
+                                    dispatchLegacyKeys(browser_);
+                                    break;
+                                case LEGACY_MOUSE:
+                                    dispatchLegacyMouse(browser_);
+                                    break;
+                            }
+                        } catch (Throwable throwable) {
+                            failInputPhase(throwable);
+                        }
+                    }
+
+                    private void acknowledgeInputPhase(InputPhase completedPhase) {
+                        if (terminationRequested_.get()) return;
+                        InputPhase expected = expectedInputPhase_.get();
+                        if (completedPhase != expected) {
+                            failInputPhase(new AssertionError("Renderer acknowledged OSR input phase " + completedPhase + "; expected " + expected));
+                            return;
+                        }
+                        InputPhase nextPhase = completedPhase.next();
+                        if (!expectedInputPhase_.compareAndSet(completedPhase, nextPhase)) {
+                            failInputPhase(new AssertionError("OSR input phase changed concurrently while acknowledging " + completedPhase));
+                            return;
+                        }
+                        if (nextPhase == null) {
+                            pageInputComplete.set(true);
+                            maybeFinish();
+                        } else {
+                            enqueueInputPhase(nextPhase);
+                        }
+                    }
+
+                    private void failInputPhase(Throwable throwable) {
+                        failure.compareAndSet(null, throwable);
+                        requestTermination();
                     }
 
                     private void maybeFinish() {
@@ -285,10 +389,11 @@ class CefBrowserOsrInputTest {
 
     private static void dispatchInputProbe(Component component) {
         MouseEvent probe = new MouseEvent(component, MouseEvent.MOUSE_MOVED, 1L, 0, 1, 2, 0, false, MouseEvent.NOBUTTON);
-        for (MouseMotionListener listener : component.getMouseMotionListeners()) listener.mouseMoved(probe);
+        for (MouseMotionListener listener : component.getMouseMotionListeners())
+            listener.mouseMoved(probe);
     }
 
-    private static void dispatchKeySequence(Component component) {
+    private static void dispatchAwtKeyMSequence(Component component) {
         KeyEvent pressed = new KeyEvent(component, KeyEvent.KEY_PRESSED, 1L, KEY_MODIFIERS, KeyEvent.VK_M, 'M', KeyEvent.KEY_LOCATION_STANDARD);
         KeyEvent repeated = new KeyEvent(component, KeyEvent.KEY_PRESSED, 2L, KEY_MODIFIERS, KeyEvent.VK_M, 'M', KeyEvent.KEY_LOCATION_STANDARD);
         KeyEvent typed = new KeyEvent(component, KeyEvent.KEY_TYPED, 3L, KEY_MODIFIERS, KeyEvent.VK_UNDEFINED, 'M', KeyEvent.KEY_LOCATION_UNKNOWN);
@@ -303,7 +408,9 @@ class CefBrowserOsrInputTest {
             listener.keyPressed(pressedAfterRelease);
         for (KeyListener listener : component.getKeyListeners())
             listener.keyReleased(releasedAfterReset);
+    }
 
+    private static void dispatchAwtTabSequence(Component component) {
         // CefBrowserInputContractTest covers repeat-state clearing across focus lifecycles. Keep
         // this native renderer sequence focused throughout because BrowserHost.SetFocus is
         // asynchronous and interleaving a second key sequence would test scheduling, not mapping.
@@ -315,17 +422,17 @@ class CefBrowserOsrInputTest {
         // component listeners, so invoke the production-installed listeners directly for this key.
         for (KeyListener listener : component.getKeyListeners()) listener.keyPressed(tabPressed);
         for (KeyListener listener : component.getKeyListeners()) listener.keyReleased(tabReleased);
+    }
 
+    private static void dispatchRemainingAwtKeys(Component component) {
         KeyEvent unicodePressed = new KeyEvent(component, KeyEvent.KEY_PRESSED, 12L, 0, KeyEvent.VK_O, '\u03A9', KeyEvent.KEY_LOCATION_STANDARD);
         KeyEvent unicode = new KeyEvent(component, KeyEvent.KEY_TYPED, 13L, 0, KeyEvent.VK_UNDEFINED, '\u03A9', KeyEvent.KEY_LOCATION_UNKNOWN);
         KeyEvent unicodeReleased = new KeyEvent(component, KeyEvent.KEY_RELEASED, 14L, 0, KeyEvent.VK_O, '\u03A9', KeyEvent.KEY_LOCATION_STANDARD);
         KeyEvent leftArrowPressed = new KeyEvent(component, KeyEvent.KEY_PRESSED, 15L, 0, KeyEvent.VK_LEFT, KeyEvent.CHAR_UNDEFINED, KeyEvent.KEY_LOCATION_STANDARD);
         KeyEvent leftArrowReleased = new KeyEvent(component, KeyEvent.KEY_RELEASED, 16L, 0, KeyEvent.VK_LEFT, KeyEvent.CHAR_UNDEFINED, KeyEvent.KEY_LOCATION_STANDARD);
-        KeyEvent leftShiftPressed =
-                new KeyEvent(component, KeyEvent.KEY_PRESSED, 17L, InputEvent.SHIFT_DOWN_MASK, KeyEvent.VK_SHIFT, KeyEvent.CHAR_UNDEFINED, KeyEvent.KEY_LOCATION_LEFT);
+        KeyEvent leftShiftPressed = new KeyEvent(component, KeyEvent.KEY_PRESSED, 17L, InputEvent.SHIFT_DOWN_MASK, KeyEvent.VK_SHIFT, KeyEvent.CHAR_UNDEFINED, KeyEvent.KEY_LOCATION_LEFT);
         KeyEvent leftShiftReleased = new KeyEvent(component, KeyEvent.KEY_RELEASED, 18L, 0, KeyEvent.VK_SHIFT, KeyEvent.CHAR_UNDEFINED, KeyEvent.KEY_LOCATION_LEFT);
-        KeyEvent rightControlPressed =
-                new KeyEvent(component, KeyEvent.KEY_PRESSED, 19L, InputEvent.CTRL_DOWN_MASK, KeyEvent.VK_CONTROL, KeyEvent.CHAR_UNDEFINED, KeyEvent.KEY_LOCATION_RIGHT);
+        KeyEvent rightControlPressed = new KeyEvent(component, KeyEvent.KEY_PRESSED, 19L, InputEvent.CTRL_DOWN_MASK, KeyEvent.VK_CONTROL, KeyEvent.CHAR_UNDEFINED, KeyEvent.KEY_LOCATION_RIGHT);
         KeyEvent rightControlReleased = new KeyEvent(component, KeyEvent.KEY_RELEASED, 20L, 0, KeyEvent.VK_CONTROL, KeyEvent.CHAR_UNDEFINED, KeyEvent.KEY_LOCATION_RIGHT);
         KeyEvent numpadPressed = new KeyEvent(component, KeyEvent.KEY_PRESSED, 21L, 0, KeyEvent.VK_NUMPAD1, '1', KeyEvent.KEY_LOCATION_NUMPAD);
         KeyEvent numpadReleased = new KeyEvent(component, KeyEvent.KEY_RELEASED, 22L, 0, KeyEvent.VK_NUMPAD1, '1', KeyEvent.KEY_LOCATION_NUMPAD);
@@ -357,7 +464,7 @@ class CefBrowserOsrInputTest {
             listener.keyReleased(keypadLeftReleased);
     }
 
-    private static void dispatchMouseSequence(Component component) {
+    private static void dispatchAwtMouseSequence(Component component) {
         int allMouseModifiers = InputEvent.SHIFT_DOWN_MASK | InputEvent.CTRL_DOWN_MASK
                 | InputEvent.ALT_DOWN_MASK | InputEvent.META_DOWN_MASK
                 | InputEvent.BUTTON1_DOWN_MASK | InputEvent.BUTTON2_DOWN_MASK
@@ -368,7 +475,9 @@ class CefBrowserOsrInputTest {
 
         dispatchMouseButton(component, 5L, 50, 60, MouseEvent.BUTTON2, InputEvent.BUTTON2_DOWN_MASK);
         dispatchMouseButton(component, 7L, 70, 80, MouseEvent.BUTTON3, InputEvent.BUTTON3_DOWN_MASK);
+    }
 
+    private static void dispatchAwtWheelSequence(Component component) {
         MouseWheelEvent vertical = new MouseWheelEvent(component, MouseEvent.MOUSE_WHEEL, 10L, 0, 90, 100, 90, 100, 0, false, MouseWheelEvent.WHEEL_UNIT_SCROLL, 4, 1, 0.4);
         MouseWheelEvent horizontal = new MouseWheelEvent(component, MouseEvent.MOUSE_WHEEL, 11L, InputEvent.SHIFT_DOWN_MASK, 110, 120, 110, 120, 0, false, MouseWheelEvent.WHEEL_UNIT_SCROLL, 4, 1, 0.4);
         MouseWheelEvent page = new MouseWheelEvent(component, MouseEvent.MOUSE_WHEEL, 12L, 0, 130, 140, 130, 140, 0, false, MouseWheelEvent.WHEEL_BLOCK_SCROLL, 1, 1, 0.4);
@@ -406,7 +515,8 @@ class CefBrowserOsrInputTest {
         for (MouseWheelListener listener : component.getMouseWheelListeners())
             listener.mouseWheelMoved(wheel);
         for (FocusListener listener : component.getFocusListeners()) listener.focusLost(focusLost);
-        for (FocusListener listener : component.getFocusListeners()) listener.focusGained(focusGained);
+        for (FocusListener listener : component.getFocusListeners())
+            listener.focusGained(focusGained);
     }
 
     private static MenuElement[] createMenuSelectionPath() {
@@ -416,7 +526,7 @@ class CefBrowserOsrInputTest {
         return new MenuElement[] {menu, menu.getPopupMenu(), item};
     }
 
-    private static void dispatchLegacyInput(CefBrowser browser) throws Exception {
+    private static void dispatchLegacyKeys(CefBrowser browser) throws Exception {
         Method keyMethod = CefBrowser_N.class.getDeclaredMethod("sendKeyEvent", CefKeyEvent.class);
         keyMethod.setAccessible(true);
         keyMethod.invoke(browser, new CefKeyEvent(CefKeyEvent.KEY_TYPE, 88, 'x', 0x1));
@@ -439,7 +549,9 @@ class CefBrowserOsrInputTest {
         keyMethod.invoke(browser, new CefKeyEvent(CefKeyEvent.KEY_PRESS, 69, (char) 69, 0x11));
         keyMethod.invoke(browser, new CefKeyEvent(CefKeyEvent.KEY_RELEASE, 69, (char) 69, 0x11));
         keyMethod.invoke(browser, new CefKeyEvent(CefKeyEvent.KEY_TYPE, 81, 'q', 0x11));
+    }
 
+    private static void dispatchLegacyMouse(CefBrowser browser) throws Exception {
         Method mouseMethod =
                 CefBrowser_N.class.getDeclaredMethod("sendMouseEvent", CefMouseEvent.class);
         mouseMethod.setAccessible(true);
@@ -459,19 +571,39 @@ class CefBrowserOsrInputTest {
         // identity but does not surface as the DOM NumLock toggle state.
         // The same bridge normalizes EVENTFLAG_SCROLL_BY_PAGE to DOM pixel mode; Aura preserves
         // DOM_DELTA_PAGE. In both cases the rounded page magnitude remains observable.
+        // mPhaseEnd and tabPhaseEnd are transport barriers for the final releases in the first
+        // two phases. Without them the renderer could acknowledge a keydown before its matching
+        // keyup leaves Chromium's input queue, partially defeating the phase protocol.
+        // Missing-title updates are diagnostics only. Java advances the protocol exclusively for
+        // exact InputPhase titles, so reporting partial progress cannot weaken phase ordering.
         return "<!doctype html><html><head><meta charset=utf-8><style>html,body{width:100%;height:100%;margin:0}</style></head><body><input id=i><input id=tabTarget><script>"
                 + "const expectDomRepeat=" + expectDomRepeat + ";"
                 + "const expectDomNumLock=" + expectDomNumLock + ";"
-                + "const seen={mFirst:false,mRepeat:false,mReset:false,tab:false,tabFocus:false,unicode:false,arrowDown:false,arrowUp:false,keypadLeftDown:false,keypadLeftUp:false,leftShift:false,rightControl:false,numpad:false,legacyTyped:false,legacyTypedExact:false,legacyRepeat:false,legacyTab:false,legacyRight:false,legacyKeypad:false,legacyLocks:false,legacyLower:false,legacyShift:false,legacyCaps:false,legacyShiftCaps:false,move:false,legacyMove:false,middleDown:false,middleUp:false,rightDown:false,rightUp:false,vertical:false,horizontal:false,page:false,pageMagnitude:false,minimum:false};"
-                + "let mIndex=0,tabIndex=0,wheelIndex=0,inputRouteReady=false;"
-                + "const report=()=>{const missing=Object.keys(seen).filter(k=>!seen[k]);document.title=missing.length?'missing:'+missing.join(','):'"
-                + SUCCESS_TITLE + "';};"
+                + "const seen={mFirst:false,mRepeat:false,mReset:false,mPhaseEnd:false,tab:false,tabFocus:false,tabPhaseEnd:false,unicode:false,arrowDown:false,arrowUp:false,keypadLeftDown:false,keypadLeftUp:false,leftShift:false,rightControl:false,numpad:false,legacyTyped:false,legacyTypedExact:false,legacyRepeat:false,legacyTab:false,legacyRight:false,legacyKeypad:false,legacyLocks:false,legacyLower:false,legacyShift:false,legacyCaps:false,legacyShiftCaps:false,move:false,legacyMove:false,middleDown:false,middleUp:false,rightDown:false,rightUp:false,vertical:false,horizontal:false,page:false,pageMagnitude:false,minimum:false};"
+                + "const phases=["
+                + "{title:'" + InputPhase.AWT_KEY_M.getTitle()
+                + "',required:['mFirst','mRepeat','mReset','mPhaseEnd']},"
+                + "{title:'" + InputPhase.AWT_TAB.getTitle()
+                + "',required:['tab','tabFocus','tabPhaseEnd']},"
+                + "{title:'" + InputPhase.AWT_KEYS.getTitle()
+                + "',required:['unicode','arrowDown','arrowUp','keypadLeftDown','keypadLeftUp','leftShift','rightControl','numpad']},"
+                + "{title:'" + InputPhase.AWT_MOUSE.getTitle()
+                + "',required:['move','middleDown','middleUp','rightDown','rightUp']},"
+                + "{title:'" + InputPhase.AWT_WHEEL.getTitle()
+                + "',required:['vertical','horizontal','page','pageMagnitude','minimum']},"
+                + "{title:'" + InputPhase.LEGACY_KEYS.getTitle()
+                + "',required:['legacyTyped','legacyTypedExact','legacyRepeat','legacyTab','legacyRight','legacyKeypad','legacyLocks','legacyLower','legacyShift','legacyCaps','legacyShiftCaps']},"
+                + "{title:'" + InputPhase.LEGACY_MOUSE.getTitle() + "',required:['legacyMove']}];"
+                + "let phaseIndex=0,mIndex=0,tabIndex=0,wheelIndex=0,inputRouteReady=false;"
+                + "const report=()=>{const phase=phases[phaseIndex];if(!phase)return;const missing=phase.required.filter(key=>!seen[key]);if(missing.length){document.title='missing:'+phase.title+':'+missing.join(',');return;}phaseIndex++;document.title=phase.title;};"
                 + "addEventListener('keydown',e=>{if(e.code==='KeyM'){const mods=e.shiftKey&&e.ctrlKey&&e.altKey&&e.metaKey;if(mIndex===0&&!e.repeat&&mods)seen.mFirst=true;if(mIndex===1&&(!expectDomRepeat||e.repeat)&&mods)seen.mRepeat=true;if(mIndex===2&&!e.repeat&&mods)seen.mReset=true;mIndex++;}if(e.code==='Tab'&&e.location===0){if(tabIndex===0)seen.tab=true;if(tabIndex===1)seen.legacyTab=true;tabIndex++;}if(e.key==='ArrowLeft'&&e.location===0)seen.arrowDown=true;if(e.code==='Numpad4'&&e.key==='ArrowLeft'&&e.location===3)seen.keypadLeftDown=true;if(e.key==='Shift'&&e.location===1)seen.leftShift=true;if(e.key==='Control'&&e.location===2)seen.rightControl=true;if(e.code==='Numpad1'&&e.location===3)seen.numpad=true;if(e.code==='KeyR'&&e.ctrlKey&&(!expectDomRepeat||e.repeat))seen.legacyRepeat=true;if(e.code==='ShiftRight'&&e.location===2)seen.legacyRight=true;if(e.code==='Numpad0'&&e.location===3)seen.legacyKeypad=true;if(e.code==='KeyC'&&e.getModifierState('CapsLock')&&(!expectDomNumLock||e.getModifierState('NumLock')))seen.legacyLocks=true;if(e.code==='KeyA'&&e.key==='a'&&!e.shiftKey&&!e.getModifierState('CapsLock'))seen.legacyLower=true;if(e.code==='KeyB'&&e.key==='B'&&e.shiftKey&&!e.getModifierState('CapsLock'))seen.legacyShift=true;if(e.code==='KeyD'&&e.key==='D'&&!e.shiftKey&&e.getModifierState('CapsLock'))seen.legacyCaps=true;if(e.code==='KeyE'&&e.key==='e'&&e.shiftKey&&e.getModifierState('CapsLock'))seen.legacyShiftCaps=true;report();},true);"
-                + "addEventListener('keyup',e=>{if(e.key==='ArrowLeft'&&e.location===0)seen.arrowUp=true;if(e.code==='Numpad4'&&e.key==='ArrowLeft'&&e.location===3)seen.keypadLeftUp=true;report();},true);"
+                + "addEventListener('keyup',e=>{if(e.code==='KeyM'&&mIndex===3)seen.mPhaseEnd=true;if(e.code==='Tab'&&e.location===0&&tabIndex===1)seen.tabPhaseEnd=true;if(e.key==='ArrowLeft'&&e.location===0)seen.arrowUp=true;if(e.code==='Numpad4'&&e.key==='ArrowLeft'&&e.location===3)seen.keypadLeftUp=true;report();},true);"
                 + "addEventListener('keypress',e=>{if(e.key==='\\u03A9')seen.unicode=true;if(e.key==='x')seen.legacyTyped=true;if(e.key==='q'&&e.shiftKey&&e.getModifierState('CapsLock'))seen.legacyTypedExact=true;report();},true);"
                 + "addEventListener('beforeinput',e=>{if(e.data==='\\u03A9')seen.unicode=true;if(e.data==='x')seen.legacyTyped=true;report();},true);"
                 + "addEventListener('input',e=>{if(e.data==='\\u03A9')seen.unicode=true;if(e.data==='x')seen.legacyTyped=true;report();},true);"
-                + "addEventListener('mousemove',e=>{if(e.clientX===1&&e.clientY===2&&!e.shiftKey&&!e.ctrlKey&&!e.altKey&&!e.metaKey&&e.buttons===0){if(!inputRouteReady){inputRouteReady=true;document.title='" + INPUT_READY_TITLE + "';}return;}if(e.shiftKey&&e.ctrlKey&&e.altKey&&e.metaKey&&e.buttons===7)seen.move=true;if(!e.shiftKey&&!e.ctrlKey&&!e.altKey&&!e.metaKey&&e.buttons===5)seen.legacyMove=true;report();});"
+                + "addEventListener('mousemove',e=>{if(e.clientX===1&&e.clientY===2&&!e.shiftKey&&!e.ctrlKey&&!e.altKey&&!e.metaKey&&e.buttons===0){if(!inputRouteReady){inputRouteReady=true;document.title='"
+                + INPUT_READY_TITLE
+                + "';}return;}if(e.shiftKey&&e.ctrlKey&&e.altKey&&e.metaKey&&e.buttons===7)seen.move=true;if(!e.shiftKey&&!e.ctrlKey&&!e.altKey&&!e.metaKey&&e.buttons===5)seen.legacyMove=true;report();});"
                 + "addEventListener('mousedown',e=>{if(e.button===1)seen.middleDown=true;if(e.button===2)seen.rightDown=true;report();});"
                 + "addEventListener('mouseup',e=>{if(e.button===1)seen.middleUp=true;if(e.button===2)seen.rightUp=true;report();});"
                 + "addEventListener('contextmenu',e=>e.preventDefault());"
@@ -526,23 +658,21 @@ class CefBrowserOsrInputTest {
     private static final class InputDisplayHandler extends CefDisplayHandlerAdapter {
         private final Supplier<CefBrowser> browser_;
         private final AtomicReference<String> lastTitle_;
-        private final AtomicBoolean complete_;
         private final AtomicBoolean pageReady_ = new AtomicBoolean();
         private final AtomicBoolean focusReady_ = new AtomicBoolean();
         private final AtomicBoolean inputReady_ = new AtomicBoolean();
         private final Runnable onPageReady_;
         private final Runnable onFocusReady_;
         private final Runnable onInputReady_;
-        private final Runnable onComplete_;
+        private final Consumer<InputPhase> onInputPhase_;
 
-        private InputDisplayHandler(Supplier<CefBrowser> browser, AtomicReference<String> lastTitle, AtomicBoolean complete, Runnable onPageReady, Runnable onFocusReady, Runnable onInputReady, Runnable onComplete) {
+        private InputDisplayHandler(Supplier<CefBrowser> browser, AtomicReference<String> lastTitle, Runnable onPageReady, Runnable onFocusReady, Runnable onInputReady, Consumer<InputPhase> onInputPhase) {
             browser_ = browser;
             lastTitle_ = lastTitle;
-            complete_ = complete;
             onPageReady_ = onPageReady;
             onFocusReady_ = onFocusReady;
             onInputReady_ = onInputReady;
-            onComplete_ = onComplete;
+            onInputPhase_ = onInputPhase;
         }
 
         @Override
@@ -561,8 +691,8 @@ class CefBrowserOsrInputTest {
                 onInputReady_.run();
                 return;
             }
-            if (SUCCESS_TITLE.equals(title) && complete_.compareAndSet(false, true))
-                onComplete_.run();
+            InputPhase inputPhase = InputPhase.fromTitle(title);
+            if (inputPhase != null) onInputPhase_.accept(inputPhase);
         }
     }
 }

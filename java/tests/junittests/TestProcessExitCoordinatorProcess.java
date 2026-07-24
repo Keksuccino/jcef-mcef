@@ -23,6 +23,7 @@ public final class TestProcessExitCoordinatorProcess {
     static final String NATURAL_RETURN_MARKER = "coordinator-returned-naturally";
     static final int FAILURE_STATUS = 37;
     private static final long FIXTURE_TIMEOUT_NANOS = TimeUnit.MILLISECONDS.toNanos(100);
+    private static final long AWT_ACTION_FAILURE_TIMEOUT_NANOS = TimeUnit.SECONDS.toNanos(8);
     private static final long AWT_SUCCESS_TIMEOUT_NANOS = TimeUnit.SECONDS.toNanos(5);
 
     private TestProcessExitCoordinatorProcess() {}
@@ -42,8 +43,8 @@ public final class TestProcessExitCoordinatorProcess {
             throw new AssertionError("AWT failure completion unexpectedly returned");
         }
         if (AWT_ACTION_FAILURE_MODE.equals(args[0])) {
-            initializeAwt();
-            TestProcessExitCoordinator.finish(0, FIXTURE_TIMEOUT_NANOS, TestProcessExitCoordinatorProcess::failAwtShutdown);
+            AwtContext awtContext = initializeAwt();
+            TestProcessExitCoordinator.finish(0, AWT_ACTION_FAILURE_TIMEOUT_NANOS, () -> failAwtShutdown(awtContext));
             throw new AssertionError("Failed completion unexpectedly returned");
         }
         if (FAILURE_MODE.equals(args[0])) {
@@ -98,7 +99,10 @@ public final class TestProcessExitCoordinatorProcess {
         awtContext.releaseEvent().countDown();
     }
 
-    private static void failAwtShutdown() {
+    private static void failAwtShutdown(AwtContext awtContext) {
+        // Let the already-running event finish so this failure fixture can prove that the
+        // coordinator waits for natural AWT teardown instead of masking a passive-hook timeout.
+        awtContext.releaseEvent().countDown();
         throw new IllegalStateException("injected AWT shutdown action failure");
     }
 

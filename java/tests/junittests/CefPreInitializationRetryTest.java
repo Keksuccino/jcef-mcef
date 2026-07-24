@@ -65,6 +65,7 @@ class CefPreInitializationRetryTest {
         assertTrue(exited, "Retry fixture timed out; output:\n" + readOutput(output));
         String processOutput = readOutput(output);
         assertFalse(ChildProcessSupport.containsJvmFatalError(processOutput), "Retry fixture reported a fatal JVM error:\n" + processOutput);
+        assertFalse(WindowsAwtShutdownObserver.containsFailureDiagnostics(processOutput), "Retry fixture reported a Windows AWT shutdown-observer failure:\n" + processOutput);
         List<Path> crashReports = ChildProcessSupport.findJvmCrashReports(tempDirectory_);
         assertTrue(crashReports.isEmpty(), "Retry fixture created JVM crash reports: " + crashReports + "\n" + processOutput);
         assertEquals(0, process.exitValue(), "Retry fixture failed; output:\n" + processOutput);

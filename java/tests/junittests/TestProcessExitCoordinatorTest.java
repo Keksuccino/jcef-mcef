@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -30,6 +31,7 @@ import java.util.function.Supplier;
 
 class TestProcessExitCoordinatorTest {
     private static final int UNSET_EXIT_STATUS = Integer.MIN_VALUE;
+    private static final long MILLISECOND_NANOS = TimeUnit.MILLISECONDS.toNanos(1);
     private static final long TEST_THREAD_TIMEOUT_MILLIS = TimeUnit.SECONDS.toMillis(5);
     // Fixture setup and coordinator waits can consume 5 + 5 + 5 seconds consecutively.
     private static final long PROCESS_TIMEOUT_SECONDS = 30;
@@ -53,42 +55,495 @@ class TestProcessExitCoordinatorTest {
     }
 
     @Test
-    void awtSuccessRequestsShutdownOnceAndWaitsForDynamicThreads() throws Exception {
+    void fullHookWiringObservesRawDaemonBeforeFilteringAndReservesCoordinatorBudget() throws Exception {
+        BlockedThread daemonToolkit = startBlockedThread("AWT-Windows", true);
+        BlockedThread ordinary = startBlockedThread("ordinary-cleanup", false);
+        AtomicLong nanoTime = new AtomicLong(1_000);
+        AtomicLong observerReserveNanos = new AtomicLong();
+        AtomicBoolean rawDaemonObserved = new AtomicBoolean();
+        AtomicInteger rawSnapshots = new AtomicInteger();
+        AtomicInteger completionValidations = new AtomicInteger();
+        AtomicInteger exitStatus = new AtomicInteger(UNSET_EXIT_STATUS);
+        Supplier<Map<Thread, StackTraceElement[]>> snapshots = () -> Map.of(daemonToolkit.thread(), daemonToolkit.thread().getStackTrace(), ordinary.thread(), ordinary.thread().getStackTrace());
+        TestProcessExitCoordinator.RawSnapshotObserver rawSnapshotObserver = snapshot -> {
+            rawSnapshots.incrementAndGet();
+            assertTrue(snapshot.containsKey(daemonToolkit.thread()));
+            assertTrue(daemonToolkit.thread().isDaemon());
+            rawDaemonObserved.set(true);
+            observerReserveNanos.set(30 * MILLISECOND_NANOS);
+        };
+        TestProcessExitCoordinator.ThreadWaiter waiter = (thread, timeoutNanos) -> {
+            assertTrue(rawDaemonObserved.get());
+            assertEquals(ordinary.thread(), thread);
+            assertEquals(70 * MILLISECOND_NANOS, timeoutNanos);
+            releaseAndJoin(ordinary);
+            nanoTime.addAndGet(10 * MILLISECOND_NANOS);
+        };
+        TestProcessExitCoordinator.CompletionValidator completionValidator = () -> {
+            completionValidations.incrementAndGet();
+            return false;
+        };
+        TestProcessExitCoordinator.Hooks hooks = new TestProcessExitCoordinator.Hooks(snapshots, nanoTime::get, waiter, timeoutNanos -> {}, rawSnapshotObserver, observerReserveNanos::get, completionValidator, () -> {}, exitStatus::set, new PrintWriter(new ByteArrayOutputStream()));
+
+        try {
+            TestProcessExitCoordinator.finish(0, 100 * MILLISECOND_NANOS, 0, 0, hooks);
+            assertEquals(2, rawSnapshots.get());
+            assertEquals(1, completionValidations.get());
+            assertEquals(1, exitStatus.get());
+        } finally {
+            releaseAndJoin(ordinary);
+            releaseAndJoin(daemonToolkit);
+        }
+    }
+
+    @Test
+    void completionValidationFailurePreservesExplicitNonzeroStatus() {
+        AtomicInteger exitStatus = new AtomicInteger(UNSET_EXIT_STATUS);
+        TestProcessExitCoordinator.Hooks hooks = new TestProcessExitCoordinator.Hooks(Map::of, () -> 1_000, (thread, timeoutNanos) -> {}, timeoutNanos -> {}, snapshot -> {}, () -> 0, () -> false, () -> {}, exitStatus::set, new PrintWriter(new ByteArrayOutputStream()));
+
+        TestProcessExitCoordinator.finish(47, 100, 0, 0, hooks);
+
+        assertEquals(47, exitStatus.get());
+    }
+
+    @Test
+    void naturalAwtTerminationSurvivesUnvalidatedLateActivationWithoutForcedShutdown() throws Exception {
         BlockedThread awt = startBlockedThread("AWT-EventQueue-test", false);
         AtomicReference<BlockedThread> active = new AtomicReference<BlockedThread>(awt);
         AtomicReference<BlockedThread> late = new AtomicReference<BlockedThread>();
-        AtomicLong nanoTime = new AtomicLong(Long.MAX_VALUE - 10);
+        AtomicBoolean lateStackValidated = new AtomicBoolean();
+        AtomicLong nanoTime = new AtomicLong(Long.MAX_VALUE - 10 * MILLISECOND_NANOS);
         AtomicInteger shutdownActions = new AtomicInteger();
         AtomicInteger exitStatus = new AtomicInteger(UNSET_EXIT_STATUS);
         List<Thread> waitedThreads = new ArrayList<Thread>();
         List<Long> waitBudgets = new ArrayList<Long>();
-        Supplier<Map<Thread, StackTraceElement[]>> snapshots = () -> active.get() != null && active.get() == late.get() ? snapshotOfAwtShutdown(active.get()) : snapshotOf(active.get());
+        List<Long> stabilizationBudgets = new ArrayList<Long>();
+        Supplier<Map<Thread, StackTraceElement[]>> snapshots = () -> active.get() != null && active.get() == late.get() && lateStackValidated.get() ? snapshotOfAwtShutdown(active.get()) : snapshotOf(active.get());
         TestProcessExitCoordinator.ThreadWaiter waiter = (thread, timeoutNanos) -> {
             BlockedThread expected = active.get();
             assertEquals(expected.thread(), thread);
             waitedThreads.add(thread);
             waitBudgets.add(timeoutNanos);
-            releaseAndJoin(expected);
             if (expected == awt) {
+                releaseAndJoin(expected);
+                active.set(null);
+                nanoTime.addAndGet(20 * MILLISECOND_NANOS);
+            } else if (!lateStackValidated.get()) {
+                assertEquals(10 * MILLISECOND_NANOS, timeoutNanos);
+                assertFalse(expected.thread().isInterrupted());
+                lateStackValidated.set(true);
+                nanoTime.addAndGet(MILLISECOND_NANOS);
+            } else {
+                releaseAndJoin(expected);
+                active.set(null);
+                nanoTime.addAndGet(10 * MILLISECOND_NANOS);
+            }
+        };
+        TestProcessExitCoordinator.StabilizationWaiter stabilizationWaiter = timeoutNanos -> {
+            stabilizationBudgets.add(timeoutNanos);
+            if (late.get() == null) {
                 BlockedThread lateCleanup = startBlockedThread("AWT-Shutdown", false);
                 late.set(lateCleanup);
                 active.set(lateCleanup);
-            } else {
-                active.set(null);
+                nanoTime.addAndGet(5 * MILLISECOND_NANOS);
+                return;
             }
-            nanoTime.addAndGet(25);
+            nanoTime.addAndGet(timeoutNanos);
         };
-        TestProcessExitCoordinator.Hooks hooks = new TestProcessExitCoordinator.Hooks(snapshots, nanoTime::get, waiter, shutdownActions::incrementAndGet, exitStatus::set, new PrintWriter(new ByteArrayOutputStream()));
+        TestProcessExitCoordinator.Hooks hooks = new TestProcessExitCoordinator.Hooks(snapshots, nanoTime::get, waiter, stabilizationWaiter, shutdownActions::incrementAndGet, exitStatus::set, new PrintWriter(new ByteArrayOutputStream()));
 
         try {
-            TestProcessExitCoordinator.finish(0, 100, hooks);
-            assertEquals(List.of(awt.thread(), late.get().thread()), waitedThreads);
-            assertEquals(List.of(100L, 75L), waitBudgets);
-            assertEquals(1, shutdownActions.get());
-            assertTrue(late.get().thread().isInterrupted());
+            TestProcessExitCoordinator.finish(0, 100 * MILLISECOND_NANOS, 80 * MILLISECOND_NANOS, 20 * MILLISECOND_NANOS, hooks);
+            assertEquals(List.of(awt.thread(), late.get().thread(), late.get().thread()), waitedThreads);
+            assertEquals(List.of(50 * MILLISECOND_NANOS, 10 * MILLISECOND_NANOS, 24 * MILLISECOND_NANOS), waitBudgets);
+            assertEquals(List.of(20 * MILLISECOND_NANOS, 20 * MILLISECOND_NANOS), stabilizationBudgets);
+            assertEquals(0, shutdownActions.get());
+            assertFalse(late.get().thread().isInterrupted());
             assertEquals(UNSET_EXIT_STATUS, exitStatus.get());
         } finally {
             releaseAndJoin(awt);
+            if (late.get() != null) releaseAndJoin(late.get());
+        }
+    }
+
+    @Test
+    void expiredGraceResnapshotsUnvalidatedAwtShutdownBeforeForcedAction() throws Exception {
+        BlockedThread awt = startBlockedThread("AWT-EventQueue-test", false);
+        AtomicReference<BlockedThread> active = new AtomicReference<BlockedThread>(awt);
+        AtomicReference<BlockedThread> unvalidated = new AtomicReference<BlockedThread>();
+        AtomicBoolean stackValidated = new AtomicBoolean();
+        AtomicLong nanoTime = new AtomicLong(1_000);
+        AtomicInteger shutdownActions = new AtomicInteger();
+        AtomicInteger exitStatus = new AtomicInteger(UNSET_EXIT_STATUS);
+        List<Long> waitBudgets = new ArrayList<Long>();
+        TestProcessExitCoordinator.ThreadWaiter waiter = (thread, timeoutNanos) -> {
+            assertEquals(active.get().thread(), thread);
+            waitBudgets.add(timeoutNanos);
+            if (active.get() == awt) {
+                releaseAndJoin(awt);
+                BlockedThread unvalidatedShutdown = startBlockedThread("AWT-Shutdown", false);
+                unvalidated.set(unvalidatedShutdown);
+                active.set(unvalidatedShutdown);
+                nanoTime.addAndGet(10 * MILLISECOND_NANOS);
+                return;
+            }
+            assertFalse(thread.isInterrupted());
+            assertEquals(0, shutdownActions.get());
+            stackValidated.set(true);
+            nanoTime.addAndGet(MILLISECOND_NANOS);
+        };
+        Supplier<Map<Thread, StackTraceElement[]>> snapshots = () -> active.get() == unvalidated.get() && stackValidated.get() ? snapshotOfAwtShutdown(active.get()) : snapshotOf(active.get());
+        TestProcessExitCoordinator.ShutdownAction shutdownAction = () -> {
+            assertTrue(stackValidated.get());
+            shutdownActions.incrementAndGet();
+            releaseAndJoin(unvalidated.get());
+            active.set(null);
+        };
+        TestProcessExitCoordinator.Hooks hooks = new TestProcessExitCoordinator.Hooks(snapshots, nanoTime::get, waiter, timeoutNanos -> nanoTime.addAndGet(timeoutNanos), shutdownAction, exitStatus::set, new PrintWriter(new ByteArrayOutputStream()));
+
+        try {
+            TestProcessExitCoordinator.finish(0, 100 * MILLISECOND_NANOS, 10 * MILLISECOND_NANOS, 10 * MILLISECOND_NANOS, hooks);
+            assertEquals(List.of(10 * MILLISECOND_NANOS, 10 * MILLISECOND_NANOS), waitBudgets);
+            assertEquals(1, shutdownActions.get());
+            assertFalse(unvalidated.get().thread().isInterrupted());
+            assertEquals(UNSET_EXIT_STATUS, exitStatus.get());
+        } finally {
+            releaseAndJoin(awt);
+            if (unvalidated.get() != null) releaseAndJoin(unvalidated.get());
+        }
+    }
+
+    @Test
+    void exhaustedInitialAwtGraceRequestsForcedShutdownExactlyOnce() throws Exception {
+        BlockedThread awt = startBlockedThread("AWT-EventQueue-test", false);
+        AtomicLong nanoTime = new AtomicLong(1_000);
+        AtomicInteger shutdownActions = new AtomicInteger();
+        AtomicInteger exitStatus = new AtomicInteger(UNSET_EXIT_STATUS);
+        List<Long> waitBudgets = new ArrayList<Long>();
+        List<Long> stabilizationBudgets = new ArrayList<Long>();
+        TestProcessExitCoordinator.ThreadWaiter waiter = (thread, timeoutNanos) -> {
+            assertEquals(awt.thread(), thread);
+            waitBudgets.add(timeoutNanos);
+            nanoTime.addAndGet(timeoutNanos);
+        };
+        TestProcessExitCoordinator.StabilizationWaiter stabilizationWaiter = timeoutNanos -> {
+            stabilizationBudgets.add(timeoutNanos);
+            nanoTime.addAndGet(timeoutNanos);
+        };
+        TestProcessExitCoordinator.ShutdownAction shutdownAction = () -> {
+            shutdownActions.incrementAndGet();
+            releaseAndJoin(awt);
+        };
+        TestProcessExitCoordinator.Hooks hooks = new TestProcessExitCoordinator.Hooks(() -> snapshotOf(awt), nanoTime::get, waiter, stabilizationWaiter, shutdownAction, exitStatus::set, new PrintWriter(new ByteArrayOutputStream()));
+
+        try {
+            TestProcessExitCoordinator.finish(0, 100 * MILLISECOND_NANOS, 80 * MILLISECOND_NANOS, 10 * MILLISECOND_NANOS, hooks);
+            assertEquals(List.of(50 * MILLISECOND_NANOS), waitBudgets);
+            assertEquals(List.of(10 * MILLISECOND_NANOS), stabilizationBudgets);
+            assertEquals(1, shutdownActions.get());
+            assertEquals(UNSET_EXIT_STATUS, exitStatus.get());
+        } finally {
+            releaseAndJoin(awt);
+        }
+    }
+
+    @Test
+    void successfulAwtActionGetsSecondGraceBeforeValidatedBlockerInterruption() throws Exception {
+        BlockedThread awt = startBlockedThread("AWT-Shutdown", false);
+        AtomicLong nanoTime = new AtomicLong(1_000);
+        AtomicInteger shutdownActions = new AtomicInteger();
+        AtomicInteger waits = new AtomicInteger();
+        AtomicInteger exitStatus = new AtomicInteger(UNSET_EXIT_STATUS);
+        List<Long> waitBudgets = new ArrayList<Long>();
+        TestProcessExitCoordinator.ThreadWaiter waiter = (thread, timeoutNanos) -> {
+            assertEquals(awt.thread(), thread);
+            waitBudgets.add(timeoutNanos);
+            if (waits.incrementAndGet() <= 2) {
+                assertFalse(thread.isInterrupted());
+                nanoTime.addAndGet(timeoutNanos);
+                return;
+            }
+            assertTrue(thread.isInterrupted() || !thread.isAlive());
+            releaseAndJoin(awt);
+        };
+        TestProcessExitCoordinator.Hooks hooks = new TestProcessExitCoordinator.Hooks(() -> snapshotOfAwtShutdown(awt), nanoTime::get, waiter, shutdownActions::incrementAndGet, exitStatus::set, new PrintWriter(new ByteArrayOutputStream()));
+
+        try {
+            TestProcessExitCoordinator.finish(0, 100 * MILLISECOND_NANOS, 80 * MILLISECOND_NANOS, 0, hooks);
+            assertEquals(List.of(50 * MILLISECOND_NANOS, 25 * MILLISECOND_NANOS, 25 * MILLISECOND_NANOS), waitBudgets);
+            assertEquals(1, shutdownActions.get());
+            assertEquals(UNSET_EXIT_STATUS, exitStatus.get());
+        } finally {
+            releaseAndJoin(awt);
+        }
+    }
+
+    @Test
+    void blockerCanTerminateNaturallyDuringPostActionGraceWithoutInterruption() throws Exception {
+        BlockedThread awt = startBlockedThread("AWT-Shutdown", false);
+        AtomicLong nanoTime = new AtomicLong(1_000);
+        AtomicInteger shutdownActions = new AtomicInteger();
+        AtomicInteger exitStatus = new AtomicInteger(UNSET_EXIT_STATUS);
+        List<Long> waitBudgets = new ArrayList<Long>();
+        TestProcessExitCoordinator.ThreadWaiter waiter = (thread, timeoutNanos) -> {
+            assertEquals(awt.thread(), thread);
+            assertFalse(thread.isInterrupted());
+            waitBudgets.add(timeoutNanos);
+            if (waitBudgets.size() == 1) {
+                nanoTime.addAndGet(timeoutNanos);
+                return;
+            }
+            releaseAndJoin(awt);
+            nanoTime.addAndGet(10 * MILLISECOND_NANOS);
+        };
+        TestProcessExitCoordinator.Hooks hooks = new TestProcessExitCoordinator.Hooks(() -> snapshotOfAwtShutdown(awt), nanoTime::get, waiter, shutdownActions::incrementAndGet, exitStatus::set, new PrintWriter(new ByteArrayOutputStream()));
+
+        try {
+            TestProcessExitCoordinator.finish(0, 100 * MILLISECOND_NANOS, 80 * MILLISECOND_NANOS, 0, hooks);
+            assertEquals(List.of(50 * MILLISECOND_NANOS, 25 * MILLISECOND_NANOS), waitBudgets);
+            assertEquals(1, shutdownActions.get());
+            assertFalse(awt.thread().isInterrupted());
+            assertEquals(UNSET_EXIT_STATUS, exitStatus.get());
+        } finally {
+            releaseAndJoin(awt);
+        }
+    }
+
+    @Test
+    void forcedShutdownResnapshotsUnvalidatedReplacementBeforeInterruptingIt() throws Exception {
+        BlockedThread awt = startBlockedThread("AWT-EventQueue-test", false);
+        AtomicReference<BlockedThread> active = new AtomicReference<BlockedThread>(awt);
+        AtomicReference<BlockedThread> late = new AtomicReference<BlockedThread>();
+        AtomicBoolean lateStackValidated = new AtomicBoolean();
+        AtomicLong nanoTime = new AtomicLong(1_000);
+        AtomicInteger shutdownActions = new AtomicInteger();
+        AtomicInteger exitStatus = new AtomicInteger(UNSET_EXIT_STATUS);
+        List<Thread> waitedThreads = new ArrayList<Thread>();
+        List<Long> waitBudgets = new ArrayList<Long>();
+        List<Long> stabilizationBudgets = new ArrayList<Long>();
+        Supplier<Map<Thread, StackTraceElement[]>> snapshots = () -> active.get() != null && active.get() == late.get() && lateStackValidated.get() ? snapshotOfAwtShutdown(active.get()) : snapshotOf(active.get());
+        TestProcessExitCoordinator.ThreadWaiter waiter = (thread, timeoutNanos) -> {
+            BlockedThread expected = active.get();
+            assertEquals(expected.thread(), thread);
+            waitedThreads.add(thread);
+            waitBudgets.add(timeoutNanos);
+            if (expected == awt) {
+                releaseAndJoin(expected);
+                BlockedThread lateCleanup = startBlockedThread("AWT-Shutdown", false);
+                late.set(lateCleanup);
+                active.set(lateCleanup);
+                nanoTime.addAndGet(20 * MILLISECOND_NANOS);
+            } else if (!lateStackValidated.get()) {
+                assertFalse(expected.thread().isInterrupted());
+                lateStackValidated.set(true);
+                nanoTime.addAndGet(MILLISECOND_NANOS);
+            } else {
+                assertTrue(expected.thread().isInterrupted() || !expected.thread().isAlive());
+                releaseAndJoin(expected);
+                active.set(null);
+                nanoTime.addAndGet(10 * MILLISECOND_NANOS);
+            }
+        };
+        TestProcessExitCoordinator.StabilizationWaiter stabilizationWaiter = timeoutNanos -> {
+            stabilizationBudgets.add(timeoutNanos);
+            nanoTime.addAndGet(timeoutNanos);
+        };
+        TestProcessExitCoordinator.Hooks hooks = new TestProcessExitCoordinator.Hooks(snapshots, nanoTime::get, waiter, stabilizationWaiter, shutdownActions::incrementAndGet, exitStatus::set, new PrintWriter(new ByteArrayOutputStream()));
+
+        try {
+            TestProcessExitCoordinator.finish(0, 100 * MILLISECOND_NANOS, 0, 10 * MILLISECOND_NANOS, hooks);
+            assertEquals(List.of(awt.thread(), late.get().thread(), late.get().thread()), waitedThreads);
+            assertEquals(List.of(100 * MILLISECOND_NANOS, 10 * MILLISECOND_NANOS, 79 * MILLISECOND_NANOS), waitBudgets);
+            assertEquals(List.of(10 * MILLISECOND_NANOS), stabilizationBudgets);
+            assertEquals(1, shutdownActions.get());
+            assertEquals(UNSET_EXIT_STATUS, exitStatus.get());
+        } finally {
+            releaseAndJoin(awt);
+            if (late.get() != null) releaseAndJoin(late.get());
+        }
+    }
+
+    @Test
+    void graceStartsAtFirstAwtObservationAndLeavesBudgetForBothFallbackStages() throws Exception {
+        BlockedThread ordinary = startBlockedThread("ordinary-cleanup", false);
+        BlockedThread awt = startBlockedThread("AWT-EventQueue-test", false);
+        AtomicReference<BlockedThread> active = new AtomicReference<BlockedThread>(ordinary);
+        AtomicLong nanoTime = new AtomicLong(1_000);
+        AtomicInteger shutdownActions = new AtomicInteger();
+        AtomicInteger exitStatus = new AtomicInteger(UNSET_EXIT_STATUS);
+        ByteArrayOutputStream diagnosticBytes = new ByteArrayOutputStream();
+        List<Long> waitBudgets = new ArrayList<Long>();
+        TestProcessExitCoordinator.ThreadWaiter waiter = (thread, timeoutNanos) -> {
+            assertEquals(active.get().thread(), thread);
+            waitBudgets.add(timeoutNanos);
+            if (active.get() == ordinary) {
+                releaseAndJoin(ordinary);
+                active.set(awt);
+                nanoTime.addAndGet(40 * MILLISECOND_NANOS);
+                return;
+            }
+            nanoTime.addAndGet(timeoutNanos);
+        };
+        TestProcessExitCoordinator.Hooks hooks = new TestProcessExitCoordinator.Hooks(() -> snapshotOf(active.get()), nanoTime::get, waiter, timeoutNanos -> nanoTime.addAndGet(timeoutNanos), shutdownActions::incrementAndGet, exitStatus::set, new PrintWriter(diagnosticBytes, true, StandardCharsets.UTF_8));
+
+        try {
+            TestProcessExitCoordinator.finish(0, 100 * MILLISECOND_NANOS, 80 * MILLISECOND_NANOS, 10 * MILLISECOND_NANOS, hooks);
+            String diagnostics = diagnosticBytes.toString(StandardCharsets.UTF_8);
+            assertEquals(List.of(100 * MILLISECOND_NANOS, 30 * MILLISECOND_NANOS, 15 * MILLISECOND_NANOS, 15 * MILLISECOND_NANOS), waitBudgets);
+            assertEquals(1, shutdownActions.get());
+            assertEquals(1, exitStatus.get());
+            assertTrue(diagnostics.contains("Timed out after 100 ms"), diagnostics);
+            assertTrue(diagnostics.contains("AWT-EventQueue-test"), diagnostics);
+        } finally {
+            releaseAndJoin(ordinary);
+            releaseAndJoin(awt);
+        }
+    }
+
+    @Test
+    void defaultNaturalGraceIsFiveSecondsAndPostActionGraceRetainsHalfTheDeadline() throws Exception {
+        BlockedThread awt = startBlockedThread("AWT-EventQueue-test", false);
+        AtomicLong nanoTime = new AtomicLong(1_000);
+        AtomicInteger shutdownActions = new AtomicInteger();
+        AtomicInteger exitStatus = new AtomicInteger(UNSET_EXIT_STATUS);
+        List<Long> waitBudgets = new ArrayList<Long>();
+        TestProcessExitCoordinator.ThreadWaiter waiter = (thread, timeoutNanos) -> {
+            assertEquals(awt.thread(), thread);
+            waitBudgets.add(timeoutNanos);
+            nanoTime.addAndGet(timeoutNanos);
+        };
+        TestProcessExitCoordinator.Hooks hooks = new TestProcessExitCoordinator.Hooks(() -> snapshotOf(awt), nanoTime::get, waiter, shutdownActions::incrementAndGet, exitStatus::set, new PrintWriter(new ByteArrayOutputStream()));
+
+        try {
+            TestProcessExitCoordinator.finish(0, TimeUnit.SECONDS.toNanos(12), hooks);
+            assertEquals(List.of(TimeUnit.SECONDS.toNanos(5), TimeUnit.MILLISECONDS.toNanos(3_500), TimeUnit.MILLISECONDS.toNanos(3_500)), waitBudgets);
+            assertEquals(1, shutdownActions.get());
+            assertEquals(1, exitStatus.get());
+        } finally {
+            releaseAndJoin(awt);
+        }
+    }
+
+    @Test
+    void stableAwtQuiescenceCannotExtendTheSharedDeadline() throws Exception {
+        BlockedThread awt = startBlockedThread("AWT-EventQueue-test", false);
+        AtomicLong nanoTime = new AtomicLong(1_000);
+        AtomicInteger shutdownActions = new AtomicInteger();
+        AtomicInteger exitStatus = new AtomicInteger(UNSET_EXIT_STATUS);
+        ByteArrayOutputStream diagnosticBytes = new ByteArrayOutputStream();
+        List<Long> stabilizationBudgets = new ArrayList<Long>();
+        TestProcessExitCoordinator.ThreadWaiter waiter = (thread, timeoutNanos) -> {
+            assertEquals(awt.thread(), thread);
+            releaseAndJoin(awt);
+            nanoTime.addAndGet(90 * MILLISECOND_NANOS);
+        };
+        TestProcessExitCoordinator.StabilizationWaiter stabilizationWaiter = timeoutNanos -> {
+            stabilizationBudgets.add(timeoutNanos);
+            nanoTime.addAndGet(timeoutNanos);
+        };
+        TestProcessExitCoordinator.Hooks hooks = new TestProcessExitCoordinator.Hooks(() -> snapshotOf(awt), nanoTime::get, waiter, stabilizationWaiter, shutdownActions::incrementAndGet, exitStatus::set, new PrintWriter(diagnosticBytes, true, StandardCharsets.UTF_8));
+
+        try {
+            TestProcessExitCoordinator.finish(0, 100 * MILLISECOND_NANOS, 80 * MILLISECOND_NANOS, 20 * MILLISECOND_NANOS, hooks);
+            String diagnostics = diagnosticBytes.toString(StandardCharsets.UTF_8);
+            assertEquals(List.of(10 * MILLISECOND_NANOS), stabilizationBudgets);
+            assertEquals(0, shutdownActions.get());
+            assertEquals(1, exitStatus.get());
+            assertTrue(diagnostics.contains("validating stable AWT quiescence"), diagnostics);
+        } finally {
+            releaseAndJoin(awt);
+        }
+    }
+
+    @Test
+    void nonzeroStatusRemainsExactWhenStableAwtQuiescenceExhaustsTheDeadline() throws Exception {
+        BlockedThread awt = startBlockedThread("AWT-EventQueue-test", false);
+        AtomicLong nanoTime = new AtomicLong(1_000);
+        AtomicInteger exitStatus = new AtomicInteger(UNSET_EXIT_STATUS);
+        ByteArrayOutputStream diagnosticBytes = new ByteArrayOutputStream();
+        TestProcessExitCoordinator.ThreadWaiter waiter = (thread, timeoutNanos) -> {
+            releaseAndJoin(awt);
+            nanoTime.addAndGet(90 * MILLISECOND_NANOS);
+        };
+        TestProcessExitCoordinator.Hooks hooks = new TestProcessExitCoordinator.Hooks(() -> snapshotOf(awt), nanoTime::get, waiter, timeoutNanos -> nanoTime.addAndGet(timeoutNanos), () -> {}, exitStatus::set, new PrintWriter(diagnosticBytes, true, StandardCharsets.UTF_8));
+
+        try {
+            TestProcessExitCoordinator.finish(29, 100 * MILLISECOND_NANOS, 80 * MILLISECOND_NANOS, 20 * MILLISECOND_NANOS, hooks);
+            assertEquals(29, exitStatus.get());
+            String diagnostics = diagnosticBytes.toString(StandardCharsets.UTF_8);
+            assertTrue(diagnostics.contains("validating stable AWT quiescence"), diagnostics);
+            assertTrue(diagnostics.contains("status 29"), diagnostics);
+        } finally {
+            releaseAndJoin(awt);
+        }
+    }
+
+    @Test
+    void interruptedStabilizationContinuesAndRestoresInterruptStatus() throws Exception {
+        assertFalse(Thread.interrupted());
+        BlockedThread awt = startBlockedThread("AWT-EventQueue-test", false);
+        AtomicLong nanoTime = new AtomicLong(1_000);
+        AtomicInteger stabilizationWaits = new AtomicInteger();
+        AtomicInteger shutdownActions = new AtomicInteger();
+        AtomicInteger exitStatus = new AtomicInteger(UNSET_EXIT_STATUS);
+        TestProcessExitCoordinator.ThreadWaiter waiter = (thread, timeoutNanos) -> {
+            releaseAndJoin(awt);
+            nanoTime.addAndGet(10 * MILLISECOND_NANOS);
+        };
+        TestProcessExitCoordinator.StabilizationWaiter stabilizationWaiter = timeoutNanos -> {
+            if (stabilizationWaits.getAndIncrement() == 0) throw new InterruptedException("injected stabilization interruption");
+            nanoTime.addAndGet(timeoutNanos);
+        };
+        TestProcessExitCoordinator.Hooks hooks = new TestProcessExitCoordinator.Hooks(() -> snapshotOf(awt), nanoTime::get, waiter, stabilizationWaiter, shutdownActions::incrementAndGet, exitStatus::set, new PrintWriter(new ByteArrayOutputStream()));
+
+        try {
+            TestProcessExitCoordinator.finish(0, 100 * MILLISECOND_NANOS, 80 * MILLISECOND_NANOS, 20 * MILLISECOND_NANOS, hooks);
+            assertEquals(2, stabilizationWaits.get());
+            assertEquals(0, shutdownActions.get());
+            assertEquals(UNSET_EXIT_STATUS, exitStatus.get());
+            assertTrue(Thread.currentThread().isInterrupted());
+        } finally {
+            Thread.interrupted();
+            releaseAndJoin(awt);
+        }
+    }
+
+    @Test
+    void terminatedRawAwtSnapshotStillArmsStableQuiescenceForReplacement() throws Exception {
+        BlockedThread terminatedAwt = startBlockedThread("AWT-Shutdown", false);
+        releaseAndJoin(terminatedAwt);
+        AtomicReference<BlockedThread> late = new AtomicReference<BlockedThread>();
+        AtomicInteger snapshots = new AtomicInteger();
+        AtomicLong nanoTime = new AtomicLong(1_000);
+        AtomicInteger shutdownActions = new AtomicInteger();
+        AtomicInteger exitStatus = new AtomicInteger(UNSET_EXIT_STATUS);
+        List<Long> waitBudgets = new ArrayList<Long>();
+        List<Long> stabilizationBudgets = new ArrayList<Long>();
+        Supplier<Map<Thread, StackTraceElement[]>> threadSnapshots = () -> snapshots.getAndIncrement() == 0 ? snapshotOfAwtShutdown(terminatedAwt) : snapshotOfAwtShutdown(late.get());
+        TestProcessExitCoordinator.ThreadWaiter waiter = (thread, timeoutNanos) -> {
+            assertEquals(late.get().thread(), thread);
+            waitBudgets.add(timeoutNanos);
+            releaseAndJoin(late.get());
+            nanoTime.addAndGet(10 * MILLISECOND_NANOS);
+        };
+        TestProcessExitCoordinator.StabilizationWaiter stabilizationWaiter = timeoutNanos -> {
+            stabilizationBudgets.add(timeoutNanos);
+            if (late.get() == null) {
+                late.set(startBlockedThread("AWT-Shutdown", false));
+                nanoTime.addAndGet(5 * MILLISECOND_NANOS);
+                return;
+            }
+            nanoTime.addAndGet(timeoutNanos);
+        };
+        TestProcessExitCoordinator.Hooks hooks = new TestProcessExitCoordinator.Hooks(threadSnapshots, nanoTime::get, waiter, stabilizationWaiter, shutdownActions::incrementAndGet, exitStatus::set, new PrintWriter(new ByteArrayOutputStream()));
+
+        try {
+            TestProcessExitCoordinator.finish(0, 100 * MILLISECOND_NANOS, 80 * MILLISECOND_NANOS, 20 * MILLISECOND_NANOS, hooks);
+            assertEquals(List.of(45 * MILLISECOND_NANOS), waitBudgets);
+            assertEquals(List.of(20 * MILLISECOND_NANOS, 20 * MILLISECOND_NANOS), stabilizationBudgets);
+            assertEquals(0, shutdownActions.get());
+            assertEquals(UNSET_EXIT_STATUS, exitStatus.get());
+        } finally {
             if (late.get() != null) releaseAndJoin(late.get());
         }
     }
@@ -120,7 +575,7 @@ class TestProcessExitCoordinatorTest {
         TestProcessExitCoordinator.Hooks hooks = new TestProcessExitCoordinator.Hooks(() -> snapshotOfAwtShutdown(awt), System::nanoTime, waiter, shutdownActions::incrementAndGet, exitStatus::set, new PrintWriter(new ByteArrayOutputStream()));
 
         try {
-            TestProcessExitCoordinator.finish(0, TimeUnit.SECONDS.toNanos(1), hooks);
+            TestProcessExitCoordinator.finish(0, TimeUnit.SECONDS.toNanos(1), 0, 0, hooks);
             assertEquals(1, shutdownActions.get());
             assertTrue(awt.thread().isInterrupted());
             assertFalse(awt.thread().isAlive());
@@ -162,7 +617,7 @@ class TestProcessExitCoordinatorTest {
         TestProcessExitCoordinator.Hooks hooks = new TestProcessExitCoordinator.Hooks(() -> snapshotOfAwtShutdown(awt), System::nanoTime, waiter, shutdownActions::incrementAndGet, exitStatus::set, new PrintWriter(diagnosticBytes, true, StandardCharsets.UTF_8));
 
         try {
-            TestProcessExitCoordinator.finish(0, TimeUnit.SECONDS.toNanos(1), hooks);
+            TestProcessExitCoordinator.finish(0, TimeUnit.SECONDS.toNanos(1), 0, 0, hooks);
             String diagnostics = diagnosticBytes.toString(StandardCharsets.UTF_8);
             assertEquals(1, shutdownActions.get());
             assertEquals(1, waits.get());
@@ -190,7 +645,7 @@ class TestProcessExitCoordinatorTest {
         TestProcessExitCoordinator.Hooks hooks = new TestProcessExitCoordinator.Hooks(() -> snapshotOfAwtShutdown(awt), nanoTime::get, waiter, shutdownAction, exitStatus::set, new PrintWriter(diagnosticBytes, true, StandardCharsets.UTF_8));
 
         try {
-            TestProcessExitCoordinator.finish(0, 100, hooks);
+            TestProcessExitCoordinator.finish(0, 100, 0, 0, hooks);
             assertEquals(UNSET_EXIT_STATUS, exitStatus.get());
             assertEquals("", diagnosticBytes.toString(StandardCharsets.UTF_8));
         } finally {
@@ -206,6 +661,18 @@ class TestProcessExitCoordinatorTest {
         TestProcessExitCoordinator.finish(41, 100, hooks);
 
         assertEquals(41, exitStatus.get());
+    }
+
+    @Test
+    void invalidCoordinatorDurationsAreRejectedBeforeTakingSnapshots() {
+        AtomicInteger snapshots = new AtomicInteger();
+        TestProcessExitCoordinator.Hooks hooks = new TestProcessExitCoordinator.Hooks(() -> countEmptySnapshot(snapshots), () -> 1_000, (thread, timeoutNanos) -> {}, () -> {}, status -> {}, new PrintWriter(new ByteArrayOutputStream()));
+
+        assertThrows(IllegalArgumentException.class, () -> TestProcessExitCoordinator.finish(0, 0, hooks));
+        assertThrows(IllegalArgumentException.class, () -> TestProcessExitCoordinator.finish(0, -1, hooks));
+        assertThrows(IllegalArgumentException.class, () -> TestProcessExitCoordinator.finish(0, 1, -1, 0, hooks));
+        assertThrows(IllegalArgumentException.class, () -> TestProcessExitCoordinator.finish(0, 1, 0, -1, hooks));
+        assertEquals(0, snapshots.get());
     }
 
     @Test
@@ -324,7 +791,7 @@ class TestProcessExitCoordinatorTest {
 
         assertEquals(1, result.exitStatus(), result.output());
         assertTrue(result.output().contains("injected AWT shutdown action failure"), result.output());
-        assertTrue(result.output().contains("Timed out after 100 ms"), result.output());
+        assertFalse(result.output().contains("Timed out"), result.output());
         assertNoFatalJvmError(result);
     }
 
@@ -395,7 +862,7 @@ class TestProcessExitCoordinatorTest {
         TestProcessExitCoordinator.Hooks hooks = new TestProcessExitCoordinator.Hooks(snapshots, System::nanoTime, waiter, shutdownAction, exitStatus::set, new PrintWriter(diagnosticBytes, true, StandardCharsets.UTF_8));
 
         try {
-            TestProcessExitCoordinator.finish(requestedStatus, TimeUnit.SECONDS.toNanos(1), hooks);
+            TestProcessExitCoordinator.finish(requestedStatus, TimeUnit.SECONDS.toNanos(1), 0, 0, hooks);
             return new ActionFailureResult(exitStatus.get(), waits.get(), diagnosticBytes.toString(StandardCharsets.UTF_8));
         } finally {
             releaseAndJoin(awt);
@@ -413,6 +880,7 @@ class TestProcessExitCoordinatorTest {
 
     private static void assertNoFatalJvmError(ProcessResult result) {
         assertFalse(ChildProcessSupport.containsJvmFatalError(result.output()), "Fixture reported a fatal JVM error:\n" + result.output());
+        assertFalse(WindowsAwtShutdownObserver.containsFailureDiagnostics(result.output()), "Fixture reported a Windows AWT shutdown-observer failure:\n" + result.output());
         assertTrue(result.crashReports().isEmpty(), "Unexpected JVM crash reports: " + result.crashReports() + "\n" + result.output());
     }
 

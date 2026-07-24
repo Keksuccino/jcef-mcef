@@ -57,7 +57,7 @@ public final class CefPreInitializationRetryProcess {
 
         // Forcing JVM exit while CEF-created AWT threads are still unwinding can race native
         // teardown on Windows ARM64. TERMINATED proves CEF shutdown completed; the coordinator can
-        // now stop the remaining AWT dispatch infrastructure and wait for orderly quiescence.
+        // now allow natural AWT quiescence before using its bounded forced fallback if necessary.
         TestProcessExitCoordinator.finish(0);
     }
 

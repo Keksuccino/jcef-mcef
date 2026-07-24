@@ -3456,7 +3456,7 @@ void OnAfterParentChanged(CefRefPtr<CefBrowser> browser) {
 }
 
 #if defined(OS_LINUX)
-class ParentChangeResult {
+class LinuxUiTaskCompletion {
  public:
   void Complete() {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -3464,10 +3464,9 @@ class ParentChangeResult {
     condition_.notify_one();
   }
 
-  bool Wait() {
+  bool Wait(std::chrono::milliseconds timeout) {
     std::unique_lock<std::mutex> lock(mutex_);
-    return condition_.wait_for(lock, std::chrono::seconds(1),
-                               [this]() { return completed_; });
+    return condition_.wait_for(lock, timeout, [this]() { return completed_; });
   }
 
  private:
@@ -3476,9 +3475,22 @@ class ParentChangeResult {
   bool completed_ = false;
 };
 
-void OnAfterParentChangedAndSignal(CefRefPtr<CefBrowser> browser, std::shared_ptr<ParentChangeResult> result) {
+void OnAfterParentChangedAndSignal(CefRefPtr<CefBrowser> browser, std::shared_ptr<LinuxUiTaskCompletion> completion) {
   OnAfterParentChanged(browser);
-  result->Complete();
+  completion->Complete();
+}
+
+void SignalLinuxWindowedClose(std::shared_ptr<LinuxUiTaskCompletion> completion) {
+  completion->Complete();
+}
+
+void DestroyLinuxBrowserAndSignal(CefRefPtr<CefBrowser> browser, std::shared_ptr<LinuxUiTaskCompletion> completion) {
+  util::DestroyCefBrowser(browser);
+  // Run the signal on the next CEF UI turn. This guarantees that the
+  // forced-close DoClose callback has unwound before the waiting AWT handler is
+  // allowed to destroy the native parent hierarchy.
+  if (!CefPostTask(TID_UI, base::BindOnce(&SignalLinuxWindowedClose, completion)))
+    completion->Complete();
 }
 #endif
 
@@ -3924,10 +3936,25 @@ Java_org_cef_browser_CefBrowser_1N_N_1Close(JNIEnv* env,
       browser->GetHost()->CloseBrowser(true);
     } else {
       // Destroy the native window representation.
+#if defined(OS_LINUX)
+      // Linux destruction delegates to CloseBrowser instead of destroying an OS
+      // window directly. Wait until the resulting DoClose callback has unwound
+      // before returning to the AWT close handler, which will immediately tear
+      // down the X11 parent hierarchy.
+      if (CefCurrentlyOn(TID_UI)) {
+        util::DestroyCefBrowser(browser);
+      } else {
+        std::shared_ptr<LinuxUiTaskCompletion> completion = std::make_shared<LinuxUiTaskCompletion>();
+        if (!CefPostTask(TID_UI, base::BindOnce(&DestroyLinuxBrowserAndSignal, browser, completion)) || !completion->Wait(std::chrono::seconds(5)))
+          LOG(WARNING) << "Failed or timed out closing Linux browser before "
+                          "AWT parent disposal";
+      }
+#else
       if (CefCurrentlyOn(TID_UI))
         util::DestroyCefBrowser(browser);
       else
         CefPostTask(TID_UI, base::BindOnce(&util::DestroyCefBrowser, browser));
+#endif
     }
   } else {
     browser->GetHost()->CloseBrowser(false);
@@ -4304,14 +4331,9 @@ Java_org_cef_browser_CefBrowser_1N_N_1SetParent(JNIEnv* env,
     util::SetParent(browserHandle, parentHandle, std::move(callback));
   } else {
 #if defined(OS_LINUX)
-    std::shared_ptr<ParentChangeResult> asyncResult =
-        std::make_shared<ParentChangeResult>();
-    base::OnceClosure completion =
-        base::BindOnce(&OnAfterParentChangedAndSignal, browser, asyncResult);
-    if (!CefPostTask(
-            TID_UI, base::BindOnce(util::SetParent, browserHandle, parentHandle,
-                                   std::move(completion))) ||
-        !asyncResult->Wait()) {
+    std::shared_ptr<LinuxUiTaskCompletion> asyncResult = std::make_shared<LinuxUiTaskCompletion>();
+    base::OnceClosure completion = base::BindOnce(&OnAfterParentChangedAndSignal, browser, asyncResult);
+    if (!CefPostTask(TID_UI, base::BindOnce(util::SetParent, browserHandle, parentHandle, std::move(completion))) || !asyncResult->Wait(std::chrono::seconds(1))) {
       LOG(WARNING) << "Failed or timed out changing browser parent";
     }
 #else

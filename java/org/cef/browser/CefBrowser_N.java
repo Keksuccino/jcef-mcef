@@ -60,6 +60,9 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     private boolean devToolsClosing_ = false;
     private volatile CefDevToolsClient devToolsClient_ = null;
     private boolean closeAllowed_ = false;
+    private boolean closeContinuationRequested_ = false;
+    private boolean closeContinuationPending_ = false;
+    private Component closeContinuationComponent_ = null;
     private volatile boolean isClosed_ = false;
     private volatile boolean isClosing_ = false;
     private final CefBrowserSettings settings_;
@@ -127,6 +130,7 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     @Override
     public synchronized void setCloseAllowed() {
         closeAllowed_ = true;
+        clearCloseContinuation();
     }
 
     @Override
@@ -146,20 +150,70 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
             return false;
         }
 
-        SwingUtilities.invokeLater(new Runnable() {
-            @Override
-            public void run() {
-                Component parent = SwingUtilities.getRoot(uiComponent);
-                if (parent instanceof Window) {
-                    parent.dispatchEvent(new WindowEvent((Window) parent, WindowEvent.WINDOW_CLOSING));
-                } else {
-                    completeCloseWithoutWindowOwner();
-                }
-            }
-        });
+        // The CEF UI thread and AWT event thread run concurrently with the multi-threaded message
+        // loop. Dispatching the second window-close event here can therefore re-enter CEF before
+        // the native DoClose callback has returned. Native consumes this request and posts the
+        // continuation back to the CEF UI queue, which creates the required ordering boundary.
+        if (!closeContinuationPending_) {
+            closeContinuationRequested_ = true;
+            closeContinuationComponent_ = uiComponent;
+        }
 
         // Cancel the close.
         return true;
+    }
+
+    /** Called from native code before the CEF {@code DoClose} callback returns. */
+    private synchronized boolean prepareCloseContinuation(boolean closeCancelled) {
+        boolean shouldPost = closeCancelled && closeContinuationRequested_
+                && !closeContinuationPending_ && !isClosing_ && !isClosed_;
+        closeContinuationRequested_ = false;
+        if (shouldPost) {
+            closeContinuationPending_ = true;
+        } else if (!closeContinuationPending_) {
+            closeContinuationComponent_ = null;
+        }
+        return shouldPost;
+    }
+
+    /** Called on the CEF UI thread after the native {@code DoClose} callback has returned. */
+    private void continueCloseAfterDoClose() {
+        synchronized (this) {
+            if (!closeContinuationPending_ || closeAllowed_ || isClosing_ || isClosed_) {
+                clearCloseContinuation();
+                return;
+            }
+        }
+
+        SwingUtilities.invokeLater(() -> {
+            Component uiComponent;
+            synchronized (CefBrowser_N.this) {
+                if (!closeContinuationPending_ || closeAllowed_ || isClosing_ || isClosed_) {
+                    clearCloseContinuation();
+                    return;
+                }
+                uiComponent = closeContinuationComponent_;
+                clearCloseContinuation();
+            }
+
+            Component parent = SwingUtilities.getRoot(uiComponent);
+            if (parent instanceof Window) {
+                parent.dispatchEvent(new WindowEvent((Window) parent, WindowEvent.WINDOW_CLOSING));
+            } else {
+                completeCloseWithoutWindowOwner();
+            }
+        });
+    }
+
+    /** Called from native code if the ordered CEF UI continuation cannot be posted. */
+    private synchronized void abortCloseContinuation() {
+        clearCloseContinuation();
+    }
+
+    private void clearCloseContinuation() {
+        closeContinuationRequested_ = false;
+        closeContinuationPending_ = false;
+        closeContinuationComponent_ = null;
     }
 
     @Override
@@ -169,6 +223,7 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
         CefDevToolsClient devToolsClient;
         synchronized (this) {
             isClosed_ = true;
+            clearCloseContinuation();
             parent = parent_;
             parent_ = null;
             closeDevTools = parent == null && creationController_.isCreated();

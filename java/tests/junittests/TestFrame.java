@@ -71,7 +71,8 @@ class TestFrame extends JFrame implements CefLifeSpanHandler, CefLoadHandler, Ce
         //   2. WindowAdapter.windowClosing calls CefBrowser.close(false).
         //   3. CEF calls CefLifeSpanHandler.doClose() which calls CefBrowser.doClose()
         //      which returns true (canceling the close).
-        //   4. CefBrowser.doClose() triggers another call to WindowAdapter.windowClosing.
+        //   4. After native DoClose returns, CefBrowser triggers another call to
+        //      WindowAdapter.windowClosing.
         //   5. WindowAdapter.windowClosing calls CefBrowser.close(true).
         //   6. For windowed browsers CEF destroys the native window handle. For OSR
         //      browsers CEF calls CefLifeSpanHandler.doClose() which calls

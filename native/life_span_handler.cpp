@@ -4,9 +4,33 @@
 
 #include "life_span_handler.h"
 
+#include "include/base/cef_callback.h"
+#include "include/wrapper/cef_closure_task.h"
+
 #include "client_handler.h"
 #include "jni_util.h"
 #include "util.h"
+
+namespace {
+
+void ContinueCloseAfterDoClose(CefRefPtr<CefBrowser> browser) {
+  REQUIRE_UI_THREAD();
+  ScopedJNIEnv env;
+  if (!env) {
+    util::DestroyCefBrowser(browser);
+    return;
+  }
+
+  ScopedJNIBrowser jbrowser(env, browser);
+  if (!jbrowser) {
+    util::DestroyCefBrowser(browser);
+    return;
+  }
+
+  JNI_CALL_VOID_METHOD(env, jbrowser, "continueCloseAfterDoClose", "()V");
+}
+
+}  // namespace
 
 LifeSpanHandler::LifeSpanHandler(JNIEnv* env, jobject handler)
     : handle_(env, handler) {}
@@ -92,7 +116,19 @@ bool LifeSpanHandler::DoClose(CefRefPtr<CefBrowser> browser) {
   JNI_CALL_METHOD(env, handle_, "doClose", "(Lorg/cef/browser/CefBrowser;)Z",
                   Boolean, jreturn, jbrowser.get());
 
-  return (jreturn != JNI_FALSE);
+  const bool cancel_close = (jreturn != JNI_FALSE);
+  jboolean post_continuation = JNI_FALSE;
+  JNI_CALL_METHOD(env, jbrowser, "prepareCloseContinuation", "(Z)Z", Boolean, post_continuation, cancel_close ? JNI_TRUE : JNI_FALSE);
+
+  // Swing and CEF use different UI threads on Windows and Linux. Posting to
+  // TID_UI ensures the Java continuation cannot force a second close until
+  // this DoClose callback has completely unwound.
+  if (post_continuation != JNI_FALSE && !CefPostTask(TID_UI, base::BindOnce(&ContinueCloseAfterDoClose, browser))) {
+    JNI_CALL_VOID_METHOD(env, jbrowser, "abortCloseContinuation", "()V");
+    return false;
+  }
+
+  return cancel_close;
 }
 
 void LifeSpanHandler::OnBeforeClose(CefRefPtr<CefBrowser> browser) {

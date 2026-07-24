@@ -5,7 +5,9 @@
 package tests.junittests;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.cef.CefApp;
 import org.junit.jupiter.api.Test;
@@ -13,8 +15,10 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.net.URL;
 import java.net.URLClassLoader;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.List;
 
 class ChildProcessSupportTest {
     @Test
@@ -35,6 +39,22 @@ class ChildProcessSupportTest {
     void bootstrapClassesWithoutCodeSourcesAreRejected() {
         IllegalStateException exception = assertThrows(IllegalStateException.class, () -> ChildProcessSupport.classPathFor(String.class));
         assertEquals("Class has no code-source location: java.lang.String", exception.getMessage());
+    }
+
+    @Test
+    void jvmCrashReportDiscoveryIsScopedToTheDedicatedPrefix(@org.junit.jupiter.api.io.TempDir Path directory) throws Exception {
+        Path crashReport = Files.createFile(directory.resolve("hs_err_pid123.log"));
+        Files.createFile(directory.resolve("process.log"));
+
+        assertEquals("-XX:ErrorFile=" + directory.resolve("hs_err_pid%p.log").toAbsolutePath(), ChildProcessSupport.jvmErrorFileArgument(directory));
+        assertEquals(List.of(crashReport), ChildProcessSupport.findJvmCrashReports(directory));
+    }
+
+    @Test
+    void fatalErrorDetectionCoversNativeCrashesAndFatalOutOfMemoryErrors() {
+        assertFalse(ChildProcessSupport.containsJvmFatalError("ordinary test output"));
+        assertTrue(ChildProcessSupport.containsJvmFatalError("prefix\n# A fatal error has been detected by the Java Runtime Environment:\nsuffix"));
+        assertTrue(ChildProcessSupport.containsJvmFatalError("# There is insufficient memory for the Java Runtime Environment to continue."));
     }
 
     private static URL toUrl(java.net.URI uri) {

@@ -26,7 +26,7 @@ public final class WindowsJUnitLauncher {
 
     public static void main(String[] args) {
         CommandResult<?> result = ConsoleLauncher.run(new PrintWriter(System.out, true), new PrintWriter(System.err, true), filterJUnitArguments(args));
-        System.exit(result.getExitCode());
+        TestProcessExitCoordinator.finish(result.getExitCode());
     }
 
     static String[] filterJUnitArguments(String[] args) {

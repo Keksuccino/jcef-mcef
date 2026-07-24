@@ -5,18 +5,26 @@
 package tests.junittests;
 
 import java.io.File;
+import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.CodeSource;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
-/** Builds child-JVM class paths without relying on JUnit's launcher implementation details. */
+/** Provides shared child-JVM launch paths and fatal-error report discovery. */
 final class ChildProcessSupport {
+    private static final String JVM_FATAL_ERROR_BANNER = "# A fatal error has been detected by the Java Runtime Environment:";
+    private static final String JVM_FATAL_OOM_BANNER = "# There is insufficient memory for the Java Runtime Environment to continue.";
+    private static final String JVM_ERROR_FILE_PREFIX = "hs_err_pid";
+
     private ChildProcessSupport() {}
 
     static String classPathFor(Class<?>... requiredClasses) {
@@ -56,5 +64,25 @@ final class ChildProcessSupport {
         } catch (URISyntaxException | IllegalArgumentException exception) {
             throw new IllegalStateException("Invalid class code-source location for " + requiredClass.getName() + ": " + location, exception);
         }
+    }
+
+    static String jvmErrorFileArgument(Path directory) {
+        // HotSpot replaces %p with its process ID. A dedicated caller-owned directory keeps the
+        // subsequent prefix scan isolated from unrelated JVMs and stale reports.
+        return "-XX:ErrorFile=" + directory.resolve(JVM_ERROR_FILE_PREFIX + "%p.log").toAbsolutePath();
+    }
+
+    static List<Path> findJvmCrashReports(Path directory) throws IOException {
+        try (Stream<Path> entries = Files.list(directory)) {
+            return entries.filter(path -> path.getFileName().toString().startsWith(JVM_ERROR_FILE_PREFIX)).sorted().toList();
+        }
+    }
+
+    static boolean containsJvmFatalError(String processOutput) {
+        Objects.requireNonNull(processOutput, "processOutput");
+        // HotSpot prints one of these banners to the process output before opening the detailed
+        // report. This remains authoritative when ErrorFile falls back to the working directory,
+        // the OS temp directory, or cannot be opened anywhere.
+        return processOutput.contains(JVM_FATAL_ERROR_BANNER) || processOutput.contains(JVM_FATAL_OOM_BANNER);
     }
 }

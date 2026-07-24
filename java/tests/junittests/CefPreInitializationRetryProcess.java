@@ -55,10 +55,10 @@ public final class CefPreInitializationRetryProcess {
             throw new IllegalStateException(
                     "Retried CEF instance did not terminate; state=" + CefApp.getState());
 
-        // CEF initializes AWT infrastructure that can keep this dedicated fixture JVM alive after
-        // all native resources are gone. The TERMINATED callback above proves shutdown completed,
-        // so explicitly end the otherwise-idle process instead of relying on AWT auto-shutdown.
-        System.exit(0);
+        // Forcing JVM exit while CEF-created AWT threads are still unwinding can race native
+        // teardown on Windows ARM64. TERMINATED proves CEF shutdown completed; the coordinator can
+        // now stop the remaining AWT dispatch infrastructure and wait for orderly quiescence.
+        TestProcessExitCoordinator.finish(0);
     }
 
     private static String getRootCachePath(String[] args) {

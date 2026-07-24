@@ -5,6 +5,7 @@
 package tests.junittests;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.cef.CefApp;
@@ -23,6 +24,8 @@ import java.util.concurrent.TimeUnit;
 // would also initialize CEF in the JUnit process and make both processes contend for profile data.
 @Tag(NativeCefTest.TAG)
 class CefPreInitializationRetryTest {
+    private static final long PROCESS_TIMEOUT_SECONDS = 90;
+
     @TempDir
     Path tempDirectory_;
 
@@ -32,6 +35,8 @@ class CefPreInitializationRetryTest {
         List<String> command = new ArrayList<String>();
         command.add(Path.of(System.getProperty("java.home"), "bin", "java").toString());
         command.add("--enable-native-access=ALL-UNNAMED");
+        command.add(TestProcessExitCoordinator.AWT_MODULE_OPEN_ARGUMENT);
+        command.add(ChildProcessSupport.jvmErrorFileArgument(tempDirectory_));
         copyProperty(command, "java.awt.headless");
         copyProperty(command, "jcef.path");
         copyProperty(command, "jcef.external_message_pump");
@@ -49,14 +54,20 @@ class CefPreInitializationRetryTest {
                                   .redirectErrorStream(true)
                                   .redirectOutput(output.toFile())
                                   .start();
-        boolean exited = process.waitFor(60, TimeUnit.SECONDS);
+        // The child has consecutive 30-second CEF-termination and orderly-thread deadlines. Leave
+        // enough outer margin for startup and diagnostics so this parent never preempts fail-closed
+        // completion at the child's own bound.
+        boolean exited = process.waitFor(PROCESS_TIMEOUT_SECONDS, TimeUnit.SECONDS);
         if (!exited) {
             process.destroyForcibly();
             process.waitFor(10, TimeUnit.SECONDS);
         }
         assertTrue(exited, "Retry fixture timed out; output:\n" + readOutput(output));
-        assertEquals(
-                0, process.exitValue(), "Retry fixture failed; output:\n" + readOutput(output));
+        String processOutput = readOutput(output);
+        assertFalse(ChildProcessSupport.containsJvmFatalError(processOutput), "Retry fixture reported a fatal JVM error:\n" + processOutput);
+        List<Path> crashReports = ChildProcessSupport.findJvmCrashReports(tempDirectory_);
+        assertTrue(crashReports.isEmpty(), "Retry fixture created JVM crash reports: " + crashReports + "\n" + processOutput);
+        assertEquals(0, process.exitValue(), "Retry fixture failed; output:\n" + processOutput);
     }
 
     private static void copyProperty(List<String> command, String name) {

@@ -189,6 +189,59 @@ class PlatformToolingContractTest(unittest.TestCase):
     self.assertIn('set "CHROMIUM_PROCESS_ARGUMENT="', runner)
     self.assertIn('%JUNIT_LAUNCHER_CLASS% %CHROMIUM_PROCESS_ARGUMENT% execute', runner)
 
+  def test_windows_test_runner_opens_internal_awt_shutdown_api(self):
+    runner = (TOOLS_ROOT / 'run_tests.bat').read_text(encoding='utf-8')
+    java_invocation = '"%JAVA_HOME%\\bin\\java.exe"'
+    module_open = '--add-opens=java.desktop/sun.awt=ALL-UNNAMED'
+    self.assertEqual(1, runner.count(module_open))
+    invocation_index = runner.index(java_invocation)
+    self.assertLess(invocation_index, runner.index(module_open))
+    self.assertLess(
+        runner.index(module_open),
+        runner.index('%JUNIT_LAUNCHER_OPTION%', invocation_index))
+
+  def test_windows_test_runner_detects_its_own_jvm_crash_report(self):
+    runner = (TOOLS_ROOT / 'run_tests.bat').read_text(encoding='utf-8')
+    report_id = 'set "JVM_CRASH_REPORT_ID=%RANDOM%_%RANDOM%_%RANDOM%_%RANDOM%"'
+    report_path = 'set "JVM_CRASH_REPORT=%OUT_PATH%\\hs_err_pid%%p_%JVM_CRASH_REPORT_ID%.log"'
+    report_glob = '%OUT_PATH%\\hs_err_pid*_%JVM_CRASH_REPORT_ID%.log'
+    pid_log_path = 'set "JVM_PID_LOG=%OUT_PATH%\\jvm_pid_%%p_%JVM_CRASH_REPORT_ID%.log"'
+    pid_log_glob = '%OUT_PATH%\\jvm_pid_*_%JVM_CRASH_REPORT_ID%.log'
+    java_invocation = '"-XX:ErrorFile=%JVM_CRASH_REPORT%"'
+    pid_log_invocation = '"-Xlog:os=info:file=%JVM_PID_LOG%:none:filecount=0"'
+    capture_exit = 'set "TEST_EXIT_CODE=%ERRORLEVEL%"'
+    detect_report = 'for %%F in ("{}") do if exist "%%~fF" ('.format(report_glob)
+    capture_pid = 'for %%F in ("{}") do if exist "%%~fF" call :capture_jvm_process_id'.format(pid_log_glob)
+    cwd_fallback = 'call :record_jvm_crash_report "%JVM_LAUNCH_DIRECTORY%\\hs_err_pid%JVM_PROCESS_ID%.log"'
+    temp_fallback = 'call :record_jvm_crash_report "%JVM_TEMP_PATH%\\hs_err_pid%JVM_PROCESS_ID%.log"'
+    fail_success = 'if defined JVM_CRASH_REPORT_CREATED if "%TEST_EXIT_CODE%" == "0" set "TEST_EXIT_CODE=1"'
+    self.assertIn(report_id, runner)
+    self.assertIn('if exist "{}" goto prepare_crash_report'.format(report_glob), runner)
+    self.assertIn('if exist "{}" goto prepare_crash_report'.format(pid_log_glob), runner)
+    self.assertIn(report_path, runner)
+    self.assertIn(pid_log_path, runner)
+    self.assertIn(java_invocation, runner)
+    self.assertIn(pid_log_invocation, runner)
+    self.assertIn(detect_report, runner)
+    self.assertIn(capture_pid, runner)
+    self.assertIn(cwd_fallback, runner)
+    self.assertIn(temp_fallback, runner)
+    self.assertIn('set "JVM_TEMP_PATH=%TMP%"', runner)
+    self.assertIn('if not defined JVM_TEMP_PATH set "JVM_TEMP_PATH=%TEMP%"', runner)
+    self.assertIn('if not defined JVM_TEMP_PATH set "JVM_TEMP_PATH=%USERPROFILE%"', runner)
+    self.assertIn('if not defined JVM_TEMP_PATH set "JVM_TEMP_PATH=%SystemRoot%"', runner)
+    self.assertIn('if not defined JVM_PROCESS_ID (', runner)
+    self.assertIn('copy /Y "%~1" "%OUT_PATH%\\%~nx1"', runner)
+    self.assertIn('JVM fatal error report was created:', runner)
+    self.assertIn(fail_success, runner)
+    self.assertLess(runner.index(report_id), runner.index(java_invocation))
+    self.assertLess(runner.index(pid_log_path), runner.index(pid_log_invocation))
+    self.assertLess(runner.index(java_invocation), runner.index(capture_exit))
+    self.assertLess(runner.index(capture_exit), runner.index(detect_report))
+    self.assertLess(runner.index(detect_report), runner.index(capture_pid))
+    self.assertLess(runner.index(capture_pid), runner.index(cwd_fallback))
+    self.assertLess(runner.index(detect_report), runner.index(fail_success))
+
   def test_windows_arm64_browser_process_mitigations_remain_test_only(self):
     helper = (REPOSITORY_ROOT / 'java' / 'tests' / 'junittests' / 'WindowsArm64TestCommandLine.java').read_text(encoding='utf-8')
     setup = (REPOSITORY_ROOT / 'java' / 'tests' / 'junittests' /

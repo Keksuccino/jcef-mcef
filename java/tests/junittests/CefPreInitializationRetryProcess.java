@@ -6,6 +6,7 @@ package tests.junittests;
 
 import org.cef.CefApp;
 import org.cef.CefClient;
+import org.cef.CefSettings;
 import org.cef.OS;
 import org.cef.handler.CefAppHandlerAdapter;
 
@@ -17,6 +18,8 @@ import java.util.concurrent.TimeUnit;
 
 /** Separate-process fixture because one production JVM intentionally supports one CEF lifetime. */
 public final class CefPreInitializationRetryProcess {
+    static final String ROOT_CACHE_ARGUMENT = "--root-cache-path=";
+
     private CefPreInitializationRetryProcess() {}
 
     public static void main(String[] args) throws Exception {
@@ -32,7 +35,9 @@ public final class CefPreInitializationRetryProcess {
                 if (state == CefApp.CefAppState.TERMINATED) terminated.countDown();
             }
         });
-        CefApp retried = CefApp.getInstance();
+        CefSettings settings = new CefSettings();
+        settings.root_cache_path = getRootCachePath(args);
+        CefApp retried = CefApp.getInstance(settings);
         CefClient client = retried.createClient();
         client.dispose();
         retried.dispose();
@@ -40,6 +45,19 @@ public final class CefPreInitializationRetryProcess {
         if (!terminated.await(30, TimeUnit.SECONDS))
             throw new IllegalStateException(
                     "Retried CEF instance did not terminate; state=" + CefApp.getState());
+
+        // CEF initializes AWT infrastructure that can keep this dedicated fixture JVM alive after
+        // all native resources are gone. The TERMINATED callback above proves shutdown completed,
+        // so explicitly end the otherwise-idle process instead of relying on AWT auto-shutdown.
+        System.exit(0);
+    }
+
+    private static String getRootCachePath(String[] args) {
+        for (String arg : args) {
+            if (arg.startsWith(ROOT_CACHE_ARGUMENT))
+                return arg.substring(ROOT_CACHE_ARGUMENT.length());
+        }
+        throw new IllegalArgumentException("Missing " + ROOT_CACHE_ARGUMENT + "<path> argument");
     }
 
     private static void abortNativeInitialization(CefApp app) throws Exception {

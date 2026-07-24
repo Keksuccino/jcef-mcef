@@ -7,6 +7,7 @@ package tests.junittests;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -17,7 +18,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
-@NativeCefTest
+// Native CEF belongs exclusively to the child process in this test. Applying NativeCefTest here
+// would also initialize CEF in the JUnit process and make both processes contend for profile data.
+@Tag(NativeCefTest.TAG)
 class CefPreInitializationRetryTest {
     @TempDir
     Path tempDirectory_;
@@ -35,6 +38,8 @@ class CefPreInitializationRetryTest {
         command.add("-cp");
         command.add(System.getProperty("java.class.path"));
         command.add(CefPreInitializationRetryProcess.class.getName());
+        Path rootCache = tempDirectory_.resolve("cef-root-cache").toAbsolutePath();
+        command.add(CefPreInitializationRetryProcess.ROOT_CACHE_ARGUMENT + rootCache);
         command.add("-ApplePersistenceIgnoreState");
         command.add("YES");
 
@@ -43,7 +48,10 @@ class CefPreInitializationRetryTest {
                                   .redirectOutput(output.toFile())
                                   .start();
         boolean exited = process.waitFor(60, TimeUnit.SECONDS);
-        if (!exited) process.destroyForcibly();
+        if (!exited) {
+            process.destroyForcibly();
+            process.waitFor(10, TimeUnit.SECONDS);
+        }
         assertTrue(exited, "Retry fixture timed out; output:\n" + readOutput(output));
         assertEquals(
                 0, process.exitValue(), "Retry fixture failed; output:\n" + readOutput(output));

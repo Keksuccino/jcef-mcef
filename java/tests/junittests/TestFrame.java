@@ -37,7 +37,6 @@ import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.lang.reflect.InvocationTargetException;
 import java.util.HashMap;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
@@ -50,7 +49,7 @@ class TestFrame extends JFrame implements CefLifeSpanHandler, CefLoadHandler, Ce
                                           CefResourceRequestHandler {
     private static final long serialVersionUID = -5570653778104813836L;
     private boolean isClosed_ = false;
-    private CountDownLatch countdown_ = new CountDownLatch(1);
+    private final TestFrameLifecycle lifecycle_ = new TestFrameLifecycle();
 
     // Resources that have been populated for the test.
     private class ResourceContent {
@@ -161,20 +160,15 @@ class TestFrame extends JFrame implements CefLifeSpanHandler, CefLoadHandler, Ce
     // Override this method to perform test cleanup.
     protected void cleanupTest() {
         if (debugPrint()) System.out.println("cleanupTest");
-        client_.dispose();
-        // Native OnBeforeClose can run while the EDT is still disposing the Swing window. Release
-        // the JUnit worker on the next EDT turn so the following test cannot race that disposal or
-        // deadlock AppKit against AWT's tree lock.
-        SwingUtilities.invokeLater(countdown_::countDown);
+        lifecycle_.enqueueCleanup(client_::dispose);
     }
 
     // Call this method to terminate the test by dispatching a window close event.
     protected final void terminateTest() {
         if (debugPrint()) System.out.println("terminateTest");
-        if (SwingUtilities.isEventDispatchThread())
-            dispatchCloseEvent();
-        else
-            SwingUtilities.invokeLater(this::dispatchCloseEvent);
+        // Display callbacks can share CEF's UI/EDT stack. Always return from the callback before
+        // dispatching WINDOW_CLOSING so native close handling cannot reenter callback dispatch.
+        lifecycle_.enqueueTermination(this::dispatchCloseEvent);
     }
 
     private void dispatchCloseEvent() {
@@ -184,12 +178,12 @@ class TestFrame extends JFrame implements CefLifeSpanHandler, CefLoadHandler, Ce
     // Block until the test completes.
     public final void awaitCompletion() {
         try {
-            assertTrue(countdown_.await(30, TimeUnit.SECONDS),
-                    "Timed out waiting for the CEF integration test to complete");
+            assertTrue(lifecycle_.awaitCompletion(30, TimeUnit.SECONDS), "Timed out waiting for the CEF integration test to complete");
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new AssertionError("Interrupted while waiting for the CEF integration test", e);
         }
+        lifecycle_.rethrowCleanupFailure();
         if (debugPrint()) System.out.println("awaitCompletion returned");
     }
 

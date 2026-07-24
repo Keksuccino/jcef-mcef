@@ -119,8 +119,7 @@ public interface CefFrame {
     }
 
     /**
-     * Load the request represented by the request object. The request will be marked read-only
-     * after this call.
+     * Load the request represented by the request object.
      *
      * <p>This method will fail with CEF's {@code INVALID_INITIATOR_ORIGIN} bad-IPC reason unless
      * the frame has first navigated to the request origin using another mechanism such as

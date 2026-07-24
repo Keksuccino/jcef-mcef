@@ -140,7 +140,7 @@ class CefRequestContextNativeTest {
         AtomicReference<Throwable> failure = new AtomicReference<Throwable>();
         AtomicInteger observerCalls = new AtomicInteger();
 
-        TestFrame frame = new TestFrame() {
+        TestFrame frame = TestFrame.createOnEventDispatchThread(() -> new TestFrame() {
             private CefRequestContext context_;
             private final AtomicReference<CefRegistration> registration_ = new AtomicReference<CefRegistration>();
 
@@ -220,7 +220,7 @@ class CefRequestContextNativeTest {
                 if (context_ != null) context_.dispose();
                 super.cleanupTest();
             }
-        };
+        });
 
         frame.awaitCompletion();
         if (failure.get() != null)

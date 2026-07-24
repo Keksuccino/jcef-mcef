@@ -34,11 +34,15 @@ import java.awt.BorderLayout;
 import java.awt.Component;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
+import java.lang.reflect.InvocationTargetException;
 import java.util.HashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 import javax.swing.JFrame;
+import javax.swing.SwingUtilities;
 
 // Base class for browsers that run tests.
 class TestFrame extends JFrame implements CefLifeSpanHandler, CefLoadHandler, CefRequestHandler,
@@ -106,6 +110,24 @@ class TestFrame extends JFrame implements CefLifeSpanHandler, CefLoadHandler, Ce
         setupTest();
     }
 
+    static <T extends TestFrame> T createOnEventDispatchThread(Supplier<T> factory) {
+        if (SwingUtilities.isEventDispatchThread()) return factory.get();
+
+        AtomicReference<T> result = new AtomicReference<T>();
+        try {
+            SwingUtilities.invokeAndWait(() -> result.set(factory.get()));
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while creating the CEF test window", exception);
+        } catch (InvocationTargetException exception) {
+            Throwable cause = exception.getCause();
+            if (cause instanceof RuntimeException) throw (RuntimeException) cause;
+            if (cause instanceof Error) throw (Error) cause;
+            throw new IllegalStateException("CEF test window creation failed", cause);
+        }
+        return result.get();
+    }
+
     protected void createBrowser(String startURL) {
         createBrowser(startURL, null);
     }
@@ -132,16 +154,23 @@ class TestFrame extends JFrame implements CefLifeSpanHandler, CefLoadHandler, Ce
     protected void cleanupTest() {
         if (debugPrint()) System.out.println("cleanupTest");
         client_.dispose();
-        // Allow the test to complete.
-        countdown_.countDown();
+        // Native OnBeforeClose can run while the EDT is still disposing the Swing window. Release
+        // the JUnit worker on the next EDT turn so the following test cannot race that disposal or
+        // deadlock AppKit against AWT's tree lock.
+        SwingUtilities.invokeLater(countdown_::countDown);
     }
 
     // Call this method to terminate the test by dispatching a window close event.
     protected final void terminateTest() {
         if (debugPrint()) System.out.println("terminateTest");
-        if (!isClosed_) {
-            dispatchEvent(new WindowEvent(this, WindowEvent.WINDOW_CLOSING));
-        }
+        if (SwingUtilities.isEventDispatchThread())
+            dispatchCloseEvent();
+        else
+            SwingUtilities.invokeLater(this::dispatchCloseEvent);
+    }
+
+    private void dispatchCloseEvent() {
+        if (!isClosed_) dispatchEvent(new WindowEvent(this, WindowEvent.WINDOW_CLOSING));
     }
 
     // Block until the test completes.

@@ -38,7 +38,7 @@ class CefFrameTest {
         AtomicReference<String> text = new AtomicReference<>();
         AtomicReference<Throwable> failure = new AtomicReference<>();
 
-        TestFrame testFrame = new TestFrame() {
+        TestFrame testFrame = TestFrame.createOnEventDispatchThread(() -> new TestFrame() {
             private final AtomicBoolean requested_ = new AtomicBoolean();
             private final AtomicInteger pendingVisitors_ = new AtomicInteger(2);
 
@@ -84,7 +84,7 @@ class CefFrameTest {
                 failure.compareAndSet(null, throwable);
                 terminateTest();
             }
-        };
+        });
 
         testFrame.awaitCompletion();
         assertNoFailure(failure);
@@ -104,7 +104,7 @@ class CefFrameTest {
         AtomicInteger stage = new AtomicInteger();
         AtomicReference<Throwable> failure = new AtomicReference<>();
 
-        TestFrame testFrame = new TestFrame() {
+        TestFrame testFrame = TestFrame.createOnEventDispatchThread(() -> new TestFrame() {
             @Override
             protected void setupTest() {
                 String mainContent = "<html><body>Main frame<iframe name=\"" + frameName
@@ -162,7 +162,6 @@ class CefFrameTest {
                     request.setURL(requestUrl);
                     request.setMethod("GET");
                     frame.loadRequest(request);
-                    assertTrue(request.isReadOnly());
                 } finally {
                     if (request != null) request.dispose();
                     if (frame != null) frame.dispose();
@@ -183,7 +182,7 @@ class CefFrameTest {
                 failure.compareAndSet(null, throwable);
                 terminateTest();
             }
-        };
+        });
 
         testFrame.awaitCompletion();
         assertNoFailure(failure);

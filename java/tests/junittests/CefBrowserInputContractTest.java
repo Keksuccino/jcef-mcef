@@ -155,6 +155,50 @@ class CefBrowserInputContractTest {
     }
 
     @Test
+    void modelsMcefPrintableInputAsPhysicalCharacterPhysicalSequence() {
+        CefKeyEvent[] unmodifiedSequence = CefBrowserOsrInputTest.createMcefPrintableKeySequence('X', 53L, 'x', 0);
+        CefKeyEvent[] shiftCapsSequence = CefBrowserOsrInputTest.createMcefPrintableKeySequence('Q', 24L, 'q', 0x11);
+
+        assertEquals(3, unmodifiedSequence.length);
+        assertLegacyKeyEvent(unmodifiedSequence[0], CefKeyEvent.KEY_PRESS, 'X', 'X', 0, 53L);
+        assertLegacyKeyEvent(unmodifiedSequence[1], CefKeyEvent.KEY_TYPE, 'x', 'x', 0, 0L);
+        assertLegacyKeyEvent(unmodifiedSequence[2], CefKeyEvent.KEY_RELEASE, 'X', 'X', 0, 53L);
+        assertEquals(3, shiftCapsSequence.length);
+        assertLegacyKeyEvent(shiftCapsSequence[0], CefKeyEvent.KEY_PRESS, 'Q', 'Q', 0x11, 24L);
+        assertLegacyKeyEvent(shiftCapsSequence[1], CefKeyEvent.KEY_TYPE, 'q', 'q', 0, 0L);
+        assertLegacyKeyEvent(shiftCapsSequence[2], CefKeyEvent.KEY_RELEASE, 'Q', 'Q', 0x11, 24L);
+    }
+
+    @Test
+    void keepsJcefLinuxCharacterIntentIndependentOfCefDomKeyTranslation() throws Exception {
+        // The public CEF API exposes only the post-translation browser event. Keep a deterministic
+        // source contract for JCEF's pre-CEF character intent so the accepted CEF 151 Linux quirk
+        // cannot hide a regression in JCEF's own mapping.
+        String browserSource = readNativeBrowserSource();
+        String rawCharacterSource = sourceBetween(browserSource, "char16_t GetGlfwRawCharacter(", "char16_t GetAwtPhysicalUnmodifiedCharacter(");
+        String linuxKeySymSource = sourceBetween(browserSource, "unsigned int GetLinuxKeySym(", "#endif  // defined(OS_LINUX)");
+        String sendKeySource = sourceBetween(browserSource, "void SendJavaKeyEvent(", "void SendJavaMouseEvent(");
+        String platformSource = readNativeSource("key_event_platform_util.cpp");
+        String linuxNativeFallbackSource = sourceBetween(platformSource, "int GetLinuxXkbKeyCodeFallback(", "bool IsBoundedPositiveCode(");
+
+        assertTrue(rawCharacterSource.contains("shift != caps_lock"));
+        assertTrue(rawCharacterSource.contains("key_code + ('a' - 'A')"));
+        assertTrue(linuxKeySymSource.contains("if (typed)"));
+        assertTrue(linuxKeySymSource.contains("return GetUnicodeKeySym(key_char);"));
+        assertTrue(sendKeySource.contains("if (typed) {\n    unmodified_character = key_char;"));
+        assertTrue(sendKeySource.contains("cef_event.character = key_char;"));
+        assertTrue(linuxNativeFallbackSource.contains("if (typed)\n    return linux_xkb::kUnknown;"));
+        assertTrue(browserSource.contains("std::string_view(CEF_VERSION) == \"151.2.3+g89cd581+chromium-151.0.7922.34\""));
+        assertTrue(browserSource.contains("CEF_COMMIT_NUMBER == 3553"));
+        assertTrue(browserSource.contains("CefBrowserPlatformDelegateNativeLinux::TranslateUiKeyEvent"));
+        assertTrue(browserSource.contains("XKeysymForWindowsKeyCode"));
+        assertTrue(browserSource.contains("89cd5813e47d84c68e56ced336c2c01b7dc77b8d"));
+        assertTrue(browserSource.contains("CHROME_VERSION_MAJOR == 151"));
+        assertTrue(browserSource.contains("CHROME_VERSION_BUILD == 7922"));
+        assertTrue(browserSource.contains("CHROME_VERSION_PATCH == 34"));
+    }
+
+    @Test
     void keepsWindowsAwtWheelInversionAndCloseCheckOnCefUiThread() throws Exception {
         String source = readNativeBrowserSource();
         int functionStart = source.indexOf("void SendWindowsAwtMouseWheelEvent(");
@@ -294,10 +338,30 @@ class CefBrowserInputContractTest {
         assertTrue(Modifier.isNative(method.getModifiers()));
     }
 
+    private static void assertLegacyKeyEvent(CefKeyEvent event, int id, int keyCode, char keyChar, int modifiers, long scanCode) {
+        assertEquals(id, event.id);
+        assertEquals(keyCode, event.keyCode);
+        assertEquals(keyChar, event.keyChar);
+        assertEquals(modifiers, event.modifiers);
+        assertEquals(scanCode, event.scancode);
+    }
+
     private static String readNativeBrowserSource() throws Exception {
-        Path sourcePath = Path.of(System.getProperty("user.dir"), "native", "CefBrowser_N.cpp");
+        return readNativeSource("CefBrowser_N.cpp");
+    }
+
+    private static String readNativeSource(String fileName) throws Exception {
+        Path sourcePath = Path.of(System.getProperty("user.dir"), "native", fileName);
         assertTrue(Files.isRegularFile(sourcePath), "Run source contract tests from the repository root");
         return Files.readString(sourcePath);
+    }
+
+    private static String sourceBetween(String source, String startMarker, String endMarker) {
+        int start = source.indexOf(startMarker);
+        int end = source.indexOf(endMarker, start + startMarker.length());
+        assertTrue(start >= 0, "Missing source marker: " + startMarker);
+        assertTrue(end > start, "Missing source marker after " + startMarker + ": " + endMarker);
+        return source.substring(start, end);
     }
 
     private static boolean updateRepeatTracker(Method update, Object tracker, KeyEvent event) throws Exception {

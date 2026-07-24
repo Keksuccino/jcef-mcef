@@ -10,6 +10,7 @@
 #include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <string_view>
 
 #include "include/base/cef_callback.h"
 #include "include/cef_browser.h"
@@ -38,6 +39,15 @@
 #include <X11/X.h>
 #include <X11/XF86keysym.h>
 #include <X11/keysym.h>
+
+#include "include/cef_version.h"
+
+// CEF 151's SUPPORTS_OZONE_X11 path reconstructs DomKey from the Windows key
+// code and Shift state. It ignores CefKeyEvent.character and Caps Lock for
+// that calculation, so the Linux live-input expectations deliberately expose
+// this upstream limitation while independently checking JCEF's character
+// mapping. Force every CEF upgrade to re-audit both sides of that contract.
+static_assert(std::string_view(CEF_VERSION) == "151.2.3+g89cd581+chromium-151.0.7922.34" && CEF_COMMIT_NUMBER == 3553 && std::string_view(CEF_COMMIT_HASH) == "89cd5813e47d84c68e56ced336c2c01b7dc77b8d" && CHROME_VERSION_MAJOR == 151 && CHROME_VERSION_MINOR == 0 && CHROME_VERSION_BUILD == 7922 && CHROME_VERSION_PATCH == 34, "CEF changed: re-audit CefBrowserPlatformDelegateNativeLinux::TranslateUiKeyEvent, XKeysymForWindowsKeyCode and the Linux OSR live-key expectations");
 #endif
 
 #if defined(OS_MACOSX)

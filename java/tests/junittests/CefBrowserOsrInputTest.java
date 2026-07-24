@@ -58,6 +58,8 @@ class CefBrowserOsrInputTest {
     private static final long INPUT_PROBE_INTERVAL_MILLISECONDS = 25L;
     private static final int KEY_MODIFIERS = InputEvent.SHIFT_DOWN_MASK | InputEvent.CTRL_DOWN_MASK
             | InputEvent.ALT_DOWN_MASK | InputEvent.META_DOWN_MASK | InputEvent.ALT_GRAPH_DOWN_MASK;
+    private static final int GLFW_MOD_SHIFT = 0x1;
+    private static final int GLFW_MOD_CAPS_LOCK = 0x10;
     private static final String PAGE_READY_TITLE = "jcef-awt-input-page-ready";
     private static final String FOCUS_READY_TITLE = "jcef-awt-input-focus-ready";
     private static final String INPUT_READY_TITLE = "jcef-awt-input-route-ready";
@@ -74,6 +76,7 @@ class CefBrowserOsrInputTest {
         AWT_MOUSE_MIDDLE("jcef-awt-input-phase-awt-mouse-middle"),
         AWT_MOUSE_RIGHT("jcef-awt-input-phase-awt-mouse"),
         AWT_WHEEL("jcef-awt-input-phase-awt-wheel"),
+        LEGACY_FOCUS("jcef-awt-input-phase-legacy-focus"),
         LEGACY_KEYS("jcef-awt-input-phase-legacy-keys"),
         LEGACY_MOUSE(SUCCESS_TITLE);
 
@@ -289,6 +292,9 @@ class CefBrowserOsrInputTest {
                                     break;
                                 case AWT_WHEEL:
                                     dispatchAwtWheelSequence(inputComponent_);
+                                    break;
+                                case LEGACY_FOCUS:
+                                    refocusLegacyInput(browser_, testUrl);
                                     break;
                                 case LEGACY_KEYS:
                                     dispatchLegacyKeys(browser_);
@@ -540,10 +546,39 @@ class CefBrowserOsrInputTest {
         return new MenuElement[] {menu, menu.getPopupMenu(), item};
     }
 
+    private static void refocusLegacyInput(CefBrowser browser, String testUrl) {
+        CefFrame mainFrame = browser.getMainFrame();
+        if (mainFrame == null)
+            throw new AssertionError("OSR browser has no main frame before legacy input");
+        try {
+            mainFrame.executeJavaScript("refocusLegacyInput();", testUrl, 1);
+        } finally {
+            mainFrame.dispose();
+        }
+    }
+
+    /**
+     * Mirrors MCEF's GLFW callbacks: physical press, modifier-free CharacterEvent text, then
+     * physical release. The CHAR event intentionally has no scan code or modifiers because
+     * Minecraft's CharacterEvent carries only the codepoint.
+     */
+    static CefKeyEvent[] createMcefPrintableKeySequence(int keyCode, long scanCode, char codepoint, int modifiers) {
+        CefKeyEvent pressed = new CefKeyEvent(CefKeyEvent.KEY_PRESS, keyCode, (char) keyCode, modifiers);
+        CefKeyEvent typed = new CefKeyEvent(CefKeyEvent.KEY_TYPE, codepoint, codepoint, 0);
+        CefKeyEvent released = new CefKeyEvent(CefKeyEvent.KEY_RELEASE, keyCode, (char) keyCode, modifiers);
+        pressed.scancode = scanCode;
+        released.scancode = scanCode;
+        return new CefKeyEvent[] {pressed, typed, released};
+    }
+
+    private static void dispatchLegacyKeyEvents(Method keyMethod, CefBrowser browser, CefKeyEvent[] events) throws Exception {
+        for (CefKeyEvent event : events) keyMethod.invoke(browser, event);
+    }
+
     private static void dispatchLegacyKeys(CefBrowser browser) throws Exception {
         Method keyMethod = CefBrowser_N.class.getDeclaredMethod("sendKeyEvent", CefKeyEvent.class);
         keyMethod.setAccessible(true);
-        keyMethod.invoke(browser, new CefKeyEvent(CefKeyEvent.KEY_TYPE, 88, 'x', 0x1));
+        dispatchLegacyKeyEvents(keyMethod, browser, createMcefPrintableKeySequence('X', 0L, 'x', 0));
         keyMethod.invoke(browser, new CefKeyEvent(CefKeyEvent.KEY_REPEAT, 82, (char) 82, 0x2));
         keyMethod.invoke(browser, new CefKeyEvent(CefKeyEvent.KEY_RELEASE, 82, (char) 82, 0x2));
         keyMethod.invoke(browser, new CefKeyEvent(CefKeyEvent.KEY_PRESS, 258, (char) 258, 0));
@@ -558,11 +593,11 @@ class CefBrowserOsrInputTest {
         keyMethod.invoke(browser, new CefKeyEvent(CefKeyEvent.KEY_RELEASE, 65, (char) 65, 0));
         keyMethod.invoke(browser, new CefKeyEvent(CefKeyEvent.KEY_PRESS, 66, (char) 66, 0x1));
         keyMethod.invoke(browser, new CefKeyEvent(CefKeyEvent.KEY_RELEASE, 66, (char) 66, 0x1));
-        keyMethod.invoke(browser, new CefKeyEvent(CefKeyEvent.KEY_PRESS, 68, (char) 68, 0x10));
-        keyMethod.invoke(browser, new CefKeyEvent(CefKeyEvent.KEY_RELEASE, 68, (char) 68, 0x10));
-        keyMethod.invoke(browser, new CefKeyEvent(CefKeyEvent.KEY_PRESS, 69, (char) 69, 0x11));
-        keyMethod.invoke(browser, new CefKeyEvent(CefKeyEvent.KEY_RELEASE, 69, (char) 69, 0x11));
-        keyMethod.invoke(browser, new CefKeyEvent(CefKeyEvent.KEY_TYPE, 81, 'q', 0x11));
+        keyMethod.invoke(browser, new CefKeyEvent(CefKeyEvent.KEY_PRESS, 68, (char) 68, GLFW_MOD_CAPS_LOCK));
+        keyMethod.invoke(browser, new CefKeyEvent(CefKeyEvent.KEY_RELEASE, 68, (char) 68, GLFW_MOD_CAPS_LOCK));
+        keyMethod.invoke(browser, new CefKeyEvent(CefKeyEvent.KEY_PRESS, 69, (char) 69, GLFW_MOD_SHIFT | GLFW_MOD_CAPS_LOCK));
+        keyMethod.invoke(browser, new CefKeyEvent(CefKeyEvent.KEY_RELEASE, 69, (char) 69, GLFW_MOD_SHIFT | GLFW_MOD_CAPS_LOCK));
+        dispatchLegacyKeyEvents(keyMethod, browser, createMcefPrintableKeySequence('Q', 0L, 'q', GLFW_MOD_SHIFT | GLFW_MOD_CAPS_LOCK));
     }
 
     private static void dispatchLegacyMouse(CefBrowser browser) throws Exception {
@@ -580,6 +615,9 @@ class CefBrowserOsrInputTest {
         int pageDeltaMode = OS.isMacintosh() ? 0 : 2;
         boolean expectDomRepeat = !OS.isMacintosh();
         boolean expectDomNumLock = !OS.isMacintosh();
+        String expectedLegacyCapsKey = OS.isLinux() ? "d" : "D";
+        String expectedLegacyShiftCapsKey = OS.isLinux() ? "E" : "e";
+        String expectedLegacyQPhysicalKey = OS.isLinux() ? "Q" : "q";
         boolean expectAmbientWindowsWheel = OS.isWindows();
         boolean expectVerticalWheelDelivery = wheelDelivery.verticalExpected();
         boolean expectHorizontalWheelDelivery = wheelDelivery.horizontalExpected();
@@ -600,13 +638,21 @@ class CefBrowserOsrInputTest {
         // synthetic click and the title would not prove that the middle mouseup finished processing.
         // Missing-title updates are diagnostics only. Java advances the protocol exclusively for
         // exact InputPhase titles, so reporting partial progress cannot weaken phase ordering.
+        // CEF 151's Linux SUPPORTS_OZONE_X11 path derives DomKey from the Windows key code and
+        // Shift only. It ignores the character supplied by JCEF and Caps Lock while deriving the
+        // raw key, although both the lock flag and CHAR text still arrive. These Linux-only d/E/Q
+        // expectations describe that pinned upstream limitation; the native version assertion and
+        // deterministic source contract force a re-audit when either side changes.
         return "<!doctype html><html><head><meta charset=utf-8><style>html,body{width:100%;height:100%;margin:0}</style></head><body><input id=i><input id=tabTarget><script>"
                 + "const expectDomRepeat=" + expectDomRepeat + ";"
                 + "const expectDomNumLock=" + expectDomNumLock + ";"
+                + "const expectedLegacyCapsKey='" + expectedLegacyCapsKey + "';"
+                + "const expectedLegacyShiftCapsKey='" + expectedLegacyShiftCapsKey + "';"
+                + "const expectedLegacyQPhysicalKey='" + expectedLegacyQPhysicalKey + "';"
                 + "const expectAmbientWindowsWheel=" + expectAmbientWindowsWheel + ";"
                 + "const expectVerticalWheelDelivery=" + expectVerticalWheelDelivery + ";"
                 + "const expectHorizontalWheelDelivery=" + expectHorizontalWheelDelivery + ";"
-                + "const seen={mFirst:false,mRepeat:false,mReset:false,mPhaseEnd:false,tab:false,tabFocus:false,tabPhaseEnd:false,unicode:false,arrowDown:false,arrowUp:false,keypadLeftDown:false,keypadLeftUp:false,leftShift:false,rightControl:false,numpad:false,legacyTyped:false,legacyTypedExact:false,legacyRepeat:false,legacyTab:false,legacyRight:false,legacyKeypad:false,legacyLocks:false,legacyLower:false,legacyShift:false,legacyCaps:false,legacyShiftCaps:false,move:false,legacyMove:false,middleDown:false,middleUp:false,rightDown:false,rightUp:false,vertical:!expectVerticalWheelDelivery,horizontal:!expectHorizontalWheelDelivery,page:!expectVerticalWheelDelivery,pageMagnitude:!expectVerticalWheelDelivery,minimum:!expectVerticalWheelDelivery,wheelPhaseEnd:false};"
+                + "const seen={mFirst:false,mRepeat:false,mReset:false,mPhaseEnd:false,tab:false,tabFocus:false,tabPhaseEnd:false,unicode:false,arrowDown:false,arrowUp:false,keypadLeftDown:false,keypadLeftUp:false,leftShift:false,rightControl:false,numpad:false,legacyFocus:false,legacyXDown:false,legacyXChar:false,legacyXText:false,legacyXUp:false,legacyQDown:false,legacyQChar:false,legacyQText:false,legacyQUp:false,legacyRepeat:false,legacyTab:false,legacyRight:false,legacyKeypad:false,legacyLocks:false,legacyLower:false,legacyShift:false,legacyCaps:false,legacyShiftCaps:false,move:false,legacyMove:false,middleDown:false,middleUp:false,rightDown:false,rightUp:false,vertical:!expectVerticalWheelDelivery,horizontal:!expectHorizontalWheelDelivery,page:!expectVerticalWheelDelivery,pageMagnitude:!expectVerticalWheelDelivery,minimum:!expectVerticalWheelDelivery,wheelPhaseEnd:false};"
                 + "const phases=["
                 + "{title:'" + InputPhase.AWT_KEY_M.getTitle()
                 + "',required:['mFirst','mRepeat','mReset','mPhaseEnd']},"
@@ -620,16 +666,18 @@ class CefBrowserOsrInputTest {
                 + "',required:['rightDown','rightUp']},"
                 + "{title:'" + InputPhase.AWT_WHEEL.getTitle()
                 + "',required:['vertical','horizontal','page','pageMagnitude','minimum','wheelPhaseEnd']},"
+                + "{title:'" + InputPhase.LEGACY_FOCUS.getTitle()
+                + "',required:['legacyFocus']},"
                 + "{title:'" + InputPhase.LEGACY_KEYS.getTitle()
-                + "',required:['legacyTyped','legacyTypedExact','legacyRepeat','legacyTab','legacyRight','legacyKeypad','legacyLocks','legacyLower','legacyShift','legacyCaps','legacyShiftCaps']},"
+                + "',required:['legacyXDown','legacyXChar','legacyXText','legacyXUp','legacyQDown','legacyQChar','legacyQText','legacyQUp','legacyRepeat','legacyTab','legacyRight','legacyKeypad','legacyLocks','legacyLower','legacyShift','legacyCaps','legacyShiftCaps']},"
                 + "{title:'" + InputPhase.LEGACY_MOUSE.getTitle() + "',required:['legacyMove']}];"
-                + "let phaseIndex=0,mIndex=0,tabIndex=0,pageDelta=0,inputRouteReady=false;"
+                + "let phaseIndex=0,mIndex=0,tabIndex=0,legacyXIndex=0,legacyQIndex=0,pageDelta=0,inputRouteReady=false;"
                 + "const report=()=>{const phase=phases[phaseIndex];if(!phase)return;const missing=phase.required.filter(key=>!seen[key]);if(missing.length){document.title='missing:'+phase.title+':'+missing.join(',');return;}phaseIndex++;document.title=phase.title;};"
-                + "addEventListener('keydown',e=>{if(e.code==='KeyM'){const mods=e.shiftKey&&e.ctrlKey&&e.altKey&&e.metaKey;if(mIndex===0&&!e.repeat&&mods)seen.mFirst=true;if(mIndex===1&&(!expectDomRepeat||e.repeat)&&mods)seen.mRepeat=true;if(mIndex===2&&!e.repeat&&mods)seen.mReset=true;mIndex++;}if(e.code==='Tab'&&e.location===0){if(tabIndex===0)seen.tab=true;if(tabIndex===1)seen.legacyTab=true;tabIndex++;}if(e.key==='ArrowLeft'&&e.location===0)seen.arrowDown=true;if(e.code==='Numpad4'&&e.key==='ArrowLeft'&&e.location===3)seen.keypadLeftDown=true;if(e.key==='Shift'&&e.location===1)seen.leftShift=true;if(e.key==='Control'&&e.location===2)seen.rightControl=true;if(e.code==='Numpad1'&&e.location===3)seen.numpad=true;if(e.code==='KeyR'&&e.ctrlKey&&(!expectDomRepeat||e.repeat))seen.legacyRepeat=true;if(e.code==='ShiftRight'&&e.location===2)seen.legacyRight=true;if(e.code==='Numpad0'&&e.location===3)seen.legacyKeypad=true;if(e.code==='KeyC'&&e.getModifierState('CapsLock')&&(!expectDomNumLock||e.getModifierState('NumLock')))seen.legacyLocks=true;if(e.code==='KeyA'&&e.key==='a'&&!e.shiftKey&&!e.getModifierState('CapsLock'))seen.legacyLower=true;if(e.code==='KeyB'&&e.key==='B'&&e.shiftKey&&!e.getModifierState('CapsLock'))seen.legacyShift=true;if(e.code==='KeyD'&&e.key==='D'&&!e.shiftKey&&e.getModifierState('CapsLock'))seen.legacyCaps=true;if(e.code==='KeyE'&&e.key==='e'&&e.shiftKey&&e.getModifierState('CapsLock'))seen.legacyShiftCaps=true;report();},true);"
-                + "addEventListener('keyup',e=>{if(e.code==='KeyM'&&mIndex===3)seen.mPhaseEnd=true;if(e.code==='Tab'&&e.location===0&&tabIndex===1)seen.tabPhaseEnd=true;if(e.key==='ArrowLeft'&&e.location===0)seen.arrowUp=true;if(e.code==='Numpad4'&&e.key==='ArrowLeft'&&e.location===3)seen.keypadLeftUp=true;report();},true);"
-                + "addEventListener('keypress',e=>{if(e.key==='\\u03A9')seen.unicode=true;if(e.key==='x')seen.legacyTyped=true;if(e.key==='q'&&e.shiftKey&&e.getModifierState('CapsLock'))seen.legacyTypedExact=true;report();},true);"
-                + "addEventListener('beforeinput',e=>{if(e.data==='\\u03A9')seen.unicode=true;if(e.data==='x')seen.legacyTyped=true;report();},true);"
-                + "addEventListener('input',e=>{if(e.data==='\\u03A9')seen.unicode=true;if(e.data==='x')seen.legacyTyped=true;report();},true);"
+                + "addEventListener('keydown',e=>{if(e.code==='KeyM'){const mods=e.shiftKey&&e.ctrlKey&&e.altKey&&e.metaKey;if(mIndex===0&&!e.repeat&&mods)seen.mFirst=true;if(mIndex===1&&(!expectDomRepeat||e.repeat)&&mods)seen.mRepeat=true;if(mIndex===2&&!e.repeat&&mods)seen.mReset=true;mIndex++;}if(e.code==='Tab'&&e.location===0){if(tabIndex===0)seen.tab=true;if(tabIndex===1)seen.legacyTab=true;tabIndex++;}if(e.key==='ArrowLeft'&&e.location===0)seen.arrowDown=true;if(e.code==='Numpad4'&&e.key==='ArrowLeft'&&e.location===3)seen.keypadLeftDown=true;if(e.key==='Shift'&&e.location===1)seen.leftShift=true;if(e.key==='Control'&&e.location===2)seen.rightControl=true;if(e.code==='Numpad1'&&e.location===3)seen.numpad=true;if(e.code==='KeyX'&&e.key==='x'&&!e.shiftKey&&!e.ctrlKey&&!e.altKey&&!e.metaKey&&!e.getModifierState('CapsLock')&&legacyXIndex===0){seen.legacyXDown=true;legacyXIndex=1;}if(e.code==='KeyQ'&&e.key===expectedLegacyQPhysicalKey&&e.shiftKey&&!e.ctrlKey&&!e.altKey&&!e.metaKey&&e.getModifierState('CapsLock')&&legacyQIndex===0){seen.legacyQDown=true;legacyQIndex=1;}if(e.code==='KeyR'&&e.ctrlKey&&(!expectDomRepeat||e.repeat))seen.legacyRepeat=true;if(e.code==='ShiftRight'&&e.location===2)seen.legacyRight=true;if(e.code==='Numpad0'&&e.location===3)seen.legacyKeypad=true;if(e.code==='KeyC'&&e.getModifierState('CapsLock')&&(!expectDomNumLock||e.getModifierState('NumLock')))seen.legacyLocks=true;if(e.code==='KeyA'&&e.key==='a'&&!e.shiftKey&&!e.getModifierState('CapsLock'))seen.legacyLower=true;if(e.code==='KeyB'&&e.key==='B'&&e.shiftKey&&!e.getModifierState('CapsLock'))seen.legacyShift=true;if(e.code==='KeyD'&&e.key===expectedLegacyCapsKey&&!e.shiftKey&&!e.ctrlKey&&!e.altKey&&!e.metaKey&&e.getModifierState('CapsLock'))seen.legacyCaps=true;if(e.code==='KeyE'&&e.key===expectedLegacyShiftCapsKey&&e.shiftKey&&!e.ctrlKey&&!e.altKey&&!e.metaKey&&e.getModifierState('CapsLock'))seen.legacyShiftCaps=true;report();},true);"
+                + "addEventListener('keyup',e=>{if(e.code==='KeyM'&&mIndex===3)seen.mPhaseEnd=true;if(e.code==='Tab'&&e.location===0&&tabIndex===1)seen.tabPhaseEnd=true;if(e.key==='ArrowLeft'&&e.location===0)seen.arrowUp=true;if(e.code==='Numpad4'&&e.key==='ArrowLeft'&&e.location===3)seen.keypadLeftUp=true;if(e.code==='KeyX'&&e.key==='x'&&!e.shiftKey&&!e.ctrlKey&&!e.altKey&&!e.metaKey&&!e.getModifierState('CapsLock')&&legacyXIndex===3){seen.legacyXUp=true;legacyXIndex=4;}if(e.code==='KeyQ'&&e.key===expectedLegacyQPhysicalKey&&e.shiftKey&&!e.ctrlKey&&!e.altKey&&!e.metaKey&&e.getModifierState('CapsLock')&&legacyQIndex===3){seen.legacyQUp=true;legacyQIndex=4;}report();},true);"
+                + "addEventListener('keypress',e=>{if(e.key==='\\u03A9')seen.unicode=true;if(e.key==='x'&&e.charCode===120&&!e.shiftKey&&!e.ctrlKey&&!e.altKey&&!e.metaKey&&!e.getModifierState('CapsLock')&&legacyXIndex===1){seen.legacyXChar=true;legacyXIndex=2;}if(e.key==='q'&&e.charCode===113&&!e.shiftKey&&!e.ctrlKey&&!e.altKey&&!e.metaKey&&!e.getModifierState('CapsLock')&&legacyQIndex===1){seen.legacyQChar=true;legacyQIndex=2;}report();},true);"
+                + "addEventListener('beforeinput',e=>{if(e.data==='\\u03A9')seen.unicode=true;report();},true);"
+                + "addEventListener('input',e=>{if(e.data==='\\u03A9')seen.unicode=true;if(e.data==='x'&&legacyXIndex===2){seen.legacyXText=true;legacyXIndex=3;}if(e.data==='q'&&legacyQIndex===2){seen.legacyQText=true;legacyQIndex=3;}report();},true);"
                 + "addEventListener('mousemove',e=>{if(e.clientX===190&&e.clientY===200&&!e.shiftKey&&!e.ctrlKey&&!e.altKey&&!e.metaKey&&e.buttons===0){seen.wheelPhaseEnd=true;report();return;}if(e.clientX===1&&e.clientY===2&&!e.shiftKey&&!e.ctrlKey&&!e.altKey&&!e.metaKey&&e.buttons===0){if(!inputRouteReady){inputRouteReady=true;document.title='"
                 + INPUT_READY_TITLE
                 + "';}return;}if(e.shiftKey&&e.ctrlKey&&e.altKey&&e.metaKey&&e.buttons===7)seen.move=true;if(!e.shiftKey&&!e.ctrlKey&&!e.altKey&&!e.metaKey&&e.buttons===5)seen.legacyMove=true;report();});"
@@ -647,7 +695,7 @@ class CefBrowserOsrInputTest {
                 + "&&e.deltaX===0&&(expectAmbientWindowsWheel?e.deltaY>0&&pageDelta>0&&e.deltaY>=pageDelta:e.deltaY===3))seen.pageMagnitude=true;if(e.clientX===170&&e.clientY===180&&e.deltaMode===0&&e.deltaX===0&&(expectAmbientWindowsWheel?e.deltaY<0:e.deltaY===-"
                 + minimumMagnitude
                 + "))seen.minimum=true;e.preventDefault();report();},{passive:false});"
-                + "const input=document.getElementById('i');document.getElementById('tabTarget').addEventListener('focus',()=>{seen.tabFocus=true;input.focus();report();});"
+                + "const input=document.getElementById('i');window.refocusLegacyInput=()=>{input.focus();if(document.hasFocus()&&document.activeElement===input){seen.legacyFocus=true;report();return;}setTimeout(window.refocusLegacyInput,10);};document.getElementById('tabTarget').addEventListener('focus',()=>{seen.tabFocus=true;input.focus();report();});"
                 + "document.title='" + PAGE_READY_TITLE + "';"
                 + "</script></body></html>";
     }

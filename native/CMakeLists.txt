@@ -125,6 +125,8 @@ set(JCEF_SRCS
   jsdialog_handler.h
   keyboard_handler.cpp
   keyboard_handler.h
+  key_event_platform_util.cpp
+  key_event_platform_util.h
   life_span_handler.cpp
   life_span_handler.h
   load_handler.cpp

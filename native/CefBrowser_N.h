@@ -23,6 +23,22 @@ JNIEXPORT jobject JNICALL Java_org_cef_browser_CefBrowser_1N_N_1ConvertBrowserSe
 
 /*
  * Class:     org_cef_browser_CefBrowser_N
+ * Method:    N_ResolveLinuxNativeKeyCodeForTesting
+ * Signature: (JIIZZ)I
+ */
+JNIEXPORT jint JNICALL Java_org_cef_browser_CefBrowser_1N_N_1ResolveLinuxNativeKeyCodeForTesting
+  (JNIEnv *, jclass, jlong, jint, jint, jboolean, jboolean);
+
+/*
+ * Class:     org_cef_browser_CefBrowser_N
+ * Method:    N_ResolveWindowsNativeKeyCodeForTesting
+ * Signature: (JIZ)I
+ */
+JNIEXPORT jint JNICALL Java_org_cef_browser_CefBrowser_1N_N_1ResolveWindowsNativeKeyCodeForTesting
+  (JNIEnv *, jclass, jlong, jint, jboolean);
+
+/*
+ * Class:     org_cef_browser_CefBrowser_N
  * Method:    N_CreateBrowser
  * Signature: (Lorg/cef/handler/CefClientHandler;JLjava/lang/String;ZZLjava/awt/Component;Lorg/cef/browser/CefRequestContext;Lorg/cef/CefBrowserSettings;)Z
  */

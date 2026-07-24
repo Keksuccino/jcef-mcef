@@ -23,6 +23,7 @@
 #include "devtools_message_observer.h"
 #include "int_callback.h"
 #include "jni_util.h"
+#include "key_event_platform_util.h"
 #include "life_span_handler.h"
 #include "pdf_print_callback.h"
 #include "render_handler.h"
@@ -242,7 +243,7 @@ static_assert(EVENTFLAG_IS_REPEAT == (1 << 13));
 static_assert(EVENTFLAG_PRECISION_SCROLLING_DELTA == (1 << 14));
 static_assert(EVENTFLAG_SCROLL_BY_PAGE == (1 << 15));
 
-enum class InputEventSemantics { kAwt, kGlfw };
+using key_event_platform_util::InputEventSemantics;
 
 int GetCefModifiersAwt(int modifiers) {
   int cef_modifiers = 0;
@@ -2603,7 +2604,7 @@ bool IsWindowsExtendedKey(int key_code, int key_location, UINT virtual_key, UINT
       key_location == awt::kKeyLocationNumpad)
     return key_code == awt::kVkEnter || key_code == awt::kVkDivide ||
            key_code == awt::kVkNumLock;
-  if ((scan_code & 0xFF00U) == 0xE000U || (scan_code & 0xFF00U) == 0xE100U)
+  if ((scan_code & 0xFF00U) == 0x0100U || (scan_code & 0xFF00U) == 0xE000U || (scan_code & 0xFF00U) == 0xE100U)
     return true;
   if (semantics == InputEventSemantics::kGlfw &&
       (key_code == glfw::kKeyKpEnter || key_code == glfw::kKeyKpDivide))
@@ -2786,16 +2787,11 @@ void SendJavaKeyEvent(JNIEnv* env, CefRefPtr<CefBrowser> browser, jobject key_ev
   if (!typed && virtual_key == 0 && scan_code != 0)
     virtual_key = MapVirtualKey(scan_code, MAPVK_VSC_TO_VK_EX);
   const bool extended = IsWindowsExtendedKey(typed ? -1 : key_code, typed ? awt::kKeyLocationUnknown : key_location, virtual_key, scan_code, semantics);
-  unsigned int native_key_code = 1U | ((scan_code & 0xFFU) << 16);
-  if (extended)
-    native_key_code |= 1U << 24;
-  if (cef_event.modifiers & EVENTFLAG_ALT_DOWN)
-    native_key_code |= 1U << 29;
-  if (repeated)
-    native_key_code |= 1U << 30;
-  if (released)
-    native_key_code |= (1U << 30) | (1U << 31);
-  cef_event.native_key_code = static_cast<int>(native_key_code);
+  // CEF 151 passes this value directly to Chromium's physical-key converter,
+  // which expects an OEM scan code rather than a packed WM_KEY* lParam. Event
+  // type, Alt state and repetition are already represented by dedicated CEF
+  // fields and must not be duplicated as lParam bits here.
+  cef_event.native_key_code = key_event_platform_util::ResolveWindowsNativeKeyCode(supplied_scan_code, scan_code, extended);
   cef_event.is_system_key = (cef_event.modifiers & EVENTFLAG_ALT_DOWN) != 0 ||
                             virtual_key == VK_MENU || virtual_key == VK_LMENU ||
                             virtual_key == VK_RMENU;
@@ -2810,9 +2806,7 @@ void SendJavaKeyEvent(JNIEnv* env, CefRefPtr<CefBrowser> browser, jobject key_ev
     return;
   jlong supplied_native_key_code = 0;
   GetJNIFieldLong(env, event_class, key_event, semantics == InputEventSemantics::kAwt ? "rawCode" : "scancode", &supplied_native_key_code);
-  cef_event.native_key_code = supplied_native_key_code > 0
-                                  ? static_cast<int>(supplied_native_key_code)
-                                  : static_cast<int>(key_sym);
+  cef_event.native_key_code = key_event_platform_util::ResolveLinuxNativeKeyCode(supplied_native_key_code, key_code, key_location, typed, semantics);
   KeyboardCode windows_key_code = KeyboardCodeFromXKeysym(key_sym);
   cef_event.windows_key_code =
       GetWindowsKeyCodeWithoutLocation(windows_key_code);
@@ -3500,6 +3494,14 @@ JNIEXPORT jobject JNICALL Java_org_cef_browser_CefBrowser_1N_N_1ConvertBrowserSe
       env->ThrowNew(exception_class, "Failed to create CefBrowserSettings test snapshot");
   }
   return snapshot;
+}
+
+JNIEXPORT jint JNICALL Java_org_cef_browser_CefBrowser_1N_N_1ResolveLinuxNativeKeyCodeForTesting(JNIEnv*, jclass, jlong supplied_native_key_code, jint key_code, jint key_location, jboolean typed, jboolean awt) {
+  return key_event_platform_util::ResolveLinuxNativeKeyCode(supplied_native_key_code, key_code, key_location, typed == JNI_TRUE, awt == JNI_TRUE ? InputEventSemantics::kAwt : InputEventSemantics::kGlfw);
+}
+
+JNIEXPORT jint JNICALL Java_org_cef_browser_CefBrowser_1N_N_1ResolveWindowsNativeKeyCodeForTesting(JNIEnv*, jclass, jlong supplied_scan_code, jint mapped_scan_code, jboolean extended) {
+  return key_event_platform_util::ResolveWindowsNativeKeyCode(supplied_scan_code, static_cast<std::uint32_t>(mapped_scan_code), extended == JNI_TRUE);
 }
 
 JNIEXPORT jboolean JNICALL

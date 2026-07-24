@@ -1147,6 +1147,8 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     }
 
     private static native Map<String, Object> N_ConvertBrowserSettingsForTesting(CefBrowserSettings settings, boolean osr, boolean transparent);
+    private static native int N_ResolveLinuxNativeKeyCodeForTesting(long suppliedNativeKeyCode, int keyCode, int keyLocation, boolean typed, boolean awt);
+    private static native int N_ResolveWindowsNativeKeyCodeForTesting(long suppliedScanCode, int mappedScanCode, boolean extended);
     private final native boolean N_CreateBrowser(CefClientHandler clientHandler, long windowHandle,
             String url, boolean osr, boolean transparent, Component canvas,
             CefRequestContext context, CefBrowserSettings settings);

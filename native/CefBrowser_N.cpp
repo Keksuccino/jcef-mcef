@@ -48,6 +48,25 @@
 
 namespace {
 
+static_assert(PET_VIEW == 0, "CEF API 15100 PET_VIEW value changed");
+static_assert(PET_POPUP == 1, "CEF API 15100 PET_POPUP value changed");
+
+bool GetPaintElementType(JNIEnv* env, jint value, CefBrowserHost::PaintElementType* type) {
+  switch (value) {
+    case PET_VIEW:
+      *type = PET_VIEW;
+      return true;
+    case PET_POPUP:
+      *type = PET_POPUP;
+      return true;
+    default:
+      ScopedJNIClass exception_class(env, "java/lang/IllegalArgumentException");
+      if (exception_class)
+        env->ThrowNew(exception_class, "Unknown CEF paint element type");
+      return false;
+  }
+}
+
 // These values are stable public ABI constants from java.awt.event and GLFW.
 // Keeping the input domains explicit avoids a runtime dependency on LWJGL for
 // both Swing and MCEF while preserving the legacy DTO wire format.
@@ -3825,19 +3844,25 @@ Java_org_cef_browser_CefBrowser_1N_N_1SetFocus(JNIEnv* env,
   browser->GetHost()->SetFocus(enable != JNI_FALSE);
 }
 
-JNIEXPORT void JNICALL
-Java_org_cef_browser_CefBrowser_1N_N_1SetWindowVisibility(JNIEnv* env,
-                                                          jobject obj,
-                                                          jboolean visible) {
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1SetWindowVisibility(JNIEnv* env, jobject obj, jboolean visible) {
   CefRefPtr<CefBrowser> browser = JNI_GET_BROWSER_OR_RETURN(env, obj);
+  CefRefPtr<CefBrowserHost> host = browser->GetHost();
+
+  if (host->IsWindowRenderingDisabled()) {
+    host->WasHidden(visible == JNI_FALSE);
+    return;
+  }
 
 #if defined(OS_MACOSX)
-  if (!browser->GetHost()->IsWindowRenderingDisabled()) {
-    util_mac::SetVisibility(browser->GetHost()->GetWindowHandle(),
-                            visible != JNI_FALSE);
-  }
+  util_mac::SetVisibility(host->GetWindowHandle(), visible != JNI_FALSE);
 #endif
 }
+
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1NotifyScreenInfoChanged(JNIEnv* env, jobject obj) {
+  CefRefPtr<CefBrowser> browser = JNI_GET_BROWSER_OR_RETURN(env, obj);
+  browser->GetHost()->NotifyScreenInfoChanged();
+}
+
 JNIEXPORT jdouble JNICALL
 Java_org_cef_browser_CefBrowser_1N_N_1GetZoomLevel(JNIEnv* env, jobject obj) {
   CefRefPtr<CefBrowser> browser = JNI_GET_BROWSER_OR_RETURN(env, obj, 0.0);
@@ -4007,10 +4032,16 @@ Java_org_cef_browser_CefBrowser_1N_N_1WasResized(JNIEnv* env,
 #endif
 }
 
-JNIEXPORT void JNICALL
-Java_org_cef_browser_CefBrowser_1N_N_1Invalidate(JNIEnv* env, jobject obj) {
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1Invalidate(JNIEnv* env, jobject obj) {
   CefRefPtr<CefBrowser> browser = JNI_GET_BROWSER_OR_RETURN(env, obj);
   browser->GetHost()->Invalidate(PET_VIEW);
+}
+
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1InvalidatePaintElement(JNIEnv* env, jobject obj, jint value) {
+  CefRefPtr<CefBrowser> browser = JNI_GET_BROWSER_OR_RETURN(env, obj);
+  CefBrowserHost::PaintElementType type;
+  if (!GetPaintElementType(env, value, &type)) return;
+  browser->GetHost()->Invalidate(type);
 }
 
 JNIEXPORT void JNICALL

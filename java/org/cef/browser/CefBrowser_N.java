@@ -29,6 +29,7 @@ import java.awt.Rectangle;
 import java.awt.Window;
 import java.awt.event.WindowEvent;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Vector;
 import java.util.concurrent.CompletableFuture;
 
@@ -674,6 +675,25 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     }
 
     @Override
+    public void notifyScreenInfoChanged() {
+        try {
+            N_NotifyScreenInfoChanged();
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+    }
+
+    @Override
+    public void invalidate(CefPaintElementType type) {
+        Objects.requireNonNull(type, "type");
+        try {
+            N_InvalidatePaintElement(type.getValue());
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+    }
+
+    @Override
     public double getZoomLevel() {
         try {
             return N_GetZoomLevel();
@@ -813,7 +833,7 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     }
 
     /**
-     * Invalidate the UI.
+     * Invalidate the main view. Swing OSR uses this compatibility entry point when a popup closes.
      */
     protected final void invalidate() {
         try {
@@ -1156,6 +1176,7 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     private final native void N_Close(boolean force);
     private final native void N_SetFocus(boolean enable);
     private final native void N_SetWindowVisibility(boolean visible);
+    private final native void N_NotifyScreenInfoChanged();
     private final native double N_GetZoomLevel();
     private final native void N_SetZoomLevel(double zoomLevel);
     private final native void N_RunFileDialog(FileDialogMode mode, String title,
@@ -1173,6 +1194,7 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     private final native void N_ReplaceMisspelling(String word);
     private final native void N_WasResized(int width, int height);
     private final native void N_Invalidate();
+    private final native void N_InvalidatePaintElement(int type);
     private final native void N_SendKeyEvent(CefKeyEvent e);
     private final native void N_SendKeyEventAwt(java.awt.event.KeyEvent e, boolean repeated);
     private final native void N_SendMouseEvent(CefMouseEvent e);

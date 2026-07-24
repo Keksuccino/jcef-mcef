@@ -260,11 +260,26 @@ public interface CefBrowser {
     public void setFocus(boolean enable);
 
     /**
-     * Set whether the window containing the browser is visible
-     * (minimized/unminimized, app hidden/unhidden, etc). Only used on Mac OS X.
-     * @param visible
+     * Set whether the browser is visible. For windowless browsers, rendering and paint callbacks
+     * stop while hidden. For windowed browsers this controls the containing native window on macOS
+     * and has no effect on other platforms.
+     * @param visible {@code true} to show the browser or {@code false} to hide it
      */
     public void setWindowVisibility(boolean visible);
+
+    /**
+     * Notify the browser that screen information has changed. This is used by windowless browsers
+     * and windowed browsers with an external root window.
+     */
+    public void notifyScreenInfoChanged();
+
+    /**
+     * Invalidate a windowless browser surface and request an asynchronous paint callback.
+     *
+     * @param type the view or popup surface to invalidate
+     * @throws NullPointerException if {@code type} is {@code null}
+     */
+    public void invalidate(CefPaintElementType type);
 
     /**
      * Get the current zoom level. The default zoom level is 0.0.

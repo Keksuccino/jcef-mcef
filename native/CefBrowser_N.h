@@ -287,6 +287,14 @@ JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1SetWindowVisibility
 
 /*
  * Class:     org_cef_browser_CefBrowser_N
+ * Method:    N_NotifyScreenInfoChanged
+ * Signature: ()V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1NotifyScreenInfoChanged
+  (JNIEnv *, jobject);
+
+/*
+ * Class:     org_cef_browser_CefBrowser_N
  * Method:    N_GetZoomLevel
  * Signature: ()D
  */
@@ -388,6 +396,14 @@ JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1WasResized
  */
 JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1Invalidate
   (JNIEnv *, jobject);
+
+/*
+ * Class:     org_cef_browser_CefBrowser_N
+ * Method:    N_InvalidatePaintElement
+ * Signature: (I)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1InvalidatePaintElement
+  (JNIEnv *, jobject, jint);
 
 /*
  * Class:     org_cef_browser_CefBrowser_N

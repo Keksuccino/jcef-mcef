@@ -130,7 +130,11 @@ class CefBrowserOsrInputTest {
                                 if (mainFrame == null)
                                     throw new AssertionError("OSR browser has no main frame after page readiness");
                                 try {
-                                    mainFrame.executeJavaScript("document.getElementById('i').focus();document.title='" + INPUT_READY_TITLE + "';", testUrl, 1);
+                                    // BrowserHost.SetFocus crosses the CEF UI/renderer boundary asynchronously.
+                                    // Do not dispatch synthetic input until the renderer confirms both document
+                                    // focus and the intended active element, otherwise slower CI hosts can lose
+                                    // the entire first input sequence even though JavaScript already executed.
+                                    mainFrame.executeJavaScript("(()=>{const target=document.getElementById('i');const awaitFocus=()=>{target.focus();if(document.hasFocus()&&document.activeElement===target){document.title='" + INPUT_READY_TITLE + "';return;}setTimeout(awaitFocus,10);};awaitFocus();})();", testUrl, 1);
                                 } finally {
                                     mainFrame.dispose();
                                 }

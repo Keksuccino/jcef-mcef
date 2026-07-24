@@ -11,6 +11,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 DISTRIB_ROOT = Path(__file__).resolve().parents[1]
@@ -26,7 +27,9 @@ from distribution import mac_runtime_requirements, resolve_target  # noqa: E402
 from distribution import validate_archive, validate_jar_class_version  # noqa: E402
 from distribution import validate_runtime  # noqa: E402
 from make_distrib import JAVA_CHECK_NAMES, LAUNCHER_NAMES  # noqa: E402
-from make_distrib import _copy_templates, _create_archive  # noqa: E402
+from make_distrib import _copy_runtime, _copy_templates  # noqa: E402
+from make_distrib import _create_archive  # noqa: E402
+from make_distrib import _strip_linux_runtime_debug_sections  # noqa: E402
 
 
 def find_cef_manifest_root():
@@ -157,6 +160,122 @@ class Cef151ManifestTest(unittest.TestCase):
       self.assertIn(
           'jcef_app.app/Contents/Frameworks/{0}.app/Contents/MacOS/{0}'.format(
               helper_name), requirements)
+
+
+class LinuxRuntimeStripTest(unittest.TestCase):
+
+  @classmethod
+  def setUpClass(cls):
+    cls.cef_root = find_cef_manifest_root()
+
+  def create_runtime(self, native_output, target):
+    binaries, resources = cef_runtime_manifest(self.cef_root, target)
+    entries = binaries + resources + JCEF_RUNTIME_FILES['linux']
+    for relative_path in entries:
+      if relative_path == 'locales':
+        write_nonempty_file(native_output / 'locales' / 'en-US.pak')
+      else:
+        write_nonempty_file(native_output / relative_path)
+    elf_contents = b'\x7fELFdebug-sections'
+    for relative_path in ('libcef.so', 'libjcef.so', 'jcef_helper'):
+      path = native_output / relative_path
+      path.write_bytes(elf_contents)
+      path.chmod(0o755)
+    return entries, elf_contents
+
+  def test_linux_runtime_copy_strips_only_staged_elf_files(self):
+    target = TARGETS['linux_arm64']
+    with tempfile.TemporaryDirectory() as temporary_directory:
+      root = Path(temporary_directory)
+      native_output = root / 'native'
+      destination = root / 'distribution'
+      native_output.mkdir()
+      destination.mkdir()
+      entries, elf_contents = self.create_runtime(native_output, target)
+      source_modes = {
+          relative_path: (native_output / relative_path).stat().st_mode
+          for relative_path in ('libcef.so', 'libjcef.so', 'jcef_helper')
+      }
+      stripped_paths = []
+
+      def run_strip(command, **unused_kwargs):
+        self.assertEqual(['/usr/bin/strip', '--strip-debug'], command[:2])
+        path = Path(command[-1])
+        stripped_paths.append(path.relative_to(destination).as_posix())
+        path.write_bytes(b'\x7fELFstripped')
+        path.chmod(0o600)
+        return mock.Mock(returncode=0, stdout='', stderr='')
+
+      with mock.patch(
+          'make_distrib.shutil.which', return_value='/usr/bin/strip'):
+        with mock.patch('make_distrib.subprocess.run', side_effect=run_strip):
+          copied_entries = _copy_runtime(native_output, destination,
+                                         self.cef_root, target)
+
+      self.assertEqual(entries, copied_entries)
+      self.assertEqual(['jcef_helper', 'libcef.so', 'libjcef.so'],
+                       stripped_paths)
+      for relative_path in stripped_paths:
+        self.assertEqual(b'\x7fELFstripped',
+                         (destination / relative_path).read_bytes())
+        self.assertEqual(source_modes[relative_path],
+                         (destination / relative_path).stat().st_mode)
+        self.assertEqual(elf_contents,
+                         (native_output / relative_path).read_bytes())
+      self.assertEqual((native_output / 'resources.pak').read_bytes(),
+                       (destination / 'resources.pak').read_bytes())
+
+  def test_missing_strip_fails_before_copying_linux_runtime(self):
+    target = TARGETS['linux_arm64']
+    with tempfile.TemporaryDirectory() as temporary_directory:
+      root = Path(temporary_directory)
+      native_output = root / 'native'
+      destination = root / 'distribution'
+      native_output.mkdir()
+      destination.mkdir()
+      self.create_runtime(native_output, target)
+      with mock.patch('make_distrib.shutil.which', return_value=None):
+        with self.assertRaisesRegex(DistributionError,
+                                    'strip was not found on PATH'):
+          _copy_runtime(native_output, destination, self.cef_root, target)
+      self.assertEqual([], list(destination.iterdir()))
+
+  def test_strip_failure_identifies_staged_elf_and_tool_output(self):
+    with tempfile.TemporaryDirectory() as temporary_directory:
+      runtime_root = Path(temporary_directory)
+      elf_path = runtime_root / 'libcef.so'
+      elf_path.write_bytes(b'\x7fELFdebug-sections')
+      result = mock.Mock(returncode=7, stdout='', stderr='unsupported ELF')
+      with mock.patch('make_distrib.subprocess.run', return_value=result):
+        with self.assertRaisesRegex(
+            DistributionError, r'libcef\.so with exit code 7: unsupported ELF'):
+          _strip_linux_runtime_debug_sections(runtime_root, '/usr/bin/strip')
+
+  @unittest.skipIf(os.name == 'nt', 'Windows symlink creation is restricted')
+  def test_strip_replacement_link_cannot_change_external_file_mode(self):
+    with tempfile.TemporaryDirectory() as temporary_directory:
+      root = Path(temporary_directory)
+      runtime_root = root / 'runtime'
+      runtime_root.mkdir()
+      elf_path = runtime_root / 'libcef.so'
+      elf_path.write_bytes(b'\x7fELFdebug-sections')
+      external_path = root / 'external.so'
+      external_path.write_bytes(b'\x7fELFexternal')
+      external_path.chmod(0o640)
+      external_mode = external_path.stat().st_mode
+
+      def replace_with_link(command, **unused_kwargs):
+        path = Path(command[-1])
+        path.unlink()
+        path.symlink_to(external_path)
+        return mock.Mock(returncode=0, stdout='', stderr='')
+
+      with mock.patch(
+          'make_distrib.subprocess.run', side_effect=replace_with_link):
+        with self.assertRaisesRegex(DistributionError,
+                                    'did not leave a regular staged'):
+          _strip_linux_runtime_debug_sections(runtime_root, '/usr/bin/strip')
+      self.assertEqual(external_mode, external_path.stat().st_mode)
 
 
 class ArchiveAndJavaTest(unittest.TestCase):

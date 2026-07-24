@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -80,6 +81,75 @@ def _sign_flat_mac_app(app_path):
   ], app_path.parent)
 
 
+def _require_linux_strip():
+  strip_program = shutil.which('strip')
+  if strip_program is None:
+    raise DistributionError(
+        'Linux distribution packaging requires strip with --strip-debug '
+        'support, but strip was not found on PATH.')
+  return strip_program
+
+
+def _strip_linux_runtime_debug_sections(runtime_root, strip_program):
+  """Strip debug sections from regular ELF files in a copied runtime tree."""
+
+  def _walk_error(error):
+    raise DistributionError(
+        'Unable to scan staged Linux runtime files: {}'.format(error))
+
+  elf_paths = []
+  for directory, directory_names, file_names in os.walk(
+      str(runtime_root), topdown=True, onerror=_walk_error, followlinks=False):
+    directory_path = Path(directory)
+    # Never descend through a copied link. A link is rejected by archive
+    # validation later, and following one here could modify a build input.
+    directory_names[:] = sorted(
+        name for name in directory_names
+        if not (directory_path / name).is_symlink())
+    for file_name in sorted(file_names):
+      path = directory_path / file_name
+      if path.is_symlink() or not path.is_file():
+        continue
+      try:
+        with path.open('rb') as stream:
+          is_elf = stream.read(4) == b'\x7fELF'
+      except OSError as exc:
+        raise DistributionError(
+            'Unable to inspect staged Linux runtime file {}: {}'.format(
+                path, exc))
+      if is_elf:
+        elf_paths.append(path)
+
+  for path in elf_paths:
+    original_mode = stat.S_IMODE(path.stat().st_mode)
+    command = [strip_program, '--strip-debug', str(path)]
+    print('+ {}'.format(' '.join(command)))
+    try:
+      result = subprocess.run(
+          command,
+          check=False,
+          stdout=subprocess.PIPE,
+          stderr=subprocess.PIPE,
+          text=True)
+    except OSError as exc:
+      raise DistributionError(
+          'Unable to strip staged Linux ELF file {}: {}'.format(path, exc))
+    if result.returncode != 0:
+      details = result.stderr.strip() or result.stdout.strip() or 'no output'
+      raise DistributionError(
+          'strip --strip-debug failed for staged Linux ELF file {} with exit '
+          'code {}: {}'.format(path, result.returncode, details))
+    if path.is_symlink() or not path.is_file():
+      raise DistributionError(
+          'strip did not leave a regular staged Linux ELF file: {}'.format(
+              path))
+    path.chmod(original_mode)
+    with path.open('rb') as stream:
+      if stream.read(4) != b'\x7fELF':
+        raise DistributionError(
+            'strip produced an invalid staged Linux ELF file: {}'.format(path))
+
+
 def _copy_runtime(native_output, destination, cef_root, target):
   if target.family == 'macos':
     app_path = destination / 'jcef_app.app'
@@ -95,12 +165,17 @@ def _copy_runtime(native_output, destination, cef_root, target):
         str(framework),
         symlinks=True)
     return mac_runtime_requirements(target, 'flat')
+  strip_program = _require_linux_strip() if target.family == 'linux' else None
   binaries, resources = cef_runtime_manifest(cef_root, target)
   entries = list(binaries + resources + JCEF_RUNTIME_FILES[target.family])
   if target.family == 'linux' and (native_output / 'libminigbm.so').is_file():
     entries.append('libminigbm.so')
   for relative_path in entries:
     _copy_entry(native_output / relative_path, destination / relative_path)
+  if strip_program is not None:
+    # Strip only after copying. The Release build and downloaded CEF artifacts
+    # are reused by tests and must remain byte-for-byte untouched.
+    _strip_linux_runtime_debug_sections(destination, strip_program)
   return tuple(entries)
 
 

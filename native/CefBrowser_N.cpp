@@ -33,6 +33,7 @@
 
 #if defined(OS_LINUX)
 #define XK_3270  // for XK_3270_BackTab
+#include <X11/X.h>
 #include <X11/XF86keysym.h>
 #include <X11/keysym.h>
 #endif

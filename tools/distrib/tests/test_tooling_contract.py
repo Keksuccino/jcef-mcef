@@ -18,30 +18,39 @@ CANONICAL_TARGETS = ('linux_amd64', 'linux_arm64', 'macos_amd64', 'macos_arm64',
 
 class Java17CheckTest(unittest.TestCase):
 
-  def run_check(self, version, tools):
+  def run_check(self, version, tools, available_tools=None):
     with tempfile.TemporaryDirectory() as temporary_directory:
       java_home = Path(temporary_directory) / 'jdk'
       bin_directory = java_home / 'bin'
       bin_directory.mkdir(parents=True)
       (java_home / 'release').write_text(
           'JAVA_VERSION="{}"\n'.format(version), encoding='ascii')
-      for tool in tools:
-        tool_path = bin_directory / tool
-        tool_path.write_text('#!/bin/sh\nexit 0\n', encoding='ascii')
-        tool_path.chmod(0o755)
+      if available_tools is None:
+        available_tools = tools
+      for tool in available_tools:
+        suffix = '.exe' if os.name == 'nt' else ''
+        tool_path = bin_directory / '{}{}'.format(tool, suffix)
+        if os.name == 'nt':
+          tool_path.touch()
+        else:
+          tool_path.write_text('#!/bin/sh\nexit 0\n', encoding='ascii')
+          tool_path.chmod(0o755)
       environment = os.environ.copy()
       environment['JAVA_HOME'] = str(java_home)
-      helper = TOOLS_ROOT / 'distrib' / 'java17_check.sh'
-      return subprocess.run(
-          [
-              '/bin/bash', '-c', 'source "$1"; shift; require_java17 "$@"',
-              'java17-test',
-              str(helper), *tools
-          ],
-          check=False,
-          capture_output=True,
-          text=True,
-          env=environment)
+      if os.name == 'nt':
+        helper = TOOLS_ROOT / 'distrib' / 'java17_check.bat'
+        command = [
+            environment.get('COMSPEC', 'cmd.exe'), '/D', '/C', 'call',
+            str(helper), *tools
+        ]
+      else:
+        helper = TOOLS_ROOT / 'distrib' / 'java17_check.sh'
+        command = [
+            '/bin/bash', '-c', 'source "$1"; shift; require_java17 "$@"',
+            'java17-test',
+            str(helper), *tools
+        ]
+      return subprocess.run(command, check=False, capture_output=True, text=True, env=environment)
 
   def test_exact_java_17_release_is_accepted(self):
     self.assertEqual(0, self.run_check('17.0.15', ('java', 'javac')).returncode)
@@ -54,26 +63,9 @@ class Java17CheckTest(unittest.TestCase):
   def test_missing_required_jdk_tool_is_rejected(self):
     result = self.run_check('17.0.15', ('java', 'jar'))
     self.assertEqual(0, result.returncode)
-    with tempfile.TemporaryDirectory() as temporary_directory:
-      java_home = Path(temporary_directory) / 'jdk'
-      java_home.mkdir()
-      (java_home / 'release').write_text(
-          'JAVA_VERSION="17.0.15"\n', encoding='ascii')
-      environment = os.environ.copy()
-      environment['JAVA_HOME'] = str(java_home)
-      helper = TOOLS_ROOT / 'distrib' / 'java17_check.sh'
-      missing_result = subprocess.run(
-          [
-              '/bin/bash', '-c', 'source "$1"; require_java17 java',
-              'java17-test',
-              str(helper)
-          ],
-          check=False,
-          capture_output=True,
-          text=True,
-          env=environment)
-      self.assertNotEqual(0, missing_result.returncode)
-      self.assertIn('java was not found', missing_result.stderr)
+    missing_result = self.run_check('17.0.15', ('java',), available_tools=())
+    self.assertNotEqual(0, missing_result.returncode)
+    self.assertIn('java was not found', missing_result.stderr)
 
 
 class PlatformToolingContractTest(unittest.TestCase):
@@ -150,6 +142,17 @@ class PlatformToolingContractTest(unittest.TestCase):
     self.assertGreater(len(action_uses), 0)
     for revision in action_uses:
       self.assertRegex(revision, r'^[0-9a-f]{40}$')
+
+  def test_workflow_pins_compatible_python_for_every_architecture(self):
+    workflow = (REPOSITORY_ROOT / '.github' / 'workflows' / 'build-jcef.yml').read_text(encoding='utf-8')
+    setup_python_revision = 'a309ff8b426b58ec0e2a45f0f869d46889d02405'
+    self.assertEqual(3, workflow.count('uses: actions/setup-python@{}'.format(setup_python_revision)))
+    self.assertEqual(3, workflow.count("python-version: '3.12.10'"))
+    self.assertEqual(3, workflow.count('architecture: ${{ matrix.python_architecture }}'))
+    self.assertEqual(3, workflow.count('id: setup-python'))
+    self.assertEqual(3, workflow.count('PYTHON_EXECUTABLE: ${{ steps.setup-python.outputs.python-path }}'))
+    self.assertEqual(3, len(re.findall(r'python_architecture:\s+x64\b', workflow)))
+    self.assertEqual(3, len(re.findall(r'python_architecture:\s+arm64\b', workflow)))
 
 
 if __name__ == '__main__':

@@ -26,11 +26,17 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+
+import javax.swing.SwingUtilities;
+import javax.swing.Timer;
 
 @NativeCefTest
 class CefBrowserOsrPresentationStateTest {
     private static final long FUTURE_TIMEOUT_SECONDS = 10;
+    private static final int RESIZE_RETRY_INTERVAL_MILLISECONDS = 50;
     private static final int HIDDEN_WIDTH = 37;
     private static final int HIDDEN_HEIGHT = 29;
     private static final int RESUMED_WIDTH = 43;
@@ -44,6 +50,7 @@ class CefBrowserOsrPresentationStateTest {
         CompletableFuture<Void> rendererVisible = new CompletableFuture<Void>();
         CompletableFuture<CefPaintEvent> resizedPaint = new CompletableFuture<CefPaintEvent>();
         AtomicBoolean observeResizedPaint = new AtomicBoolean();
+        AtomicReference<String> lastViewPaintSize = new AtomicReference<String>("<none>");
         TestFrame frame = TestFrame.createOnEventDispatchThread(() -> new TestFrame() {
             @Override
             protected void setupTest() {
@@ -56,6 +63,7 @@ class CefBrowserOsrPresentationStateTest {
                 McefStyleBrowser browser = new McefStyleBrowser(client_);
                 browser.addOnPaintListener(event -> {
                     if (event.getPopup()) return;
+                    lastViewPaintSize.set(event.getWidth() + "x" + event.getHeight());
                     initialPaint.complete(event);
                     if (observeResizedPaint.get() && event.getWidth() == RESUMED_WIDTH && event.getHeight() == RESUMED_HEIGHT)
                         resizedPaint.complete(event);
@@ -72,6 +80,7 @@ class CefBrowserOsrPresentationStateTest {
             }
         });
 
+        Timer resizeRetry = null;
         try {
             McefStyleBrowser browser = await(browserCreated);
             await(initialPaint);
@@ -97,18 +106,75 @@ class CefBrowserOsrPresentationStateTest {
             // paint that was already queued before WasHidden(true). Use a new geometry after that
             // acknowledgement because CEF may legitimately coalesce a redundant resize.
             observeResizedPaint.set(true);
-            browser.resize(RESUMED_WIDTH, RESUMED_HEIGHT);
-            browser.invalidate(CefPaintElementType.PET_VIEW);
+            // Expose the handle before the EDT handoff so every startup failure can cancel the
+            // repeating native calls before browser teardown.
+            resizeRetry = createResizeRetry(browser, resizedPaint);
+            startResizeRetry(resizeRetry);
 
-            CefPaintEvent paint = await(resizedPaint);
+            CefPaintEvent paint = awaitResizedPaint(resizedPaint, lastViewPaintSize);
             assertSame(browser, paint.getBrowser());
             assertFalse(paint.getPopup());
             assertNotNull(paint.getDirtyRects());
             assertEquals(RESUMED_WIDTH, paint.getWidth());
             assertEquals(RESUMED_HEIGHT, paint.getHeight());
         } finally {
-            frame.terminateTest();
-            frame.awaitCompletion();
+            try {
+                stopResizeRetry(resizeRetry);
+            } finally {
+                frame.terminateTest();
+                frame.awaitCompletion();
+            }
+        }
+    }
+
+    private static Timer createResizeRetry(McefStyleBrowser browser, CompletableFuture<CefPaintEvent> resizedPaint) {
+        Timer resizeRetry = new Timer(RESIZE_RETRY_INTERVAL_MILLISECONDS, event -> {
+            if (resizedPaint.isDone()) return;
+            try {
+                browser.resize(RESUMED_WIDTH, RESUMED_HEIGHT);
+                browser.invalidate(CefPaintElementType.PET_VIEW);
+            } catch (Throwable throwable) {
+                resizedPaint.completeExceptionally(throwable);
+            }
+        });
+        resizeRetry.setInitialDelay(0);
+        resizeRetry.setCoalesce(true);
+        return resizeRetry;
+    }
+
+    private static void startResizeRetry(Timer resizeRetry) throws Exception {
+        try {
+            if (SwingUtilities.isEventDispatchThread())
+                resizeRetry.start();
+            else
+                SwingUtilities.invokeAndWait(resizeRetry::start);
+        } catch (Exception | Error failure) {
+            // invokeAndWait may be interrupted after the EDT has started the timer. Always queue a
+            // matching stop before propagating so the timer cannot survive the failed handoff.
+            try {
+                stopResizeRetry(resizeRetry);
+            } catch (RuntimeException | Error stopFailure) {
+                failure.addSuppressed(stopFailure);
+            }
+            throw failure;
+        }
+    }
+
+    private static void stopResizeRetry(Timer resizeRetry) {
+        if (resizeRetry == null) return;
+        if (SwingUtilities.isEventDispatchThread())
+            resizeRetry.stop();
+        else
+            // terminateTest queues browser closure on this same event queue after this stop. Avoid
+            // an unbounded invokeAndWait while retaining strict stop-before-close ordering.
+            SwingUtilities.invokeLater(resizeRetry::stop);
+    }
+
+    private static CefPaintEvent awaitResizedPaint(CompletableFuture<CefPaintEvent> resizedPaint, AtomicReference<String> lastViewPaintSize) throws Exception {
+        try {
+            return await(resizedPaint);
+        } catch (TimeoutException timeout) {
+            throw new AssertionError("Timed out waiting for resumed OSR paint " + RESUMED_WIDTH + "x" + RESUMED_HEIGHT + "; last view paint=" + lastViewPaintSize.get(), timeout);
         }
     }
 

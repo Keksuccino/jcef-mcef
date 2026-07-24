@@ -3,22 +3,15 @@
 :: reserved. Use of this source code is governed by a BSD-style license
 :: that can be found in the LICENSE file.
 
-set RETURNCODE=
 setlocal
 
-cd ..\java
+call "%~dp0distrib\java17_check.bat" javadoc
+if errorlevel 1 exit /B %ERRORLEVEL%
 
-set OUT_PATH="..\out\docs"
+for %%I in ("%~dp0..") do set "ROOT_DIR=%%~fI"
+set "OUT_PATH=%ROOT_DIR%\out\docs"
+set "CLASS_PATH=%ROOT_DIR%\third_party\jogamp\jar\gluegen-rt.jar;%ROOT_DIR%\third_party\jogamp\jar\jogl-all.jar"
+if not exist "%OUT_PATH%" mkdir "%OUT_PATH%"
 
-if not exist %OUT_PATH% mkdir %OUT_PATH%
-javadoc -Xdoclint:none -windowtitle "CEF3 Java API Docs" -footer "<center><a href="https://bitbucket.org/chromiumembedded/java-cef" target="_top">Chromium Embedded Framework (CEF)</a> Copyright &copy 2013 Marshall A. Greenblatt</center>" -nodeprecated -d %OUT_PATH% -link http://docs.oracle.com/javase/7/docs/api/ -subpackages org.cef
-
-:end
-endlocal & set RETURNCODE=%ERRORLEVEL%
-goto omega
-
-:returncode
-exit /B %RETURNCODE%
-
-:omega
-call :returncode %RETURNCODE%
+"%JAVA_HOME%\bin\javadoc.exe" --release 17 -encoding UTF-8 -docencoding UTF-8 -charset UTF-8 -Xdoclint:none -notimestamp -windowtitle "CEF Java API Docs" -bottom "<center><a href='https://github.com/chromiumembedded/java-cef' target='_top'>Chromium Embedded Framework (CEF)</a> Copyright &copy; 2013 Marshall A. Greenblatt</center>" -nodeprecated -d "%OUT_PATH%" -classpath "%CLASS_PATH%" -sourcepath "%ROOT_DIR%\java" -link https://docs.oracle.com/en/java/javase/17/docs/api/ -subpackages org.cef
+exit /B %ERRORLEVEL%

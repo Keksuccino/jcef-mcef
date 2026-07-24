@@ -3,11 +3,34 @@
 # reserved. Use of this source code is governed by a BSD-style license
 # that can be found in the LICENSE file.
 
-if [ -z "$1" ]; then
-  echo "ERROR: Please specify a build target: linux32 or linux64"
-else
-  DIR="$( cd "$( dirname "$0" )" && cd .. && pwd )"
-  OUT_DIR="${DIR}/out/$1"
-  jar -cmf "${OUT_DIR}"/manifest/MANIFEST.MF "${OUT_DIR}"/jcef.jar -C "${OUT_DIR}" org
-  jar -cf "${OUT_DIR}"/jcef-tests.jar -C "${OUT_DIR}" tests
+set -euo pipefail
+
+if [ "$#" -ne 1 ]; then
+  echo "ERROR: Usage: make_jar.sh <linux_amd64|linux_arm64|macos_amd64|macos_arm64>" >&2
+  exit 1
 fi
+
+PLATFORM="$1"
+case "$PLATFORM" in
+  linux_amd64|linux_arm64|macos_amd64|macos_arm64) ;;
+  *)
+    echo "ERROR: Unsupported POSIX target '$PLATFORM'. Expected linux_amd64, linux_arm64, macos_amd64, or macos_arm64" >&2
+    exit 1
+    ;;
+esac
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=distrib/java17_check.sh
+source "${SCRIPT_DIR}/distrib/java17_check.sh"
+require_java17 jar
+
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+OUT_DIR="${ROOT_DIR}/out/${PLATFORM}"
+
+if [ ! -d "${OUT_DIR}/org" ] || [ ! -d "${OUT_DIR}/tests" ]; then
+  echo "ERROR: Compiled classes do not exist in ${OUT_DIR}; run compile.sh first" >&2
+  exit 1
+fi
+
+"${JAVA_HOME}/bin/jar" --create --file "${OUT_DIR}/jcef.jar" --date=2000-01-01T00:00:00Z --manifest "${ROOT_DIR}/java/manifest/MANIFEST.MF" -C "$OUT_DIR" org
+"${JAVA_HOME}/bin/jar" --create --file "${OUT_DIR}/jcef-tests.jar" --date=2000-01-01T00:00:00Z -C "$OUT_DIR" tests

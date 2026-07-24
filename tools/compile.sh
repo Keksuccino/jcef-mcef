@@ -3,25 +3,33 @@
 # reserved. Use of this source code is governed by a BSD-style license
 # that can be found in the LICENSE file.
 
-if [ -z "$1" ]; then
-  echo "ERROR: Please specify a target platform: linux32 or linux64"
-else
-  DIR="$( cd "$( dirname "$0" )" && cd .. && pwd )"
-  OUT_PATH="${DIR}/out/$1"
-  JAVA_PATH="${DIR}/java"
-  CLS_PATH="${DIR}/third_party/jogamp/jar/*:${DIR}/third_party/junit/*:${JAVA_PATH}"
+set -euo pipefail
 
-  if [ ! -d "$OUT_PATH" ]; then
-    mkdir -p "$OUT_PATH"
-  fi
-
-  javac -Xdiags:verbose -cp "$CLS_PATH" -d "$OUT_PATH" "${JAVA_PATH}"/tests/detailed/*.java "${JAVA_PATH}"/tests/junittests/*.java "${JAVA_PATH}"/tests/simple/*.java "${JAVA_PATH}"/org/cef/*.java "${JAVA_PATH}"/org/cef/browser/*.java "${JAVA_PATH}"/org/cef/callback/*.java "${JAVA_PATH}"/org/cef/handler/*.java "${JAVA_PATH}"/org/cef/misc/*.java "${JAVA_PATH}"/org/cef/network/*.java
-
-  # Copy MANIFEST.MF
-  rsync -a "${JAVA_PATH}"/manifest/MANIFEST.MF $OUT_PATH/manifest/
-
-  # Copy resource files.
-  cp -f "${JAVA_PATH}"/tests/detailed/handler/*.html "$OUT_PATH/tests/detailed/handler"
-  cp -f "${JAVA_PATH}"/tests/detailed/handler/*.png "$OUT_PATH/tests/detailed/handler"
+if [ "$#" -ne 1 ]; then
+  echo "ERROR: Usage: compile.sh <linux_amd64|linux_arm64|macos_amd64|macos_arm64>" >&2
+  exit 1
 fi
 
+PLATFORM="$1"
+case "$PLATFORM" in
+  linux_amd64|linux_arm64|macos_amd64|macos_arm64) ;;
+  *)
+    echo "ERROR: Unsupported POSIX target '$PLATFORM'. Expected linux_amd64, linux_arm64, macos_amd64, or macos_arm64" >&2
+    exit 1
+    ;;
+esac
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=distrib/java17_check.sh
+source "${SCRIPT_DIR}/distrib/java17_check.sh"
+require_java17 java javac
+
+if ! command -v ant >/dev/null 2>&1; then
+  echo "ERROR: Apache Ant is required to compile JCEF" >&2
+  exit 1
+fi
+
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+OUT_PATH="${ROOT_DIR}/out/${PLATFORM}"
+
+ant -f "${ROOT_DIR}/build.xml" "-Dout.path=${OUT_PATH}" compile-all

@@ -3,35 +3,32 @@
 :: reserved. Use of this source code is governed by a BSD-style license
 :: that can be found in the LICENSE file.
 
-set RETURNCODE=
 setlocal
-cd ..
 
-if "%1" == "" (
-echo ERROR: Please specify a target platform: win32 or win64
-set ERRORLEVEL=1
-goto end
+if not "%~2" == "" goto usage
+if "%~1" == "" goto usage
+
+set "PLATFORM=%~1"
+if /I "%PLATFORM%" == "windows_amd64" goto platform_valid
+if /I "%PLATFORM%" == "windows_arm64" goto platform_valid
+goto usage
+
+:platform_valid
+call "%~dp0distrib\java17_check.bat" java javac
+if errorlevel 1 exit /B 1
+
+where ant >NUL 2>NUL
+if errorlevel 1 (
+  echo ERROR: Apache Ant is required to compile JCEF 1>&2
+  exit /B 1
 )
 
-set OUT_PATH=".\out\%1"
-set CLS_PATH=".\third_party\jogamp\jar\*;.\third_party\junit\*;.\java"
+for %%I in ("%~dp0..") do set "ROOT_DIR=%%~fI"
+set "OUT_PATH=%ROOT_DIR%\out\%PLATFORM%"
 
-if not exist %OUT_PATH% mkdir %OUT_PATH%
-javac -Xdiags:verbose -cp %CLS_PATH% -d %OUT_PATH% java/tests/detailed/*.java java/tests/junittests/*.java java/tests/simple/*.java java/org/cef/*.java java/org/cef/browser/*.java java/org/cef/callback/*.java java/org/cef/handler/*.java java/org/cef/misc/*.java java/org/cef/network/*.java
+call ant -f "%ROOT_DIR%\build.xml" "-Dout.path=%OUT_PATH%" compile-all
+exit /B %ERRORLEVEL%
 
-:: Copy MANIFEST.MF
-xcopy /sfy .\java\manifest %OUT_PATH%\manifest\
-
-:: Copy resource files.
-xcopy /sfy .\java\tests\detailed\handler\*.html %OUT_PATH%\tests\detailed\handler\
-xcopy /sfy .\java\tests\detailed\handler\*.png %OUT_PATH%\tests\detailed\handler\
-
-:end
-endlocal & set RETURNCODE=%ERRORLEVEL%
-goto omega
-
-:returncode
-exit /B %RETURNCODE%
-
-:omega
-call :returncode %RETURNCODE%
+:usage
+echo ERROR: Usage: compile.bat ^<windows_amd64^|windows_arm64^> 1>&2
+exit /B 1

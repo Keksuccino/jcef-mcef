@@ -1,8 +1,6 @@
 Java Chromium Embedded Framework (JCEF) Binary Distribution for $PLATFORM$
 -------------------------------------------------------------------------------
 
-Date:             $DATE$
-
 JCEF Version:     $JCEF_VER$
 JCEF URL:         $JCEF_URL$
                   @$JCEF_REV$
@@ -10,9 +8,12 @@ JCEF URL:         $JCEF_URL$
 CEF Version:      $CEF_VER$
 CEF URL:          $CEF_URL$
 
-Chromium Verison: $CHROMIUM_VER$
+Chromium Version: $CHROMIUM_VER$
 Chromium URL:     $CHROMIUM_URL$
 
-This distribution contains all components necessary to build and distribute a
-Java application using JCEF on the $PLATFORM$ platform. Please see the LICENSING
-section of this document for licensing terms and conditions.
+Canonical target: $TARGET$
+
+This distribution contains the exact CEF 151 runtime and Java 17 JCEF artifacts
+for $PLATFORM$. Its archive root and native runtime layout are directly usable
+as the MCEF jcef.path directory. Please see the LICENSING section for licensing
+terms and conditions.

@@ -3,15 +3,23 @@
 # reserved. Use of this source code is governed by a BSD-style license
 # that can be found in the LICENSE file.
 
-if [ -z "$1" ]; then
-  echo "ERROR: Please specify a target platform: linux32, linux64 or macosx64"
-else
-  DIR="$( cd "$( dirname "$0" )" && cd .. && pwd )"
-  DISTRIB_PATH="${DIR}/binary_distrib/$1"
-  if [ ! -d "$DISTRIB_PATH" ]; then
-    mkdir -p "$DISTRIB_PATH"
-  fi
+set -euo pipefail
 
-  # Create README.txt
-  python "${DIR}"/tools/make_readme.py --output-dir "$DISTRIB_PATH/" --platform $1
+if [ "$#" -ne 1 ]; then
+  echo "ERROR: Usage: make_readme.sh <linux_amd64|linux_arm64|macos_amd64|macos_arm64>" >&2
+  exit 1
 fi
+
+case "$1" in
+  linux_amd64|linux_arm64|macos_amd64|macos_arm64) ;;
+  *)
+    echo "ERROR: Unsupported POSIX target '$1'" >&2
+    exit 1
+    ;;
+esac
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+DISTRIB_PATH="${ROOT_DIR}/binary_distrib/$1"
+mkdir -p "$DISTRIB_PATH"
+python3 "${SCRIPT_DIR}/make_readme.py" --output-dir "$DISTRIB_PATH" --platform "$1"

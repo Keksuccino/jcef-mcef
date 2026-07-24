@@ -3,28 +3,22 @@
 :: reserved. Use of this source code is governed by a BSD-style license
 :: that can be found in the LICENSE file.
 
-set RETURNCODE=
-setlocal
+setlocal EnableExtensions DisableDelayedExpansion
 
-cd ..
-if "%1" == "" (
-echo ERROR: Please specify a target platform: win32 or win64
-set ERRORLEVEL=1
-goto end
-)
+if not "%~2" == "" goto usage
+if "%~1" == "" goto usage
+if /I "%~1" == "windows_amd64" goto platform_valid
+if /I "%~1" == "windows_arm64" goto platform_valid
+goto usage
 
-set DISTRIB_PATH=".\binary_distrib\%1"
-if not exist %DISTRIB_PATH% mkdir %DISTRIB_PATH%
+:platform_valid
+for %%I in ("%~dp0..") do set "ROOT_DIR=%%~fI"
+set "DISTRIB_PATH=%ROOT_DIR%\binary_distrib\%~1"
+if not exist "%DISTRIB_PATH%" mkdir "%DISTRIB_PATH%"
+if errorlevel 1 exit /B 1
+python.exe "%~dp0make_readme.py" --output-dir "%DISTRIB_PATH%" --platform "%~1"
+exit /B %ERRORLEVEL%
 
-:: Create README.txt
-call python tools\make_readme.py --output-dir %DISTRIB_PATH%\ --platform %1
-
-:end
-endlocal & set RETURNCODE=%ERRORLEVEL%
-goto omega
-
-:returncode
-exit /B %RETURNCODE%
-
-:omega
-call :returncode %RETURNCODE%
+:usage
+echo ERROR: Usage: make_readme.bat ^<windows_amd64^|windows_arm64^> 1>&2
+exit /B 1

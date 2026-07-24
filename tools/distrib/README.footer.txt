@@ -1,8 +1,8 @@
 LICENSING
 ---------
 
-The JCEF project is BSD licensed. Please read the LICENSE.txt files included with
-this binary distribution for licensing terms and conditions. Other software
-included in this distribution is provided under other licenses. Please visit
-"about:credits" in a JCEF-based application for complete Chromium and third-party
-licensing information.
+The JCEF project is BSD licensed under LICENSE.txt. CEF is distributed under
+CEF-LICENSE.txt, and Chromium's bundled third-party notices are reproduced in
+CREDITS.html. When JogAmp is included, its terms are provided in the matching
+gluegen.LICENSE.txt and jogl.LICENSE.txt files. Please visit "about:credits" in
+a JCEF-based application for the in-product Chromium credits view.

@@ -14,6 +14,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 TOOLS_ROOT = REPOSITORY_ROOT / 'tools'
 CANONICAL_TARGETS = ('linux_amd64', 'linux_arm64', 'macos_amd64', 'macos_arm64',
                      'windows_amd64', 'windows_arm64')
+WINDOWLESS_RENDERING_CONFIG_ARGUMENT = '--config=jcef.windowless_rendering_enabled=false'
 
 
 class Java17CheckTest(unittest.TestCase):
@@ -109,8 +110,19 @@ class PlatformToolingContractTest(unittest.TestCase):
     self.assertEqual(3, workflow.count('--include-tag native-cef'))
     self.assertEqual(3, workflow.count('--exclude-tag windowed-cef'))
     self.assertEqual(3, workflow.count('--include-tag windowed-cef'))
-    self.assertEqual(3, workflow.count('--config=jcef.windowless_rendering_enabled=false'))
+    self.assertEqual(3, workflow.count(WINDOWLESS_RENDERING_CONFIG_ARGUMENT))
     self.assertNotIn("if: matrix.platform == 'amd64'", workflow)
+
+  def test_windows_windowed_junit_config_is_one_quoted_batch_argument(self):
+    workflow_path = REPOSITORY_ROOT / '.github' / 'workflows' / 'build-jcef.yml'
+    workflow = workflow_path.read_text(encoding='utf-8')
+    job_pattern = r'^  windows:\n(.*?)(?=^  [a-z][a-z0-9_-]*:\n|\Z)'
+    windows_job = re.search(job_pattern, workflow, re.DOTALL | re.MULTILINE)
+    self.assertIsNotNone(windows_job)
+    windows_job_text = windows_job.group(1)
+    quoted_argument = '"{}"'.format(WINDOWLESS_RENDERING_CONFIG_ARGUMENT)
+    self.assertEqual(1, windows_job_text.count(WINDOWLESS_RENDERING_CONFIG_ARGUMENT))
+    self.assertIn(quoted_argument, windows_job_text)
 
   def test_every_workflow_architecture_builds_and_runs_native_unit_tests(self):
     workflow = (REPOSITORY_ROOT / '.github' / 'workflows' / 'build-jcef.yml').read_text(encoding='utf-8')

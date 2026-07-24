@@ -217,7 +217,7 @@ jobs:
       - name: Run windowed JUnit suite
         timeout-minutes: 15
         shell: cmd
-        run: tools\run_tests.bat ${{ matrix.target }} Release --select-package tests.junittests --include-tag windowed-cef --config=jcef.windowless_rendering_enabled=false
+        run: tools\run_tests.bat ${{ matrix.target }} Release --select-package tests.junittests --include-tag windowed-cef "--config=jcef.windowless_rendering_enabled=false"
       - name: Upload JVM crash reports
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

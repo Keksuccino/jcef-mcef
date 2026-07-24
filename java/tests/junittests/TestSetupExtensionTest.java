@@ -28,7 +28,7 @@ class TestSetupExtensionTest {
 
     @Test
     void preservesCommaSeparatedValuesAndAvoidsDuplicates() {
-        String feature = TestSetupExtension.WINDOWS_KEY_CREDENTIAL_TELEMETRY_FEATURE;
+        String feature = TestSetupExtension.WINDOWS_SOFTWARE_UNEXPORTABLE_KEYS_FEATURE;
         assertEquals(feature, TestSetupExtension.appendCommaSeparatedValue("", feature));
         assertEquals("Existing," + feature, TestSetupExtension.appendCommaSeparatedValue("Existing", feature));
         assertEquals("Existing," + feature, TestSetupExtension.appendCommaSeparatedValue("Existing," + feature, feature));
@@ -37,43 +37,59 @@ class TestSetupExtensionTest {
     }
 
     @Test
-    void disablesOnlyTheWindowsArm64BrowserProcessProbe() {
-        CommandLineRecorder armBrowser = new CommandLineRecorder("ExistingFeature");
+    void configuresOnlyTheWindowsArm64BrowserProcessMitigations() {
+        CommandLineRecorder armBrowser = new CommandLineRecorder("ExistingEnabledFeature", "ExistingDisabledFeature");
         TestSetupExtension.configureCommandLine("", armBrowser.commandLine(), true, "aarch64");
-        assertEquals("ExistingFeature," + TestSetupExtension.WINDOWS_KEY_CREDENTIAL_TELEMETRY_FEATURE, armBrowser.disabledFeatures());
-        assertEquals(1, armBrowser.removals());
-        assertEquals(1, armBrowser.appends());
+        assertCommandLine(armBrowser, "ExistingEnabledFeature," + TestSetupExtension.WINDOWS_SOFTWARE_UNEXPORTABLE_KEYS_FEATURE, "ExistingDisabledFeature," + TestSetupExtension.WINDOWS_KEY_CREDENTIAL_TELEMETRY_FEATURE, 2, 2);
 
-        CommandLineRecorder armRenderer = new CommandLineRecorder("ExistingFeature");
+        CommandLineRecorder armRenderer = new CommandLineRecorder("ExistingEnabledFeature", "ExistingDisabledFeature");
         TestSetupExtension.configureCommandLine("renderer", armRenderer.commandLine(), true, "aarch64");
-        assertEquals("ExistingFeature", armRenderer.disabledFeatures());
+        assertCommandLine(armRenderer, "ExistingEnabledFeature", "ExistingDisabledFeature", 0, 0);
 
-        CommandLineRecorder x64Browser = new CommandLineRecorder("ExistingFeature");
+        CommandLineRecorder x64Browser = new CommandLineRecorder("ExistingEnabledFeature", "ExistingDisabledFeature");
         TestSetupExtension.configureCommandLine("", x64Browser.commandLine(), true, "amd64");
-        assertEquals("ExistingFeature", x64Browser.disabledFeatures());
+        assertCommandLine(x64Browser, "ExistingEnabledFeature", "ExistingDisabledFeature", 0, 0);
 
-        CommandLineRecorder linuxArmBrowser = new CommandLineRecorder("ExistingFeature");
+        CommandLineRecorder linuxArmBrowser = new CommandLineRecorder("ExistingEnabledFeature", "ExistingDisabledFeature");
         TestSetupExtension.configureCommandLine("", linuxArmBrowser.commandLine(), false, "aarch64");
-        assertEquals("ExistingFeature", linuxArmBrowser.disabledFeatures());
+        assertCommandLine(linuxArmBrowser, "ExistingEnabledFeature", "ExistingDisabledFeature", 0, 0);
     }
 
     @Test
-    void leavesAnExistingWindowsArm64ProbeDisableUntouched() {
-        CommandLineRecorder recorder = new CommandLineRecorder(TestSetupExtension.WINDOWS_KEY_CREDENTIAL_TELEMETRY_FEATURE);
+    void updatesTheTwoFeatureListsIndependently() {
+        CommandLineRecorder telemetryAlreadyDisabled = new CommandLineRecorder("ExistingEnabledFeature", TestSetupExtension.WINDOWS_KEY_CREDENTIAL_TELEMETRY_FEATURE);
+        TestSetupExtension.configureCommandLine("", telemetryAlreadyDisabled.commandLine(), true, "arm64");
+        assertCommandLine(telemetryAlreadyDisabled, "ExistingEnabledFeature," + TestSetupExtension.WINDOWS_SOFTWARE_UNEXPORTABLE_KEYS_FEATURE, TestSetupExtension.WINDOWS_KEY_CREDENTIAL_TELEMETRY_FEATURE, 1, 1);
+
+        CommandLineRecorder softwareKeysAlreadyEnabled = new CommandLineRecorder(TestSetupExtension.WINDOWS_SOFTWARE_UNEXPORTABLE_KEYS_FEATURE, "ExistingDisabledFeature");
+        TestSetupExtension.configureCommandLine("", softwareKeysAlreadyEnabled.commandLine(), true, "arm64");
+        assertCommandLine(softwareKeysAlreadyEnabled, TestSetupExtension.WINDOWS_SOFTWARE_UNEXPORTABLE_KEYS_FEATURE, "ExistingDisabledFeature," + TestSetupExtension.WINDOWS_KEY_CREDENTIAL_TELEMETRY_FEATURE, 1, 1);
+    }
+
+    @Test
+    void leavesExistingWindowsArm64MitigationsUntouched() {
+        CommandLineRecorder recorder = new CommandLineRecorder(TestSetupExtension.WINDOWS_SOFTWARE_UNEXPORTABLE_KEYS_FEATURE, TestSetupExtension.WINDOWS_KEY_CREDENTIAL_TELEMETRY_FEATURE);
         TestSetupExtension.configureCommandLine("", recorder.commandLine(), true, "arm64");
-        assertEquals(TestSetupExtension.WINDOWS_KEY_CREDENTIAL_TELEMETRY_FEATURE, recorder.disabledFeatures());
-        assertEquals(0, recorder.removals());
-        assertEquals(0, recorder.appends());
+        assertCommandLine(recorder, TestSetupExtension.WINDOWS_SOFTWARE_UNEXPORTABLE_KEYS_FEATURE, TestSetupExtension.WINDOWS_KEY_CREDENTIAL_TELEMETRY_FEATURE, 0, 0);
+    }
+
+    private static void assertCommandLine(CommandLineRecorder recorder, String enabledFeatures, String disabledFeatures, int removals, int appends) {
+        assertEquals(enabledFeatures, recorder.enabledFeatures());
+        assertEquals(disabledFeatures, recorder.disabledFeatures());
+        assertEquals(removals, recorder.removals());
+        assertEquals(appends, recorder.appends());
     }
 
     private static final class CommandLineRecorder {
+        private static final String ENABLE_FEATURES_SWITCH = "enable-features";
         private static final String DISABLE_FEATURES_SWITCH = "disable-features";
         private final Map<String, String> switches_ = new LinkedHashMap<String, String>();
         private final AtomicInteger removals_ = new AtomicInteger();
         private final AtomicInteger appends_ = new AtomicInteger();
         private final CefCommandLine commandLine_;
 
-        private CommandLineRecorder(String disabledFeatures) {
+        private CommandLineRecorder(String enabledFeatures, String disabledFeatures) {
+            switches_.put(ENABLE_FEATURES_SWITCH, enabledFeatures);
             switches_.put(DISABLE_FEATURES_SWITCH, disabledFeatures);
             commandLine_ = (CefCommandLine) Proxy.newProxyInstance(CefCommandLine.class.getClassLoader(), new Class<?>[] {CefCommandLine.class}, (proxy, method, arguments) -> {
                 if (method.getName().equals("getSwitchValue")) return switches_.getOrDefault(arguments[0], "");
@@ -93,6 +109,10 @@ class TestSetupExtensionTest {
 
         private CefCommandLine commandLine() {
             return commandLine_;
+        }
+
+        private String enabledFeatures() {
+            return switches_.get(ENABLE_FEATURES_SWITCH);
         }
 
         private String disabledFeatures() {

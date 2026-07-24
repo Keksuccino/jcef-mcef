@@ -34,7 +34,9 @@ import java.util.concurrent.TimeUnit;
 //
 // This code is based on https://stackoverflow.com/a/51556718.
 public class TestSetupExtension implements BeforeAllCallback, AutoCloseable {
+    static final String WINDOWS_SOFTWARE_UNEXPORTABLE_KEYS_FEATURE = "WebAuthenticationUseInsecureSoftwareUnexportableKeys";
     static final String WINDOWS_KEY_CREDENTIAL_TELEMETRY_FEATURE = "ReportKeyCredentialManagerSupportWin";
+    private static final String ENABLE_FEATURES_SWITCH = "enable-features";
     private static final String DISABLE_FEATURES_SWITCH = "disable-features";
     private static final long SHUTDOWN_TIMEOUT_SECONDS = 30;
     private static boolean initialized_ = false;
@@ -115,16 +117,28 @@ public class TestSetupExtension implements BeforeAllCallback, AutoCloseable {
     static void configureCommandLine(String processType, CefCommandLine commandLine, boolean windows, String architecture) {
         if (!processType.isEmpty() || !windows || !isArm64Architecture(architecture)) return;
 
+        // Chromium 151 eagerly initializes PasskeyUnlockManager during browser startup. Enabling
+        // software unexportable keys makes EnclaveManager post its support result asynchronously
+        // without entering Windows KeyCredentialManager.IsSupportedAsync, whose ngcksp.dll path
+        // can terminate native Windows ARM64 CI startup with NTE_BAD_KEYSET (0x80090016). This
+        // deliberately changes WebAuthn unexportable-key capability semantics only inside the
+        // Windows ARM64 JUnit browser process.
+        appendCommaSeparatedSwitchValue(commandLine, ENABLE_FEATURES_SWITCH, WINDOWS_SOFTWARE_UNEXPORTABLE_KEYS_FEATURE);
+
         // Chromium 151 enables this metrics-only WinRT probe by default. On GitHub's native
         // Windows ARM64 runners KeyCredentialManager.IsSupportedAsync can enter ngcksp.dll and
-        // terminate startup with NTE_BAD_KEYSET (0x80090016). Disable only the reporter in test
-        // processes; WebAuthn and Windows Hello remain enabled, and production command lines are
-        // unaffected because this handler belongs exclusively to the JUnit bootstrap.
-        String disabledFeatures = commandLine.getSwitchValue(DISABLE_FEATURES_SWITCH);
-        String updatedFeatures = appendCommaSeparatedValue(disabledFeatures, WINDOWS_KEY_CREDENTIAL_TELEMETRY_FEATURE);
-        if (updatedFeatures.equals(disabledFeatures)) return;
-        commandLine.removeSwitch(DISABLE_FEATURES_SWITCH);
-        commandLine.appendSwitchWithValue(DISABLE_FEATURES_SWITCH, updatedFeatures);
+        // terminate startup with NTE_BAD_KEYSET (0x80090016). Keep this independent reporter
+        // defense as well. Production command lines are unaffected because this handler belongs
+        // exclusively to the JUnit bootstrap.
+        appendCommaSeparatedSwitchValue(commandLine, DISABLE_FEATURES_SWITCH, WINDOWS_KEY_CREDENTIAL_TELEMETRY_FEATURE);
+    }
+
+    private static void appendCommaSeparatedSwitchValue(CefCommandLine commandLine, String switchName, String requiredValue) {
+        String values = commandLine.getSwitchValue(switchName);
+        String updatedValues = appendCommaSeparatedValue(values, requiredValue);
+        if (updatedValues.equals(values)) return;
+        commandLine.removeSwitch(switchName);
+        commandLine.appendSwitchWithValue(switchName, updatedValues);
     }
 
     static boolean isArm64Architecture(String architecture) {

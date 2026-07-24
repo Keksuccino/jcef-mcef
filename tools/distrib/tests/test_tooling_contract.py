@@ -151,6 +151,25 @@ class PlatformToolingContractTest(unittest.TestCase):
     self.assertIn('set "CHROMIUM_PROCESS_ARGUMENT="', runner)
     self.assertIn('%JUNIT_LAUNCHER_CLASS% %CHROMIUM_PROCESS_ARGUMENT% execute', runner)
 
+  def test_windows_arm64_browser_process_mitigations_remain_test_only(self):
+    setup = (REPOSITORY_ROOT / 'java' / 'tests' / 'junittests' /
+             'TestSetupExtension.java').read_text(encoding='utf-8')
+    self.assertIn(
+        'if (!processType.isEmpty() || !windows || !isArm64Architecture(architecture)) return;',
+        setup)
+    self.assertIn(
+        'WINDOWS_SOFTWARE_UNEXPORTABLE_KEYS_FEATURE = "WebAuthenticationUseInsecureSoftwareUnexportableKeys"',
+        setup)
+    self.assertIn(
+        'WINDOWS_KEY_CREDENTIAL_TELEMETRY_FEATURE = "ReportKeyCredentialManagerSupportWin"',
+        setup)
+    self.assertIn(
+        'appendCommaSeparatedSwitchValue(commandLine, ENABLE_FEATURES_SWITCH, WINDOWS_SOFTWARE_UNEXPORTABLE_KEYS_FEATURE);',
+        setup)
+    self.assertIn(
+        'appendCommaSeparatedSwitchValue(commandLine, DISABLE_FEATURES_SWITCH, WINDOWS_KEY_CREDENTIAL_TELEMETRY_FEATURE);',
+        setup)
+
   def test_github_actions_are_pinned_to_immutable_commits(self):
     workflow = (
         REPOSITORY_ROOT / '.github' / 'workflows' / 'build-jcef.yml').read_text(

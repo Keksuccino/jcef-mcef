@@ -23,6 +23,14 @@ JNIEXPORT jobject JNICALL Java_org_cef_browser_CefBrowser_1N_N_1ConvertBrowserSe
 
 /*
  * Class:     org_cef_browser_CefBrowser_N
+ * Method:    N_IsOnCefUiThreadForTesting
+ * Signature: ()Z
+ */
+JNIEXPORT jboolean JNICALL Java_org_cef_browser_CefBrowser_1N_N_1IsOnCefUiThreadForTesting
+  (JNIEnv *, jclass);
+
+/*
+ * Class:     org_cef_browser_CefBrowser_N
  * Method:    N_ResolveLinuxNativeKeyCodeForTesting
  * Signature: (JIIZZ)I
  */

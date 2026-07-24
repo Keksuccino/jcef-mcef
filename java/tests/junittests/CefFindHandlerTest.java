@@ -12,6 +12,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.cef.CefClient;
 import org.cef.browser.CefBrowser;
+import org.cef.browser.CefBrowser_N;
 import org.cef.browser.CefFrame;
 import org.cef.handler.CefDisplayHandlerAdapter;
 import org.cef.handler.CefFindHandler;
@@ -19,6 +20,8 @@ import org.cef.handler.CefFindHandlerAdapter;
 import org.junit.jupiter.api.Test;
 
 import java.awt.Rectangle;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
@@ -29,6 +32,7 @@ import java.util.function.Supplier;
 
 @NativeCefTest
 class CefFindHandlerTest {
+    private static final Method IS_ON_CEF_UI_THREAD = getCefUiThreadMethod();
     private static final String READY_TITLE = "JCEF find handler ready";
     private static final String READY_SCRIPT = "document.title = '" + READY_TITLE + "';";
     private static final String TEST_CONTENT =
@@ -65,6 +69,11 @@ class CefFindHandlerTest {
 
         frame.awaitCompletion();
         controller.assertCompleted();
+    }
+
+    @Test
+    void cefUiThreadProbeRejectsJUnitThread() {
+        assertFalse(isOnCefUiThread());
     }
 
     private static void runResultMatrix(String url, boolean offscreen) {
@@ -115,7 +124,6 @@ class CefFindHandlerTest {
         private final AtomicReference<CefBrowser> browser_ = new AtomicReference<CefBrowser>();
         private final AtomicReference<CefClient> client_ = new AtomicReference<CefClient>();
         private final AtomicReference<Runnable> terminator_ = new AtomicReference<Runnable>();
-        private final AtomicReference<Thread> cefUiThread_ = new AtomicReference<Thread>();
         private final AtomicReference<Throwable> callbackFailure_ =
                 new AtomicReference<Throwable>();
         private final AtomicBoolean loadCompleted_ = new AtomicBoolean();
@@ -149,7 +157,7 @@ class CefFindHandlerTest {
             if (!loadCompleted_.compareAndSet(false, true)) return;
             try {
                 attachBrowser(browser);
-                assertTrue(cefUiThread_.compareAndSet(null, Thread.currentThread()));
+                assertCefUiCallbackThread();
                 CefFrame frame = browser.getMainFrame();
                 assertNotNull(frame);
                 try {
@@ -174,7 +182,7 @@ class CefFindHandlerTest {
 
         final void assertCallbackContext(CefBrowser browser) {
             assertSame(browser_.get(), browser);
-            assertSame(cefUiThread_.get(), Thread.currentThread(), "Find callbacks must use the same CEF UI callback thread as loading callbacks");
+            assertCefUiCallbackThread();
         }
 
         final void assertFindCallbackContext(CefBrowser browser) {
@@ -218,6 +226,36 @@ class CefFindHandlerTest {
         abstract void registerFindHandlers(CefClient client);
 
         abstract void beginSearches(CefBrowser browser);
+    }
+
+    private static void assertCefUiCallbackThread() {
+        // ScopedJNIEnv may detach CEF-owned threads after each callback, so the JVM can expose a
+        // different java.lang.Thread wrapper on the next attachment. Ask CEF for the native thread
+        // role instead of comparing transient Java wrapper identities.
+        assertTrue(isOnCefUiThread(), "Load, display, and find callbacks must execute on the CEF browser-process UI thread");
+    }
+
+    private static boolean isOnCefUiThread() {
+        try {
+            return ((Boolean) IS_ON_CEF_UI_THREAD.invoke(null)).booleanValue();
+        } catch (IllegalAccessException exception) {
+            throw new AssertionError("Unable to invoke CEF UI-thread probe", exception);
+        } catch (InvocationTargetException exception) {
+            Throwable cause = exception.getCause();
+            if (cause instanceof RuntimeException) throw (RuntimeException) cause;
+            if (cause instanceof Error) throw (Error) cause;
+            throw new AssertionError("CEF UI-thread probe failed", cause);
+        }
+    }
+
+    private static Method getCefUiThreadMethod() {
+        try {
+            Method method = CefBrowser_N.class.getDeclaredMethod("N_IsOnCefUiThreadForTesting");
+            method.setAccessible(true);
+            return method;
+        } catch (ReflectiveOperationException exception) {
+            throw new ExceptionInInitializerError(exception);
+        }
     }
 
     private static void awaitNativeRefCleared(CefClient client, String identifier) {

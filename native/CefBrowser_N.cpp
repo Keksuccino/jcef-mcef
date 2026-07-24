@@ -3603,6 +3603,10 @@ JNIEXPORT jobject JNICALL Java_org_cef_browser_CefBrowser_1N_N_1ConvertBrowserSe
   return snapshot;
 }
 
+JNIEXPORT jboolean JNICALL Java_org_cef_browser_CefBrowser_1N_N_1IsOnCefUiThreadForTesting(JNIEnv*, jclass) {
+  return CefCurrentlyOn(TID_UI) ? JNI_TRUE : JNI_FALSE;
+}
+
 JNIEXPORT jint JNICALL Java_org_cef_browser_CefBrowser_1N_N_1ResolveLinuxNativeKeyCodeForTesting(JNIEnv*, jclass, jlong supplied_native_key_code, jint key_code, jint key_location, jboolean typed, jboolean awt) {
   return key_event_platform_util::ResolveLinuxNativeKeyCode(supplied_native_key_code, key_code, key_location, typed == JNI_TRUE, awt == JNI_TRUE ? InputEventSemantics::kAwt : InputEventSemantics::kGlfw);
 }

@@ -122,6 +122,15 @@ bool DisplayHandler::OnConsoleMessage(CefRefPtr<CefBrowser> browser,
   return (jreturn != JNI_FALSE);
 }
 
+void DisplayHandler::OnLoadingProgressChange(CefRefPtr<CefBrowser> browser, double progress) {
+  ScopedJNIEnv env;
+  if (!env)
+    return;
+
+  ScopedJNIBrowser jbrowser(env, browser);
+  JNI_CALL_VOID_METHOD(env, handle_, "onLoadingProgressChange", "(Lorg/cef/browser/CefBrowser;D)V", jbrowser.get(), static_cast<jdouble>(progress));
+}
+
 // TODO(JCEF): Expose all parameters.
 bool DisplayHandler::OnCursorChange(CefRefPtr<CefBrowser> browser,
                                     CefCursorHandle cursor,

@@ -46,6 +46,11 @@ public abstract class CefDisplayHandlerAdapter implements CefDisplayHandler {
     }
 
     @Override
+    public void onLoadingProgressChange(CefBrowser browser, double progress) {
+        return;
+    }
+
+    @Override
     public boolean onCursorChange(CefBrowser browser, int cursorType) {
         return false;
     }

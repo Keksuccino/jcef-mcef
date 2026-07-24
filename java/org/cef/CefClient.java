@@ -404,6 +404,12 @@ public class CefClient extends CefClientHandler
     }
 
     @Override
+    public void onLoadingProgressChange(CefBrowser browser, double progress) {
+        if (displayHandler_ != null && browser != null)
+            displayHandler_.onLoadingProgressChange(browser, progress);
+    }
+
+    @Override
     public boolean onCursorChange(CefBrowser browser, int cursorType) {
         if (browser == null) {
             return false;

@@ -106,9 +106,10 @@ class CefHandlerCompatibilityTest {
     }
 
     @Test
-    void legacyDisplayHandlerCanIgnoreFullscreenNotifications() {
+    void legacyDisplayHandlerCanIgnoreAddedNotifications() {
         CefDisplayHandler handler = new LegacyDisplayHandler();
         handler.onFullscreenModeChange(null, true);
+        handler.onLoadingProgressChange(null, 0.5);
     }
 
     private static final class LegacyResourceHandler implements CefResourceHandler {

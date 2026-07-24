@@ -63,6 +63,13 @@ public interface CefDisplayHandler {
             String message, String source, int line);
 
     /**
+     * Overall page loading progress changed.
+     * @param browser The browser generating the event.
+     * @param progress The current overall loading progress, ranging from 0.0 to 1.0.
+     */
+    public default void onLoadingProgressChange(CefBrowser browser, double progress) {}
+
+    /**
      * Handle cursor changes.
      * @param browser The browser generating the event.
      * @param cursorType The new cursor type.

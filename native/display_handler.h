@@ -33,6 +33,7 @@ class DisplayHandler : public CefDisplayHandler {
                         const CefString& message,
                         const CefString& source,
                         int line) override;
+  void OnLoadingProgressChange(CefRefPtr<CefBrowser> browser, double progress) override;
   bool OnCursorChange(CefRefPtr<CefBrowser> browser,
                       CefCursorHandle cursor,
                       cef_cursor_type_t type,

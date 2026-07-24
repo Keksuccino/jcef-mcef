@@ -124,6 +124,23 @@ class PlatformToolingContractTest(unittest.TestCase):
     self.assertEqual(1, windows_job_text.count(WINDOWLESS_RENDERING_CONFIG_ARGUMENT))
     self.assertIn(quoted_argument, windows_job_text)
 
+  def test_windows_arm64_uses_java17_distribution_without_vm_exit_failure(self):
+    workflow = (REPOSITORY_ROOT / '.github' / 'workflows' / 'build-jcef.yml').read_text(encoding='utf-8')
+    job_pattern = r'^  windows:\n(.*?)(?=^  [a-z][a-z0-9_-]*:\n|\Z)'
+    windows_job = re.search(job_pattern, workflow, re.DOTALL | re.MULTILINE)
+    self.assertIsNotNone(windows_job)
+    windows_job_text = windows_job.group(1)
+    amd64_entry = re.search(r'- runner: windows-2022\n(.*?)(?=\n\s+- runner:)', windows_job_text, re.DOTALL)
+    arm64_entry = re.search(r'- runner: windows-11-arm\n(.*?)(?=\n\s+runs-on:)', windows_job_text, re.DOTALL)
+    self.assertIsNotNone(amd64_entry)
+    self.assertIsNotNone(arm64_entry)
+    self.assertIn('java_distribution: microsoft', amd64_entry.group(1))
+    self.assertIn("java_version: '17'", amd64_entry.group(1))
+    self.assertIn('java_distribution: zulu', arm64_entry.group(1))
+    self.assertIn("java_version: '17.0.20+8'", arm64_entry.group(1))
+    self.assertIn('distribution: ${{ matrix.java_distribution }}', windows_job_text)
+    self.assertIn('java-version: ${{ matrix.java_version }}', windows_job_text)
+
   def test_every_workflow_architecture_builds_and_runs_native_unit_tests(self):
     workflow = (REPOSITORY_ROOT / '.github' / 'workflows' / 'build-jcef.yml').read_text(encoding='utf-8')
     build_command = 'cmake --build jcef_build --config Release --target mouse_wheel_platform_util_test --parallel 4'

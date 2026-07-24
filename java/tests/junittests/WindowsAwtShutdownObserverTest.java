@@ -176,14 +176,7 @@ class WindowsAwtShutdownObserverTest {
             waitedThreads.add(thread);
             waitBudgets.add(timeoutNanos);
             if (thread == toolkit.thread()) {
-                Thread toolkitShutdown = new Thread(() -> {
-                    try {
-                        activeBlocker.set(blocker);
-                        toolkit.release().countDown();
-                    } catch (RuntimeException failure) {
-                        toolkitShutdownFailure.set(failure);
-                    }
-                }, "ToolkitShutdown");
+                Thread toolkitShutdown = new Thread(() -> { try { activeBlocker.set(blocker); toolkit.release().countDown(); } catch (RuntimeException failure) { toolkitShutdownFailure.set(failure); } }, "ToolkitShutdown");
                 toolkitShutdown.start();
                 toolkitShutdown.join(THREAD_TIMEOUT_MILLIS);
                 assertFalse(toolkitShutdown.isAlive());
@@ -406,11 +399,7 @@ class WindowsAwtShutdownObserverTest {
         AtomicLong nanoTime = new AtomicLong(1_000);
         List<Long> waitBudgets = new ArrayList<Long>();
         ByteArrayOutputStream diagnosticBytes = new ByteArrayOutputStream();
-        WindowsAwtShutdownObserver.ObserverHooks hooks = new WindowsAwtShutdownObserver.ObserverHooks(() -> snapshotOf(nameOnly), nanoTime::get, (thread, timeoutNanos) -> {
-            assertEquals(nameOnly.thread(), thread);
-            waitBudgets.add(timeoutNanos);
-            nanoTime.addAndGet(timeoutNanos);
-        }, timeoutNanos -> nanoTime.addAndGet(timeoutNanos), new PrintWriter(diagnosticBytes, true, StandardCharsets.UTF_8));
+        WindowsAwtShutdownObserver.ObserverHooks hooks = new WindowsAwtShutdownObserver.ObserverHooks(() -> snapshotOf(nameOnly), nanoTime::get, (thread, timeoutNanos) -> { assertEquals(nameOnly.thread(), thread); waitBudgets.add(timeoutNanos); nanoTime.addAndGet(timeoutNanos); }, timeoutNanos -> nanoTime.addAndGet(timeoutNanos), new PrintWriter(diagnosticBytes, true, StandardCharsets.UTF_8));
 
         try {
             WindowsAwtShutdownObserver.observe(toolkit.thread(), nanoTime.get(), 25 * MILLISECOND_NANOS, 20 * MILLISECOND_NANOS, hooks);
@@ -430,10 +419,7 @@ class WindowsAwtShutdownObserverTest {
         AtomicLong nanoTime = new AtomicLong(1_000);
         ByteArrayOutputStream diagnosticBytes = new ByteArrayOutputStream();
         List<Long> waitBudgets = new ArrayList<Long>();
-        WindowsAwtShutdownObserver.ObserverHooks hooks = new WindowsAwtShutdownObserver.ObserverHooks(() -> snapshotOf(blocker, AWT_SHUTDOWN_FRAME), nanoTime::get, (thread, timeoutNanos) -> {
-            waitBudgets.add(timeoutNanos);
-            nanoTime.addAndGet(timeoutNanos);
-        }, timeoutNanos -> nanoTime.addAndGet(timeoutNanos), new PrintWriter(diagnosticBytes, true, StandardCharsets.UTF_8));
+        WindowsAwtShutdownObserver.ObserverHooks hooks = new WindowsAwtShutdownObserver.ObserverHooks(() -> snapshotOf(blocker, AWT_SHUTDOWN_FRAME), nanoTime::get, (thread, timeoutNanos) -> { waitBudgets.add(timeoutNanos); nanoTime.addAndGet(timeoutNanos); }, timeoutNanos -> nanoTime.addAndGet(timeoutNanos), new PrintWriter(diagnosticBytes, true, StandardCharsets.UTF_8));
 
         try {
             WindowsAwtShutdownObserver.observe(toolkit.thread(), nanoTime.get(), 100 * MILLISECOND_NANOS, 20 * MILLISECOND_NANOS, hooks);
@@ -455,10 +441,7 @@ class WindowsAwtShutdownObserverTest {
         releaseAndJoin(toolkit);
         AtomicLong nanoTime = new AtomicLong(1_000);
         AtomicInteger stabilizationWaits = new AtomicInteger();
-        WindowsAwtShutdownObserver.ObserverHooks hooks = new WindowsAwtShutdownObserver.ObserverHooks(Map::of, nanoTime::get, (thread, timeoutNanos) -> {}, timeoutNanos -> {
-            if (stabilizationWaits.getAndIncrement() == 0) throw new InterruptedException("injected observer interruption");
-            nanoTime.addAndGet(timeoutNanos);
-        }, new PrintWriter(new ByteArrayOutputStream()));
+        WindowsAwtShutdownObserver.ObserverHooks hooks = new WindowsAwtShutdownObserver.ObserverHooks(Map::of, nanoTime::get, (thread, timeoutNanos) -> {}, timeoutNanos -> { if (stabilizationWaits.getAndIncrement() == 0) throw new InterruptedException("injected observer interruption"); nanoTime.addAndGet(timeoutNanos); }, new PrintWriter(new ByteArrayOutputStream()));
 
         try {
             WindowsAwtShutdownObserver.observe(toolkit.thread(), nanoTime.get(), TimeUnit.SECONDS.toNanos(1), 20 * MILLISECOND_NANOS, hooks);

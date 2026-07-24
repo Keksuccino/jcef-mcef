@@ -5,7 +5,9 @@
 #include "CefBrowser_N.h"
 
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
+#include <limits>
 #include <memory>
 #include <mutex>
 
@@ -45,103 +47,532 @@
 
 namespace {
 
-int GetCefModifiersGlfw(JNIEnv* env, jclass cls, int modifiers) {
-  JNI_STATIC_DEFINE_INT_RV(env, cls, GLFW_MOD_ALT, 0);
-  JNI_STATIC_DEFINE_INT_RV(env, cls, GLFW_MOD_CONTROL, 0);
-  JNI_STATIC_DEFINE_INT_RV(env, cls, GLFW_MOD_SUPER, 0);
-  JNI_STATIC_DEFINE_INT_RV(env, cls, GLFW_MOD_SHIFT, 0);
+// These values are stable public ABI constants from java.awt.event and GLFW.
+// Keeping the input domains explicit avoids a runtime dependency on LWJGL for
+// both Swing and MCEF while preserving the legacy DTO wire format.
+namespace awt {
+constexpr int kShiftDownMask = 1 << 6;
+constexpr int kControlDownMask = 1 << 7;
+constexpr int kMetaDownMask = 1 << 8;
+constexpr int kAltDownMask = 1 << 9;
+constexpr int kButton1DownMask = 1 << 10;
+constexpr int kButton2DownMask = 1 << 11;
+constexpr int kButton3DownMask = 1 << 12;
+constexpr int kAltGraphDownMask = 1 << 13;
 
+constexpr int kKeyTyped = 400;
+constexpr int kKeyPressed = 401;
+constexpr int kKeyReleased = 402;
+constexpr char16_t kCharUndefined = 0xFFFF;
+constexpr int kKeyLocationUnknown = 0;
+constexpr int kKeyLocationStandard = 1;
+constexpr int kKeyLocationLeft = 2;
+constexpr int kKeyLocationRight = 3;
+constexpr int kKeyLocationNumpad = 4;
+constexpr int kVkCancel = 3;
+constexpr int kVkBackSpace = 8;
+constexpr int kVkTab = 9;
+constexpr int kVkEnter = 10;
+constexpr int kVkClear = 12;
+constexpr int kVkShift = 16;
+constexpr int kVkControl = 17;
+constexpr int kVkAlt = 18;
+constexpr int kVkPause = 19;
+constexpr int kVkCapsLock = 20;
+constexpr int kVkEscape = 27;
+constexpr int kVkSpace = 32;
+constexpr int kVkPageUp = 33;
+constexpr int kVkPageDown = 34;
+constexpr int kVkEnd = 35;
+constexpr int kVkHome = 36;
+constexpr int kVkLeft = 37;
+constexpr int kVkUp = 38;
+constexpr int kVkRight = 39;
+constexpr int kVkDown = 40;
+constexpr int kVkNumpad0 = 96;
+constexpr int kVkNumpad9 = 105;
+constexpr int kVkMultiply = 106;
+constexpr int kVkAdd = 107;
+constexpr int kVkSeparator = 108;
+constexpr int kVkSubtract = 109;
+constexpr int kVkDecimal = 110;
+constexpr int kVkDivide = 111;
+constexpr int kVkF1 = 112;
+constexpr int kVkF12 = 123;
+constexpr int kVkDelete = 127;
+constexpr int kVkDeadGrave = 128;
+constexpr int kVkDeadAcute = 129;
+constexpr int kVkDeadCircumflex = 130;
+constexpr int kVkDeadTilde = 131;
+constexpr int kVkDeadMacron = 132;
+constexpr int kVkDeadBreve = 133;
+constexpr int kVkDeadAboveDot = 134;
+constexpr int kVkDeadDiaeresis = 135;
+constexpr int kVkDeadAboveRing = 136;
+constexpr int kVkDeadDoubleAcute = 137;
+constexpr int kVkDeadCaron = 138;
+constexpr int kVkDeadCedilla = 139;
+constexpr int kVkDeadOgonek = 140;
+constexpr int kVkDeadIota = 141;
+constexpr int kVkDeadVoicedSound = 142;
+constexpr int kVkDeadSemivoicedSound = 143;
+constexpr int kVkNumLock = 144;
+constexpr int kVkScrollLock = 145;
+constexpr int kVkPrintScreen = 154;
+constexpr int kVkInsert = 155;
+constexpr int kVkHelp = 156;
+constexpr int kVkMeta = 157;
+constexpr int kVkBackQuote = 192;
+constexpr int kVkQuote = 222;
+constexpr int kVkKpUp = 224;
+constexpr int kVkKpDown = 225;
+constexpr int kVkKpLeft = 226;
+constexpr int kVkKpRight = 227;
+constexpr int kVkWindows = 524;
+constexpr int kVkContextMenu = 525;
+constexpr int kVkF13 = 61440;
+constexpr int kVkF24 = 61451;
+constexpr int kVkCompose = 65312;
+constexpr int kVkAltGraph = 65406;
+
+constexpr int kMousePressed = 501;
+constexpr int kMouseReleased = 502;
+constexpr int kMouseMoved = 503;
+constexpr int kMouseEntered = 504;
+constexpr int kMouseExited = 505;
+constexpr int kMouseDragged = 506;
+constexpr int kButton1 = 1;
+constexpr int kButton2 = 2;
+constexpr int kButton3 = 3;
+constexpr int kWheelUnitScroll = 0;
+constexpr int kWheelBlockScroll = 1;
+}  // namespace awt
+
+namespace glfw {
+constexpr int kRelease = 0;
+constexpr int kPress = 1;
+// CefKeyEvent predates explicit repeat support and reserves action 2 for typed
+// text.
+constexpr int kTyped = 2;
+constexpr int kExplicitRepeat = 3;
+constexpr int kModShift = 0x0001;
+constexpr int kModControl = 0x0002;
+constexpr int kModAlt = 0x0004;
+constexpr int kModSuper = 0x0008;
+constexpr int kModCapsLock = 0x0010;
+constexpr int kModNumLock = 0x0020;
+constexpr int kLegacyButton1Mask = 0x10;
+constexpr int kLegacyButton2Mask = 0x20;
+constexpr int kLegacyButton3Mask = 0x40;
+
+constexpr int kKeyEscape = 256;
+constexpr int kKeyEnter = 257;
+constexpr int kKeyTab = 258;
+constexpr int kKeyBackspace = 259;
+constexpr int kKeyInsert = 260;
+constexpr int kKeyDelete = 261;
+constexpr int kKeyRight = 262;
+constexpr int kKeyLeft = 263;
+constexpr int kKeyDown = 264;
+constexpr int kKeyUp = 265;
+constexpr int kKeyPageUp = 266;
+constexpr int kKeyPageDown = 267;
+constexpr int kKeyHome = 268;
+constexpr int kKeyEnd = 269;
+constexpr int kKeyCapsLock = 280;
+constexpr int kKeyScrollLock = 281;
+constexpr int kKeyNumLock = 282;
+constexpr int kKeyPrintScreen = 283;
+constexpr int kKeyPause = 284;
+constexpr int kKeyF1 = 290;
+constexpr int kKeyF25 = 314;
+constexpr int kKeyKp0 = 320;
+constexpr int kKeyKp9 = 329;
+constexpr int kKeyKpDecimal = 330;
+constexpr int kKeyKpDivide = 331;
+constexpr int kKeyKpMultiply = 332;
+constexpr int kKeyKpSubtract = 333;
+constexpr int kKeyKpAdd = 334;
+constexpr int kKeyKpEnter = 335;
+constexpr int kKeyKpEqual = 336;
+constexpr int kKeyLeftShift = 340;
+constexpr int kKeyLeftControl = 341;
+constexpr int kKeyLeftAlt = 342;
+constexpr int kKeyLeftSuper = 343;
+constexpr int kKeyRightShift = 344;
+constexpr int kKeyRightControl = 345;
+constexpr int kKeyRightAlt = 346;
+constexpr int kKeyRightSuper = 347;
+constexpr int kKeyMenu = 348;
+
+// CefMouseEvent exposes normalized logical buttons in this historical fork.
+constexpr int kMouseButton1 = 0;
+constexpr int kMouseButton2 = 1;
+constexpr int kMouseButton3 = 2;
+constexpr int kMouseMoved = 503;
+constexpr int kMouseEntered = 504;
+constexpr int kMouseExited = 505;
+constexpr int kMouseDragged = 506;
+constexpr int kWheelUnitScroll = 0;
+}  // namespace glfw
+
+static_assert(EVENTFLAG_ALTGR_DOWN == (1 << 12));
+static_assert(EVENTFLAG_IS_REPEAT == (1 << 13));
+static_assert(EVENTFLAG_PRECISION_SCROLLING_DELTA == (1 << 14));
+static_assert(EVENTFLAG_SCROLL_BY_PAGE == (1 << 15));
+
+enum class InputEventSemantics { kAwt, kGlfw };
+
+int GetCefModifiersAwt(int modifiers) {
   int cef_modifiers = 0;
-  if (modifiers & JNI_STATIC(GLFW_MOD_ALT))
+  if (modifiers & awt::kAltDownMask)
     cef_modifiers |= EVENTFLAG_ALT_DOWN;
-  if (modifiers & 0x10)  // BUTTON1_MASK
+  if (modifiers & awt::kButton1DownMask)
     cef_modifiers |= EVENTFLAG_LEFT_MOUSE_BUTTON;
-  if (modifiers & 0x20)  // BUTTON2_MASK
+  if (modifiers & awt::kButton2DownMask)
     cef_modifiers |= EVENTFLAG_MIDDLE_MOUSE_BUTTON;
-  if (modifiers & 0x40)  // BUTTON3_MASK
+  if (modifiers & awt::kButton3DownMask)
     cef_modifiers |= EVENTFLAG_RIGHT_MOUSE_BUTTON;
-  if (modifiers & JNI_STATIC(GLFW_MOD_CONTROL))
+  if (modifiers & awt::kControlDownMask)
     cef_modifiers |= EVENTFLAG_CONTROL_DOWN;
-  if (modifiers & JNI_STATIC(GLFW_MOD_SUPER))
+  if (modifiers & awt::kMetaDownMask)
     cef_modifiers |= EVENTFLAG_COMMAND_DOWN;
-  if (modifiers & JNI_STATIC(GLFW_MOD_SHIFT))
+  if (modifiers & awt::kShiftDownMask)
     cef_modifiers |= EVENTFLAG_SHIFT_DOWN;
-
+  if (modifiers & awt::kAltGraphDownMask)
+    cef_modifiers |= EVENTFLAG_ALTGR_DOWN;
   return cef_modifiers;
 }
 
-#if defined(OS_WIN)
-long MapScanCodeGLFW(JNIEnv* env, jclass cls, int key_char, int scanCode) {
-  JNI_STATIC_DEFINE_INT_RV(env, cls, GLFW_KEY_DELETE, 0);
-  JNI_STATIC_DEFINE_INT_RV(env, cls, GLFW_KEY_LEFT, 0);
-  JNI_STATIC_DEFINE_INT_RV(env, cls, GLFW_KEY_DOWN, 0);
-  JNI_STATIC_DEFINE_INT_RV(env, cls, GLFW_KEY_UP, 0);
-  JNI_STATIC_DEFINE_INT_RV(env, cls, GLFW_KEY_RIGHT, 0);
-  JNI_STATIC_DEFINE_INT_RV(env, cls, GLFW_KEY_PAGE_DOWN, 0);
-  JNI_STATIC_DEFINE_INT_RV(env, cls, GLFW_KEY_PAGE_UP, 0);
-  JNI_STATIC_DEFINE_INT_RV(env, cls, GLFW_KEY_END, 0);
-  JNI_STATIC_DEFINE_INT_RV(env, cls, GLFW_KEY_HOME, 0);
-  JNI_STATIC_DEFINE_INT_RV(env, cls, GLFW_KEY_ENTER, 0);
-  JNI_STATIC_DEFINE_INT_RV(env, cls, GLFW_KEY_KP_ENTER, 0);
-  JNI_STATIC_DEFINE_INT_RV(env, cls, GLFW_KEY_LEFT_CONTROL, 0);
-  JNI_STATIC_DEFINE_INT_RV(env, cls, GLFW_KEY_RIGHT_CONTROL, 0);
-  JNI_STATIC_DEFINE_INT_RV(env, cls, GLFW_KEY_BACKSPACE, 0);
-  JNI_STATIC_DEFINE_INT_RV(env, cls, GLFW_KEY_KP_4, 0);
-  JNI_STATIC_DEFINE_INT_RV(env, cls, GLFW_KEY_KP_8, 0);
-  JNI_STATIC_DEFINE_INT_RV(env, cls, GLFW_KEY_KP_6, 0);
-  JNI_STATIC_DEFINE_INT_RV(env, cls, GLFW_KEY_KP_2, 0);
-  JNI_STATIC_DEFINE_INT_RV(env, cls, GLFW_KEY_PRINT_SCREEN, 0);
-  JNI_STATIC_DEFINE_INT_RV(env, cls, GLFW_KEY_SCROLL_LOCK, 0);
-  JNI_STATIC_DEFINE_INT_RV(env, cls, GLFW_KEY_CAPS_LOCK, 0);
-  JNI_STATIC_DEFINE_INT_RV(env, cls, GLFW_KEY_NUM_LOCK, 0);
-  JNI_STATIC_DEFINE_INT_RV(env, cls, GLFW_KEY_PAUSE, 0);
-  JNI_STATIC_DEFINE_INT_RV(env, cls, GLFW_KEY_INSERT, 0);
+int GetCefKeyModifiersGlfw(int modifiers) {
+  int cef_modifiers = 0;
+  if (modifiers & glfw::kModAlt)
+    cef_modifiers |= EVENTFLAG_ALT_DOWN;
+  if (modifiers & glfw::kModControl)
+    cef_modifiers |= EVENTFLAG_CONTROL_DOWN;
+  if (modifiers & glfw::kModSuper)
+    cef_modifiers |= EVENTFLAG_COMMAND_DOWN;
+  if (modifiers & glfw::kModShift)
+    cef_modifiers |= EVENTFLAG_SHIFT_DOWN;
+  if (modifiers & glfw::kModCapsLock)
+    cef_modifiers |= EVENTFLAG_CAPS_LOCK_ON;
+  if (modifiers & glfw::kModNumLock)
+    cef_modifiers |= EVENTFLAG_NUM_LOCK_ON;
+  return cef_modifiers;
+}
 
-  if (key_char == JNI_STATIC(GLFW_KEY_BACKSPACE) ||
-      key_char == JNI_STATIC(GLFW_KEY_KP_4) ||
-      key_char == JNI_STATIC(GLFW_KEY_KP_8) ||
-      key_char == JNI_STATIC(GLFW_KEY_KP_6) ||
-      key_char == JNI_STATIC(GLFW_KEY_KP_2) ||
-      key_char == JNI_STATIC(GLFW_KEY_PRINT_SCREEN) ||
-      key_char == JNI_STATIC(GLFW_KEY_SCROLL_LOCK) ||
-      key_char == JNI_STATIC(GLFW_KEY_CAPS_LOCK) ||
-      key_char == JNI_STATIC(GLFW_KEY_NUM_LOCK) ||
-      key_char == JNI_STATIC(GLFW_KEY_PAUSE) ||
-      key_char == JNI_STATIC(GLFW_KEY_INSERT)) {
-    int code_out;
-    // these jni helpers make no sense to me
-    CallStaticJNIMethodII_V(env, cls, "glfwGetKeyScancode", &code_out,
-                            key_char);
-    return code_out;
+int GetCefPointerModifiersGlfw(int modifiers) {
+  int cef_modifiers = GetCefKeyModifiersGlfw(modifiers & ~(glfw::kModCapsLock | glfw::kModNumLock));
+  if (modifiers & glfw::kLegacyButton1Mask)
+    cef_modifiers |= EVENTFLAG_LEFT_MOUSE_BUTTON;
+  if (modifiers & glfw::kLegacyButton2Mask)
+    cef_modifiers |= EVENTFLAG_MIDDLE_MOUSE_BUTTON;
+  if (modifiers & glfw::kLegacyButton3Mask)
+    cef_modifiers |= EVENTFLAG_RIGHT_MOUSE_BUTTON;
+  return cef_modifiers;
+}
+
+int GetCefKeyModifiers(int modifiers, InputEventSemantics semantics) {
+  return semantics == InputEventSemantics::kAwt
+             ? GetCefModifiersAwt(modifiers)
+             : GetCefKeyModifiersGlfw(modifiers);
+}
+
+int GetCefPointerModifiers(int modifiers, InputEventSemantics semantics) {
+  return semantics == InputEventSemantics::kAwt
+             ? GetCefModifiersAwt(modifiers)
+             : GetCefPointerModifiersGlfw(modifiers);
+}
+
+bool HasDefinedKeyChar(char16_t key_char) {
+  return key_char != awt::kCharUndefined;
+}
+
+bool IsValidBmpCharacter(jlong character) {
+  return character > 0 && character < awt::kCharUndefined &&
+         !(character >= 0xD800 && character <= 0xDFFF);
+}
+
+bool IsPrintableKeyChar(char16_t character) {
+  return HasDefinedKeyChar(character) && character >= 0x20 && character != 0x7F;
+}
+
+char16_t GetShiftedDigitCharacter(int key_code) {
+  constexpr char kShiftedDigits[] = ")!@#$%^&*(";
+  return kShiftedDigits[key_code - '0'];
+}
+
+bool IsGlfwStandardPrintableKey(int key_code) {
+  if ((key_code >= '0' && key_code <= '9') ||
+      (key_code >= 'A' && key_code <= 'Z'))
+    return true;
+  switch (key_code) {
+    case 32:  // GLFW_KEY_SPACE
+    case 39:  // GLFW_KEY_APOSTROPHE
+    case 44:  // GLFW_KEY_COMMA
+    case 45:  // GLFW_KEY_MINUS
+    case 46:  // GLFW_KEY_PERIOD
+    case 47:  // GLFW_KEY_SLASH
+    case 59:  // GLFW_KEY_SEMICOLON
+    case 61:  // GLFW_KEY_EQUAL
+    case 91:  // GLFW_KEY_LEFT_BRACKET
+    case 92:  // GLFW_KEY_BACKSLASH
+    case 93:  // GLFW_KEY_RIGHT_BRACKET
+    case 96:  // GLFW_KEY_GRAVE_ACCENT
+      return true;
+    default:
+      // GLFW_KEY_WORLD_1/2 are intentionally excluded. Their numeric identities
+      // are not Unicode characters, even though the historical MCEF DTO casts
+      // keyCode into keyChar.
+      return false;
+  }
+}
+
+char16_t GetGlfwRawUnmodifiedCharacter(int key_code, char16_t key_char, bool shift) {
+  if (key_code >= 'A' && key_code <= 'Z' &&
+      (!HasDefinedKeyChar(key_char) ||
+       key_char == static_cast<char16_t>(key_code)))
+    return static_cast<char16_t>(shift ? key_code : key_code + ('a' - 'A'));
+  if (IsGlfwStandardPrintableKey(key_code) && HasDefinedKeyChar(key_char)) {
+    if (!shift || key_char != static_cast<char16_t>(key_code))
+      return key_char;
+    if (key_code >= '0' && key_code <= '9')
+      return GetShiftedDigitCharacter(key_code);
+    switch (key_code) {
+      case 39:
+        return '"';
+      case 44:
+        return '<';
+      case 45:
+        return '_';
+      case 46:
+        return '>';
+      case 47:
+        return '?';
+      case 59:
+        return ':';
+      case 61:
+        return '+';
+      case 91:
+        return '{';
+      case 92:
+        return '|';
+      case 93:
+        return '}';
+      case 96:
+        return '~';
+      default:
+        return key_char;
+    }
+  }
+  if (key_code >= glfw::kKeyKp0 && key_code <= glfw::kKeyKp9)
+    return static_cast<char16_t>('0' + key_code - glfw::kKeyKp0);
+  switch (key_code) {
+    case glfw::kKeyKpDecimal:
+      return '.';
+    case glfw::kKeyKpDivide:
+      return '/';
+    case glfw::kKeyKpMultiply:
+      return '*';
+    case glfw::kKeyKpSubtract:
+      return '-';
+    case glfw::kKeyKpAdd:
+      return '+';
+    case glfw::kKeyKpEqual:
+      return '=';
+    case glfw::kKeyKpEnter:
+    case glfw::kKeyEnter:
+      return '\r';
+    case glfw::kKeyBackspace:
+      return '\b';
+    case glfw::kKeyTab:
+      return '\t';
+    case glfw::kKeyEscape:
+      return 0x1B;
+    case glfw::kKeyDelete:
+      return 0x7F;
+    default:
+      return awt::kCharUndefined;
+  }
+}
+
+char16_t GetGlfwRawCharacter(int key_code, char16_t key_char, bool shift, bool caps_lock) {
+  if (key_code >= 'A' && key_code <= 'Z' &&
+      (!HasDefinedKeyChar(key_char) ||
+       key_char == static_cast<char16_t>(key_code)))
+    return static_cast<char16_t>(shift != caps_lock ? key_code
+                                                    : key_code + ('a' - 'A'));
+  return GetGlfwRawUnmodifiedCharacter(key_code, key_char, shift);
+}
+
+char16_t GetAwtPhysicalUnmodifiedCharacter(int key_code, bool shift) {
+  if (key_code >= 'A' && key_code <= 'Z')
+    return static_cast<char16_t>(shift ? key_code : key_code + ('a' - 'A'));
+  if (key_code >= '0' && key_code <= '9')
+    return shift ? GetShiftedDigitCharacter(key_code)
+                 : static_cast<char16_t>(key_code);
+  if (key_code >= awt::kVkNumpad0 && key_code <= awt::kVkNumpad9)
+    return static_cast<char16_t>('0' + key_code - awt::kVkNumpad0);
+  switch (key_code) {
+    case awt::kVkSpace:
+      return ' ';
+    case 44:  // KeyEvent.VK_COMMA
+      return shift ? '<' : ',';
+    case 45:  // KeyEvent.VK_MINUS
+      return shift ? '_' : '-';
+    case 46:  // KeyEvent.VK_PERIOD
+      return shift ? '>' : '.';
+    case 47:  // KeyEvent.VK_SLASH
+      return shift ? '?' : '/';
+    case 59:  // KeyEvent.VK_SEMICOLON
+      return shift ? ':' : ';';
+    case 61:  // KeyEvent.VK_EQUALS
+      return shift ? '+' : '=';
+    case 91:  // KeyEvent.VK_OPEN_BRACKET
+      return shift ? '{' : '[';
+    case 92:  // KeyEvent.VK_BACK_SLASH
+      return shift ? '|' : '\\';
+    case 93:  // KeyEvent.VK_CLOSE_BRACKET
+      return shift ? '}' : ']';
+    case awt::kVkBackQuote:
+      return shift ? '~' : '`';
+    case awt::kVkQuote:
+      return shift ? '"' : '\'';
+    case awt::kVkDecimal:
+      return '.';
+    case awt::kVkDivide:
+      return '/';
+    case awt::kVkMultiply:
+      return '*';
+    case awt::kVkSubtract:
+      return '-';
+    case awt::kVkAdd:
+      return '+';
+    case awt::kVkSeparator:
+      return ',';
+    case awt::kVkEnter:
+      return '\r';
+    case awt::kVkBackSpace:
+      return '\b';
+    case awt::kVkTab:
+      return '\t';
+    case awt::kVkEscape:
+      return 0x1B;
+    case awt::kVkDelete:
+      return 0x7F;
+    default:
+      return awt::kCharUndefined;
+  }
+}
+
+char16_t GetAwtUnmodifiedCharacter(JNIEnv* env, char16_t key_char, int modifiers, jlong primary_level_unicode, char16_t physical_fallback) {
+  constexpr int kCharacterModifiers = awt::kControlDownMask |
+                                      awt::kAltDownMask | awt::kMetaDownMask |
+                                      awt::kAltGraphDownMask;
+  constexpr int kAlternateLevelModifiers =
+      awt::kAltDownMask | awt::kAltGraphDownMask;
+  const bool shift = (modifiers & awt::kShiftDownMask) != 0;
+  const bool alternate_level = (modifiers & kAlternateLevelModifiers) != 0;
+  const bool primary_valid = IsValidBmpCharacter(primary_level_unicode);
+  const char16_t primary_character =
+      primary_valid ? static_cast<char16_t>(primary_level_unicode)
+                    : awt::kCharUndefined;
+  if ((modifiers & kCharacterModifiers) == 0 && HasDefinedKeyChar(key_char))
+    return key_char;
+  // X11's private primary-level field removes Shift while selecting the keysym,
+  // but can retain Alt/AltGr level selection. Never treat that
+  // modifier-transformed value as unmodified text.
+  if (primary_valid && !alternate_level && !shift)
+    return primary_character;
+  if (!alternate_level && IsPrintableKeyChar(key_char))
+    return key_char;
+  if (primary_valid && !alternate_level) {
+    ScopedJNIClass character_class(env, "java/lang/Character");
+    int uppercase_character = primary_character;
+    if (character_class &&
+        CallStaticJNIMethodII_V(env, character_class, "toUpperCase", &uppercase_character, primary_character) &&
+        IsValidBmpCharacter(uppercase_character) &&
+        uppercase_character != primary_character)
+      return static_cast<char16_t>(uppercase_character);
+  }
+  if (HasDefinedKeyChar(physical_fallback))
+    return physical_fallback;
+  return alternate_level ? awt::kCharUndefined : primary_character;
+}
+
+int GetKeyIdentityModifiers(int key_code, int key_location, InputEventSemantics semantics) {
+  if (semantics == InputEventSemantics::kAwt) {
+    switch (key_location) {
+      case awt::kKeyLocationLeft:
+        return EVENTFLAG_IS_LEFT;
+      case awt::kKeyLocationRight:
+        return EVENTFLAG_IS_RIGHT;
+      case awt::kKeyLocationNumpad:
+        return EVENTFLAG_IS_KEY_PAD;
+      case awt::kKeyLocationUnknown:
+      case awt::kKeyLocationStandard:
+      default:
+        return 0;
+    }
   }
 
-  if (key_char == JNI_STATIC(GLFW_KEY_LEFT_CONTROL) ||
-      key_char == JNI_STATIC(GLFW_KEY_RIGHT_CONTROL))
-    return 29;
-  if (key_char == JNI_STATIC(GLFW_KEY_DELETE))
-    return 83;
-  if (key_char == JNI_STATIC(GLFW_KEY_LEFT))
-    return 75;
-  if (key_char == JNI_STATIC(GLFW_KEY_DOWN))
-    return 80;
-  if (key_char == JNI_STATIC(GLFW_KEY_UP))
-    return 72;
-  if (key_char == JNI_STATIC(GLFW_KEY_RIGHT))
-    return 77;
-  if (key_char == JNI_STATIC(GLFW_KEY_PAGE_DOWN))
-    return 81;
-  if (key_char == JNI_STATIC(GLFW_KEY_PAGE_UP))
-    return 73;
-  if (key_char == JNI_STATIC(GLFW_KEY_END))
-    return 79;
-  if (key_char == JNI_STATIC(GLFW_KEY_HOME))
-    return 71;
-  if (key_char == '\n' || key_char == JNI_STATIC(GLFW_KEY_ENTER) ||
-      key_char == JNI_STATIC(GLFW_KEY_KP_ENTER))
-    return 28;
-  return scanCode;
+  if (key_code >= glfw::kKeyKp0 && key_code <= glfw::kKeyKpEqual)
+    return EVENTFLAG_IS_KEY_PAD;
+  switch (key_code) {
+    case glfw::kKeyLeftShift:
+    case glfw::kKeyLeftControl:
+    case glfw::kKeyLeftAlt:
+    case glfw::kKeyLeftSuper:
+      return EVENTFLAG_IS_LEFT;
+    case glfw::kKeyRightShift:
+    case glfw::kKeyRightControl:
+    case glfw::kKeyRightAlt:
+    case glfw::kKeyRightSuper:
+      return EVENTFLAG_IS_RIGHT;
+    default:
+      return 0;
+  }
 }
-#endif  // defined(OS_WIN)
+
+int RoundNonZeroWheelDelta(double delta) {
+  if (std::isnan(delta) || delta == 0)
+    return 0;
+  if (delta >= std::numeric_limits<int>::max())
+    return std::numeric_limits<int>::max();
+  if (delta <= std::numeric_limits<int>::min())
+    return std::numeric_limits<int>::min();
+  const long rounded = std::lround(delta);
+  if (rounded == 0)
+    return std::signbit(delta) ? -1 : 1;
+  return static_cast<int>(rounded);
+}
+
+// Windows virtual-key values are the cross-platform key identity used by CEF.
+// Keeping control character synthesis in one place prevents the platform
+// bridges from drifting on punctuation keys, where the incoming character may
+// already have been transformed by the OS.
+char16_t GetControlCharacterFromWindowsKeyCode(int windows_key_code, bool shift) {
+  if (windows_key_code >= 0x41 && windows_key_code <= 0x5A)
+    return static_cast<char16_t>(windows_key_code - 0x41 + 1);
+  if (shift) {
+    if (windows_key_code == 0x32)
+      return 0;
+    if (windows_key_code == 0x36)
+      return 0x1E;
+    if (windows_key_code == 0xBD)
+      return 0x1F;
+    return 0;
+  }
+  if (windows_key_code == 0xDB)
+    return 0x1B;
+  if (windows_key_code == 0xDC)
+    return 0x1C;
+  if (windows_key_code == 0xDD)
+    return 0x1D;
+  if (windows_key_code == 0x0D)
+    return 0x0A;
+  return 0;
+}
 
 #if defined(OS_LINUX)
 
@@ -757,58 +1188,260 @@ KeyboardCode GetWindowsKeyCodeWithoutLocation(KeyboardCode key_code) {
   }
 }
 
-// From content/browser/renderer_host/input/web_input_event_builders_gtk.cc.
-// Gets the corresponding control character of a specified key code. See:
-// http://en.wikipedia.org/wiki/Control_characters
-// We emulate Windows behavior here.
-int GetControlCharacter(KeyboardCode windows_key_code, bool shift) {
-  if (windows_key_code >= VKEY_A && windows_key_code <= VKEY_Z) {
-    // ctrl-A ~ ctrl-Z map to \x01 ~ \x1A
-    return windows_key_code - VKEY_A + 1;
+unsigned int GetUnicodeKeySym(char16_t key_char) {
+  if (!HasDefinedKeyChar(key_char))
+    return NoSymbol;
+  if ((key_char >= 0x20 && key_char <= 0x7E) ||
+      (key_char >= 0xA0 && key_char <= 0xFF))
+    return key_char;
+  return 0x01000000U | key_char;
+}
+
+unsigned int GetAwtLinuxKeySym(int key_code, int key_location) {
+  if ((key_code >= '0' && key_code <= '9') ||
+      (key_code >= 'A' && key_code <= 'Z'))
+    return static_cast<unsigned int>(key_code);
+  if (key_code >= awt::kVkF1 && key_code <= awt::kVkF12)
+    return XK_F1 + key_code - awt::kVkF1;
+  if (key_code >= awt::kVkF13 && key_code <= awt::kVkF24)
+    return XK_F13 + key_code - awt::kVkF13;
+  if (key_code >= awt::kVkNumpad0 && key_code <= awt::kVkNumpad9)
+    return XK_KP_0 + key_code - awt::kVkNumpad0;
+
+  switch (key_code) {
+    case awt::kVkCancel:
+      return XK_Cancel;
+    case awt::kVkBackSpace:
+      return XK_BackSpace;
+    case awt::kVkTab:
+      return XK_Tab;
+    case awt::kVkEnter:
+      return key_location == awt::kKeyLocationNumpad ? XK_KP_Enter : XK_Return;
+    case awt::kVkClear:
+      return XK_Clear;
+    case awt::kVkShift:
+      return key_location == awt::kKeyLocationRight ? XK_Shift_R : XK_Shift_L;
+    case awt::kVkControl:
+      return key_location == awt::kKeyLocationRight ? XK_Control_R
+                                                    : XK_Control_L;
+    case awt::kVkAlt:
+      return key_location == awt::kKeyLocationRight ? XK_Alt_R : XK_Alt_L;
+    case awt::kVkPause:
+      return XK_Pause;
+    case awt::kVkCapsLock:
+      return XK_Caps_Lock;
+    case awt::kVkEscape:
+      return XK_Escape;
+    case awt::kVkSpace:
+      return XK_space;
+    case awt::kVkPageUp:
+      return XK_Page_Up;
+    case awt::kVkPageDown:
+      return XK_Page_Down;
+    case awt::kVkEnd:
+      return XK_End;
+    case awt::kVkHome:
+      return XK_Home;
+    case awt::kVkLeft:
+      return XK_Left;
+    case awt::kVkUp:
+      return XK_Up;
+    case awt::kVkRight:
+      return XK_Right;
+    case awt::kVkDown:
+      return XK_Down;
+    case ',':
+    case '-':
+    case '.':
+    case '/':
+    case ';':
+    case '=':
+    case '[':
+    case '\\':
+    case ']':
+      return static_cast<unsigned int>(key_code);
+    case awt::kVkBackQuote:
+      return XK_grave;
+    case awt::kVkQuote:
+      return XK_apostrophe;
+    case awt::kVkMultiply:
+      return XK_KP_Multiply;
+    case awt::kVkAdd:
+      return XK_KP_Add;
+    case awt::kVkSeparator:
+      return XK_KP_Separator;
+    case awt::kVkSubtract:
+      return XK_KP_Subtract;
+    case awt::kVkDecimal:
+      return XK_KP_Decimal;
+    case awt::kVkDivide:
+      return XK_KP_Divide;
+    case awt::kVkDelete:
+      return XK_Delete;
+    case awt::kVkDeadGrave:
+      return XK_dead_grave;
+    case awt::kVkDeadAcute:
+      return XK_dead_acute;
+    case awt::kVkDeadCircumflex:
+      return XK_dead_circumflex;
+    case awt::kVkDeadTilde:
+      return XK_dead_tilde;
+    case awt::kVkDeadMacron:
+      return XK_dead_macron;
+    case awt::kVkDeadBreve:
+      return XK_dead_breve;
+    case awt::kVkDeadAboveDot:
+      return XK_dead_abovedot;
+    case awt::kVkDeadDiaeresis:
+      return XK_dead_diaeresis;
+    case awt::kVkDeadAboveRing:
+      return XK_dead_abovering;
+    case awt::kVkDeadDoubleAcute:
+      return XK_dead_doubleacute;
+    case awt::kVkDeadCaron:
+      return XK_dead_caron;
+    case awt::kVkDeadCedilla:
+      return XK_dead_cedilla;
+    case awt::kVkDeadOgonek:
+      return XK_dead_ogonek;
+    case awt::kVkDeadIota:
+      return XK_dead_iota;
+    case awt::kVkDeadVoicedSound:
+      return XK_dead_voiced_sound;
+    case awt::kVkDeadSemivoicedSound:
+      return XK_dead_semivoiced_sound;
+    case awt::kVkNumLock:
+      return XK_Num_Lock;
+    case awt::kVkScrollLock:
+      return XK_Scroll_Lock;
+    case awt::kVkPrintScreen:
+      return XK_Print;
+    case awt::kVkInsert:
+      return XK_Insert;
+    case awt::kVkHelp:
+      return XK_Help;
+    case awt::kVkMeta:
+    case awt::kVkWindows:
+      return key_location == awt::kKeyLocationRight ? XK_Super_R : XK_Super_L;
+    case awt::kVkKpUp:
+      return XK_KP_Up;
+    case awt::kVkKpDown:
+      return XK_KP_Down;
+    case awt::kVkKpLeft:
+      return XK_KP_Left;
+    case awt::kVkKpRight:
+      return XK_KP_Right;
+    case awt::kVkContextMenu:
+      return XK_Menu;
+    case awt::kVkCompose:
+      return XK_Multi_key;
+    case awt::kVkAltGraph:
+      return XK_ISO_Level3_Shift;
+    default:
+      return NoSymbol;
   }
-  if (shift) {
-    // following graphics chars require shift key to input.
-    switch (windows_key_code) {
-      // ctrl-@ maps to \x00 (Null byte)
-      case VKEY_2:
-        return 0;
-      // ctrl-^ maps to \x1E (Record separator, Information separator two)
-      case VKEY_6:
-        return 0x1E;
-      // ctrl-_ maps to \x1F (Unit separator, Information separator one)
-      case VKEY_OEM_MINUS:
-        return 0x1F;
-      // Returns 0 for all other keys to avoid inputting unexpected chars.
-      default:
-        return 0;
-    }
-  } else {
-    switch (windows_key_code) {
-      // ctrl-[ maps to \x1B (Escape)
-      case VKEY_OEM_4:
-        return 0x1B;
-      // ctrl-\ maps to \x1C (File separator, Information separator four)
-      case VKEY_OEM_5:
-        return 0x1C;
-      // ctrl-] maps to \x1D (Group separator, Information separator three)
-      case VKEY_OEM_6:
-        return 0x1D;
-      // ctrl-Enter maps to \x0A (Line feed)
-      case VKEY_RETURN:
-        return 0x0A;
-      // Returns 0 for all other keys to avoid inputting unexpected chars.
-      default:
-        return 0;
-    }
+}
+
+unsigned int GetGlfwLinuxKeySym(int key_code) {
+  // GLFW printable key codes describe the physical US-layout identity. Keep
+  // that identity separate from CefKeyEvent.keyChar so custom layout text does
+  // not turn a physical KeyA event into VKEY_UNKNOWN.
+  if (IsGlfwStandardPrintableKey(key_code))
+    return static_cast<unsigned int>(key_code);
+  if (key_code >= glfw::kKeyF1 && key_code <= glfw::kKeyF25)
+    return XK_F1 + key_code - glfw::kKeyF1;
+  if (key_code >= glfw::kKeyKp0 && key_code <= glfw::kKeyKp9)
+    return XK_KP_0 + key_code - glfw::kKeyKp0;
+
+  switch (key_code) {
+    case glfw::kKeyEscape:
+      return XK_Escape;
+    case glfw::kKeyEnter:
+      return XK_Return;
+    case glfw::kKeyTab:
+      return XK_Tab;
+    case glfw::kKeyBackspace:
+      return XK_BackSpace;
+    case glfw::kKeyInsert:
+      return XK_Insert;
+    case glfw::kKeyDelete:
+      return XK_Delete;
+    case glfw::kKeyRight:
+      return XK_Right;
+    case glfw::kKeyLeft:
+      return XK_Left;
+    case glfw::kKeyDown:
+      return XK_Down;
+    case glfw::kKeyUp:
+      return XK_Up;
+    case glfw::kKeyPageUp:
+      return XK_Page_Up;
+    case glfw::kKeyPageDown:
+      return XK_Page_Down;
+    case glfw::kKeyHome:
+      return XK_Home;
+    case glfw::kKeyEnd:
+      return XK_End;
+    case glfw::kKeyCapsLock:
+      return XK_Caps_Lock;
+    case glfw::kKeyScrollLock:
+      return XK_Scroll_Lock;
+    case glfw::kKeyNumLock:
+      return XK_Num_Lock;
+    case glfw::kKeyPrintScreen:
+      return XK_Print;
+    case glfw::kKeyPause:
+      return XK_Pause;
+    case glfw::kKeyKpDecimal:
+      return XK_KP_Decimal;
+    case glfw::kKeyKpDivide:
+      return XK_KP_Divide;
+    case glfw::kKeyKpMultiply:
+      return XK_KP_Multiply;
+    case glfw::kKeyKpSubtract:
+      return XK_KP_Subtract;
+    case glfw::kKeyKpAdd:
+      return XK_KP_Add;
+    case glfw::kKeyKpEnter:
+      return XK_KP_Enter;
+    case glfw::kKeyKpEqual:
+      return XK_KP_Equal;
+    case glfw::kKeyLeftShift:
+      return XK_Shift_L;
+    case glfw::kKeyLeftControl:
+      return XK_Control_L;
+    case glfw::kKeyLeftAlt:
+      return XK_Alt_L;
+    case glfw::kKeyLeftSuper:
+      return XK_Super_L;
+    case glfw::kKeyRightShift:
+      return XK_Shift_R;
+    case glfw::kKeyRightControl:
+      return XK_Control_R;
+    case glfw::kKeyRightAlt:
+      return XK_Alt_R;
+    case glfw::kKeyRightSuper:
+      return XK_Super_R;
+    case glfw::kKeyMenu:
+      return XK_Menu;
+    default:
+      return NoSymbol;
   }
+}
+
+unsigned int GetLinuxKeySym(int key_code, int key_location, char16_t key_char, bool typed, InputEventSemantics semantics) {
+  if (typed)
+    return GetUnicodeKeySym(key_char);
+  const unsigned int special_key =
+      semantics == InputEventSemantics::kAwt
+          ? GetAwtLinuxKeySym(key_code, key_location)
+          : GetGlfwLinuxKeySym(key_code);
+  return special_key == NoSymbol ? GetUnicodeKeySym(key_char) : special_key;
 }
 
 #endif  // defined(OS_LINUX)
 
 #if defined(OS_MACOSX)
-// A convenient array for getting symbol characters on the number keys.
-const char kShiftCharsForNumberKeys[] = ")!@#$%^&*(";
-
 // Convert an ANSI character to a Mac key code.
 int GetMacKeyCodeFromChar(int key_char) {
   switch (key_char) {
@@ -963,7 +1596,1453 @@ int GetMacKeyCodeFromChar(int key_char) {
 
   return -1;
 }
+
+int GetMacFunctionKeyCode(int function_number) {
+  switch (function_number) {
+    case 1:
+      return kVK_F1;
+    case 2:
+      return kVK_F2;
+    case 3:
+      return kVK_F3;
+    case 4:
+      return kVK_F4;
+    case 5:
+      return kVK_F5;
+    case 6:
+      return kVK_F6;
+    case 7:
+      return kVK_F7;
+    case 8:
+      return kVK_F8;
+    case 9:
+      return kVK_F9;
+    case 10:
+      return kVK_F10;
+    case 11:
+      return kVK_F11;
+    case 12:
+      return kVK_F12;
+    case 13:
+      return kVK_F13;
+    case 14:
+      return kVK_F14;
+    case 15:
+      return kVK_F15;
+    case 16:
+      return kVK_F16;
+    case 17:
+      return kVK_F17;
+    case 18:
+      return kVK_F18;
+    case 19:
+      return kVK_F19;
+    case 20:
+      return kVK_F20;
+    default:
+      return -1;
+  }
+}
+
+int GetMacKeypadDigitKeyCode(int digit) {
+  switch (digit) {
+    case 0:
+      return kVK_ANSI_Keypad0;
+    case 1:
+      return kVK_ANSI_Keypad1;
+    case 2:
+      return kVK_ANSI_Keypad2;
+    case 3:
+      return kVK_ANSI_Keypad3;
+    case 4:
+      return kVK_ANSI_Keypad4;
+    case 5:
+      return kVK_ANSI_Keypad5;
+    case 6:
+      return kVK_ANSI_Keypad6;
+    case 7:
+      return kVK_ANSI_Keypad7;
+    case 8:
+      return kVK_ANSI_Keypad8;
+    case 9:
+      return kVK_ANSI_Keypad9;
+    default:
+      return -1;
+  }
+}
+
+int GetAwtMacKeyCode(int key_code, int key_location) {
+  if ((key_code >= '0' && key_code <= '9') ||
+      (key_code >= 'A' && key_code <= 'Z') || key_code == ',' ||
+      key_code == '-' || key_code == '.' || key_code == '/' ||
+      key_code == ';' || key_code == '=' || key_code == '[' ||
+      key_code == '\\' || key_code == ']')
+    return GetMacKeyCodeFromChar(key_code);
+  if (key_code >= awt::kVkF1 && key_code <= awt::kVkF12)
+    return GetMacFunctionKeyCode(1 + key_code - awt::kVkF1);
+  if (key_code >= awt::kVkF13 && key_code <= awt::kVkF24)
+    return GetMacFunctionKeyCode(13 + key_code - awt::kVkF13);
+  if (key_code >= awt::kVkNumpad0 && key_code <= awt::kVkNumpad9)
+    return GetMacKeypadDigitKeyCode(key_code - awt::kVkNumpad0);
+
+  switch (key_code) {
+    case awt::kVkCancel:
+      return kVK_Escape;
+    case awt::kVkBackSpace:
+      return kVK_Delete;
+    case awt::kVkTab:
+      return kVK_Tab;
+    case awt::kVkEnter:
+      return key_location == awt::kKeyLocationNumpad
+                 ? static_cast<int>(kVK_ANSI_KeypadEnter)
+                 : static_cast<int>(kVK_Return);
+    case awt::kVkClear:
+      return kVK_ANSI_KeypadClear;
+    case awt::kVkShift:
+      return key_location == awt::kKeyLocationRight
+                 ? static_cast<int>(kVK_RightShift)
+                 : static_cast<int>(kVK_Shift);
+    case awt::kVkControl:
+      return key_location == awt::kKeyLocationRight
+                 ? static_cast<int>(kVK_RightControl)
+                 : static_cast<int>(kVK_Control);
+    case awt::kVkAlt:
+    case awt::kVkAltGraph:
+      return key_location == awt::kKeyLocationRight
+                 ? static_cast<int>(kVK_RightOption)
+                 : static_cast<int>(kVK_Option);
+    case awt::kVkPause:
+      return kVK_F15;
+    case awt::kVkCapsLock:
+      return kVK_CapsLock;
+    case awt::kVkEscape:
+      return kVK_Escape;
+    case awt::kVkSpace:
+      return kVK_Space;
+    case awt::kVkPageUp:
+      return kVK_PageUp;
+    case awt::kVkPageDown:
+      return kVK_PageDown;
+    case awt::kVkEnd:
+      return kVK_End;
+    case awt::kVkHome:
+      return kVK_Home;
+    case awt::kVkLeft:
+      return kVK_LeftArrow;
+    case awt::kVkUp:
+      return kVK_UpArrow;
+    case awt::kVkRight:
+      return kVK_RightArrow;
+    case awt::kVkDown:
+      return kVK_DownArrow;
+    case awt::kVkMultiply:
+      return kVK_ANSI_KeypadMultiply;
+    case awt::kVkAdd:
+      return kVK_ANSI_KeypadPlus;
+    case awt::kVkSeparator:
+      return kVK_JIS_KeypadComma;
+    case awt::kVkSubtract:
+      return kVK_ANSI_KeypadMinus;
+    case awt::kVkDecimal:
+      return kVK_ANSI_KeypadDecimal;
+    case awt::kVkDivide:
+      return kVK_ANSI_KeypadDivide;
+    case awt::kVkDelete:
+      return kVK_ForwardDelete;
+    // Public macOS AWT events do not expose a portable hardware code for dead
+    // keys. These US-layout approximations keep the raw event non-dropping
+    // while typed Unicode remains exact.
+    case awt::kVkDeadGrave:
+    case awt::kVkDeadTilde:
+      return kVK_ANSI_Grave;
+    case awt::kVkDeadAcute:
+      return kVK_ANSI_Quote;
+    case awt::kVkDeadCircumflex:
+      return kVK_ANSI_6;
+    case awt::kVkDeadMacron:
+      return kVK_ANSI_Minus;
+    case awt::kVkDeadBreve:
+      return kVK_ANSI_B;
+    case awt::kVkDeadAboveDot:
+      return kVK_ANSI_Period;
+    case awt::kVkDeadDiaeresis:
+      return kVK_ANSI_U;
+    case awt::kVkDeadAboveRing:
+      return kVK_ANSI_A;
+    case awt::kVkDeadDoubleAcute:
+      return kVK_ANSI_Quote;
+    case awt::kVkDeadCaron:
+      return kVK_ANSI_C;
+    case awt::kVkDeadCedilla:
+      return kVK_ANSI_C;
+    case awt::kVkDeadOgonek:
+      return kVK_ANSI_O;
+    case awt::kVkDeadIota:
+      return kVK_ANSI_I;
+    case awt::kVkDeadVoicedSound:
+    case awt::kVkDeadSemivoicedSound:
+      return kVK_ANSI_Quote;
+    case awt::kVkNumLock:
+      return kVK_ANSI_KeypadClear;
+    case awt::kVkScrollLock:
+      return kVK_F14;
+    case awt::kVkPrintScreen:
+      return kVK_F13;
+    case awt::kVkInsert:
+    case awt::kVkHelp:
+      return kVK_Help;
+    case awt::kVkMeta:
+    case awt::kVkWindows:
+      return key_location == awt::kKeyLocationRight
+                 ? static_cast<int>(kVK_RightCommand)
+                 : static_cast<int>(kVK_Command);
+    case awt::kVkBackQuote:
+      return kVK_ANSI_Grave;
+    case awt::kVkQuote:
+      return kVK_ANSI_Quote;
+    case awt::kVkKpUp:
+      return kVK_ANSI_Keypad8;
+    case awt::kVkKpDown:
+      return kVK_ANSI_Keypad2;
+    case awt::kVkKpLeft:
+      return kVK_ANSI_Keypad4;
+    case awt::kVkKpRight:
+      return kVK_ANSI_Keypad6;
+    case awt::kVkContextMenu:
+      return -1;
+    case awt::kVkCompose:
+      return kVK_RightOption;
+    default:
+      return -1;
+  }
+}
+
+int GetGlfwMacKeyCode(int key_code) {
+  if (key_code >= glfw::kKeyF1 && key_code <= glfw::kKeyF25)
+    return GetMacFunctionKeyCode(1 + key_code - glfw::kKeyF1);
+  if (key_code >= glfw::kKeyKp0 && key_code <= glfw::kKeyKp9)
+    return GetMacKeypadDigitKeyCode(key_code - glfw::kKeyKp0);
+
+  switch (key_code) {
+    case glfw::kKeyEscape:
+      return kVK_Escape;
+    case glfw::kKeyEnter:
+      return kVK_Return;
+    case glfw::kKeyTab:
+      return kVK_Tab;
+    case glfw::kKeyBackspace:
+      return kVK_Delete;
+    case glfw::kKeyInsert:
+      return kVK_Help;
+    case glfw::kKeyDelete:
+      return kVK_ForwardDelete;
+    case glfw::kKeyRight:
+      return kVK_RightArrow;
+    case glfw::kKeyLeft:
+      return kVK_LeftArrow;
+    case glfw::kKeyDown:
+      return kVK_DownArrow;
+    case glfw::kKeyUp:
+      return kVK_UpArrow;
+    case glfw::kKeyPageUp:
+      return kVK_PageUp;
+    case glfw::kKeyPageDown:
+      return kVK_PageDown;
+    case glfw::kKeyHome:
+      return kVK_Home;
+    case glfw::kKeyEnd:
+      return kVK_End;
+    case glfw::kKeyCapsLock:
+      return kVK_CapsLock;
+    case glfw::kKeyScrollLock:
+      return kVK_F14;
+    case glfw::kKeyNumLock:
+      return kVK_ANSI_KeypadClear;
+    case glfw::kKeyPrintScreen:
+      return kVK_F13;
+    case glfw::kKeyPause:
+      return kVK_F15;
+    case glfw::kKeyKpDecimal:
+      return kVK_ANSI_KeypadDecimal;
+    case glfw::kKeyKpDivide:
+      return kVK_ANSI_KeypadDivide;
+    case glfw::kKeyKpMultiply:
+      return kVK_ANSI_KeypadMultiply;
+    case glfw::kKeyKpSubtract:
+      return kVK_ANSI_KeypadMinus;
+    case glfw::kKeyKpAdd:
+      return kVK_ANSI_KeypadPlus;
+    case glfw::kKeyKpEnter:
+      return kVK_ANSI_KeypadEnter;
+    case glfw::kKeyKpEqual:
+      return kVK_ANSI_KeypadEquals;
+    case glfw::kKeyLeftShift:
+      return kVK_Shift;
+    case glfw::kKeyLeftControl:
+      return kVK_Control;
+    case glfw::kKeyLeftAlt:
+      return kVK_Option;
+    case glfw::kKeyLeftSuper:
+      return kVK_Command;
+    case glfw::kKeyRightShift:
+      return kVK_RightShift;
+    case glfw::kKeyRightControl:
+      return kVK_RightControl;
+    case glfw::kKeyRightAlt:
+      return kVK_RightOption;
+    case glfw::kKeyRightSuper:
+      return kVK_RightCommand;
+    case glfw::kKeyMenu:
+      return -1;
+    default:
+      return -1;
+  }
+}
+
+int GetMacKeyCode(int key_code, int key_location, char16_t key_char, bool typed, InputEventSemantics semantics) {
+  if (typed)
+    return HasDefinedKeyChar(key_char) ? GetMacKeyCodeFromChar(key_char) : -1;
+  const int special_key = semantics == InputEventSemantics::kAwt
+                              ? GetAwtMacKeyCode(key_code, key_location)
+                              : GetGlfwMacKeyCode(key_code);
+  return special_key == -1 && HasDefinedKeyChar(key_char)
+             ? GetMacKeyCodeFromChar(key_char)
+             : special_key;
+}
+
+int GetAwtMacWindowsKeyCode(int key_code, int key_location) {
+  if ((key_code >= '0' && key_code <= '9') ||
+      (key_code >= 'A' && key_code <= 'Z') ||
+      (key_code >= awt::kVkF1 && key_code <= awt::kVkF12) ||
+      (key_code >= awt::kVkNumpad0 && key_code <= awt::kVkNumpad9))
+    return key_code;
+  if (key_code >= awt::kVkF13 && key_code <= awt::kVkF24)
+    return 0x7C + key_code - awt::kVkF13;
+
+  switch (key_code) {
+    case awt::kVkCancel:
+      return 0x03;
+    case awt::kVkBackSpace:
+      return 0x08;
+    case awt::kVkTab:
+      return 0x09;
+    case awt::kVkEnter:
+      return 0x0D;
+    case awt::kVkClear:
+      return 0x0C;
+    case awt::kVkShift:
+      return 0x10;
+    case awt::kVkControl:
+      return 0x11;
+    case awt::kVkAlt:
+    case awt::kVkAltGraph:
+      return 0x12;
+    case awt::kVkPause:
+      return 0x13;
+    case awt::kVkCapsLock:
+      return 0x14;
+    case awt::kVkEscape:
+      return 0x1B;
+    case awt::kVkSpace:
+      return 0x20;
+    case awt::kVkPageUp:
+      return 0x21;
+    case awt::kVkPageDown:
+      return 0x22;
+    case awt::kVkEnd:
+      return 0x23;
+    case awt::kVkHome:
+      return 0x24;
+    case awt::kVkLeft:
+    case awt::kVkKpLeft:
+      return 0x25;
+    case awt::kVkUp:
+    case awt::kVkKpUp:
+      return 0x26;
+    case awt::kVkRight:
+    case awt::kVkKpRight:
+      return 0x27;
+    case awt::kVkDown:
+    case awt::kVkKpDown:
+      return 0x28;
+    case awt::kVkPrintScreen:
+      return 0x2C;
+    case awt::kVkInsert:
+      return 0x2D;
+    case awt::kVkDelete:
+      return 0x2E;
+    case awt::kVkHelp:
+      return 0x2F;
+    case awt::kVkMeta:
+    case awt::kVkWindows:
+      return key_location == awt::kKeyLocationRight ? 0x5C : 0x5B;
+    case awt::kVkContextMenu:
+    case awt::kVkCompose:
+      return 0x5D;
+    case awt::kVkMultiply:
+      return 0x6A;
+    case awt::kVkAdd:
+      return 0x6B;
+    case awt::kVkSeparator:
+      return 0x6C;
+    case awt::kVkSubtract:
+      return 0x6D;
+    case awt::kVkDecimal:
+      return 0x6E;
+    case awt::kVkDivide:
+      return 0x6F;
+    case awt::kVkNumLock:
+      return 0x90;
+    case awt::kVkScrollLock:
+      return 0x91;
+    case ',':
+      return 0xBC;
+    case '-':
+      return 0xBD;
+    case '.':
+      return 0xBE;
+    case '/':
+      return 0xBF;
+    case ';':
+      return 0xBA;
+    case '=':
+      return 0xBB;
+    case '[':
+      return 0xDB;
+    case '\\':
+      return 0xDC;
+    case ']':
+      return 0xDD;
+    case awt::kVkBackQuote:
+    case awt::kVkDeadGrave:
+    case awt::kVkDeadTilde:
+      return 0xC0;
+    case awt::kVkQuote:
+    case awt::kVkDeadAcute:
+    case awt::kVkDeadDoubleAcute:
+    case awt::kVkDeadVoicedSound:
+    case awt::kVkDeadSemivoicedSound:
+      return 0xDE;
+    case awt::kVkDeadCircumflex:
+      return '6';
+    case awt::kVkDeadMacron:
+      return 0xBD;
+    case awt::kVkDeadBreve:
+      return 'B';
+    case awt::kVkDeadAboveDot:
+      return 0xBE;
+    case awt::kVkDeadDiaeresis:
+      return 'U';
+    case awt::kVkDeadAboveRing:
+      return 'A';
+    case awt::kVkDeadCaron:
+    case awt::kVkDeadCedilla:
+      return 'C';
+    case awt::kVkDeadOgonek:
+      return 'O';
+    case awt::kVkDeadIota:
+      return 'I';
+    default:
+      return 0;
+  }
+}
+
+int GetGlfwMacWindowsKeyCode(int key_code) {
+  if ((key_code >= '0' && key_code <= '9') ||
+      (key_code >= 'A' && key_code <= 'Z'))
+    return key_code;
+  if (key_code >= glfw::kKeyF1 && key_code < glfw::kKeyF25)
+    return 0x70 + key_code - glfw::kKeyF1;
+  if (key_code >= glfw::kKeyKp0 && key_code <= glfw::kKeyKp9)
+    return 0x60 + key_code - glfw::kKeyKp0;
+
+  switch (key_code) {
+    case 32:
+      return 0x20;
+    case 39:
+      return 0xDE;
+    case 44:
+      return 0xBC;
+    case 45:
+      return 0xBD;
+    case 46:
+      return 0xBE;
+    case 47:
+      return 0xBF;
+    case 59:
+      return 0xBA;
+    case 61:
+      return 0xBB;
+    case 91:
+      return 0xDB;
+    case 92:
+      return 0xDC;
+    case 93:
+      return 0xDD;
+    case 96:
+      return 0xC0;
+    case glfw::kKeyEscape:
+      return 0x1B;
+    case glfw::kKeyEnter:
+    case glfw::kKeyKpEnter:
+      return 0x0D;
+    case glfw::kKeyTab:
+      return 0x09;
+    case glfw::kKeyBackspace:
+      return 0x08;
+    case glfw::kKeyInsert:
+      return 0x2D;
+    case glfw::kKeyDelete:
+      return 0x2E;
+    case glfw::kKeyRight:
+      return 0x27;
+    case glfw::kKeyLeft:
+      return 0x25;
+    case glfw::kKeyDown:
+      return 0x28;
+    case glfw::kKeyUp:
+      return 0x26;
+    case glfw::kKeyPageUp:
+      return 0x21;
+    case glfw::kKeyPageDown:
+      return 0x22;
+    case glfw::kKeyHome:
+      return 0x24;
+    case glfw::kKeyEnd:
+      return 0x23;
+    case glfw::kKeyCapsLock:
+      return 0x14;
+    case glfw::kKeyScrollLock:
+      return 0x91;
+    case glfw::kKeyNumLock:
+      return 0x90;
+    case glfw::kKeyPrintScreen:
+      return 0x2C;
+    case glfw::kKeyPause:
+      return 0x13;
+    case glfw::kKeyKpDecimal:
+      return 0x6E;
+    case glfw::kKeyKpDivide:
+      return 0x6F;
+    case glfw::kKeyKpMultiply:
+      return 0x6A;
+    case glfw::kKeyKpSubtract:
+      return 0x6D;
+    case glfw::kKeyKpAdd:
+      return 0x6B;
+    case glfw::kKeyKpEqual:
+      return 0xBB;
+    case glfw::kKeyLeftShift:
+    case glfw::kKeyRightShift:
+      return 0x10;
+    case glfw::kKeyLeftControl:
+    case glfw::kKeyRightControl:
+      return 0x11;
+    case glfw::kKeyLeftAlt:
+    case glfw::kKeyRightAlt:
+      return 0x12;
+    case glfw::kKeyLeftSuper:
+      return 0x5B;
+    case glfw::kKeyRightSuper:
+      return 0x5C;
+    case glfw::kKeyMenu:
+      return 0x5D;
+    default:
+      return 0;
+  }
+}
+
+int GetMacWindowsKeyCode(int key_code, int key_location, InputEventSemantics semantics) {
+  return semantics == InputEventSemantics::kAwt
+             ? GetAwtMacWindowsKeyCode(key_code, key_location)
+             : GetGlfwMacWindowsKeyCode(key_code);
+}
+
+char16_t GetMacSpecialCharacter(int key_code, InputEventSemantics semantics) {
+  int function_number = 0;
+  if (semantics == InputEventSemantics::kAwt) {
+    if (key_code >= awt::kVkF1 && key_code <= awt::kVkF12)
+      function_number = 1 + key_code - awt::kVkF1;
+    else if (key_code >= awt::kVkF13 && key_code <= awt::kVkF24)
+      function_number = 13 + key_code - awt::kVkF13;
+  } else if (key_code >= glfw::kKeyF1 && key_code <= glfw::kKeyF25) {
+    function_number = 1 + key_code - glfw::kKeyF1;
+  }
+  if (function_number != 0)
+    return 0xF704 + function_number - 1;
+  if (semantics == InputEventSemantics::kAwt) {
+    switch (key_code) {
+      case awt::kVkKpUp:
+        return 0xF700;
+      case awt::kVkKpDown:
+        return 0xF701;
+      case awt::kVkKpLeft:
+        return 0xF702;
+      case awt::kVkKpRight:
+        return 0xF703;
+      case awt::kVkInsert:
+        return 0xF727;
+      case awt::kVkHelp:
+        return 0xF746;
+      case awt::kVkPrintScreen:
+        return 0xF72E;
+      case awt::kVkScrollLock:
+        return 0xF72F;
+      case awt::kVkPause:
+        return 0xF730;
+      case awt::kVkClear:
+        return 0xF739;
+      default:
+        break;
+    }
+  } else {
+    switch (key_code) {
+      case glfw::kKeyInsert:
+        return 0xF727;
+      case glfw::kKeyPrintScreen:
+        return 0xF72E;
+      case glfw::kKeyScrollLock:
+        return 0xF72F;
+      case glfw::kKeyPause:
+        return 0xF730;
+      default:
+        break;
+    }
+  }
+
+  const int backspace = semantics == InputEventSemantics::kAwt
+                            ? awt::kVkBackSpace
+                            : glfw::kKeyBackspace;
+  const int delete_key = semantics == InputEventSemantics::kAwt
+                             ? awt::kVkDelete
+                             : glfw::kKeyDelete;
+  const int down =
+      semantics == InputEventSemantics::kAwt ? awt::kVkDown : glfw::kKeyDown;
+  const int enter =
+      semantics == InputEventSemantics::kAwt ? awt::kVkEnter : glfw::kKeyEnter;
+  const int escape = semantics == InputEventSemantics::kAwt ? awt::kVkEscape
+                                                            : glfw::kKeyEscape;
+  const int home =
+      semantics == InputEventSemantics::kAwt ? awt::kVkHome : glfw::kKeyHome;
+  const int end =
+      semantics == InputEventSemantics::kAwt ? awt::kVkEnd : glfw::kKeyEnd;
+  const int left =
+      semantics == InputEventSemantics::kAwt ? awt::kVkLeft : glfw::kKeyLeft;
+  const int page_up = semantics == InputEventSemantics::kAwt ? awt::kVkPageUp
+                                                             : glfw::kKeyPageUp;
+  const int page_down = semantics == InputEventSemantics::kAwt
+                            ? awt::kVkPageDown
+                            : glfw::kKeyPageDown;
+  const int right =
+      semantics == InputEventSemantics::kAwt ? awt::kVkRight : glfw::kKeyRight;
+  const int tab =
+      semantics == InputEventSemantics::kAwt ? awt::kVkTab : glfw::kKeyTab;
+  const int up =
+      semantics == InputEventSemantics::kAwt ? awt::kVkUp : glfw::kKeyUp;
+  if (key_code == backspace)
+    return kBackspaceCharCode;
+  if (key_code == delete_key)
+    return 0xF728;
+  if (key_code == down)
+    return 0xF701;
+  if (key_code == enter)
+    return kReturnCharCode;
+  if (key_code == escape)
+    return kEscapeCharCode;
+  if (key_code == home)
+    return 0xF729;
+  if (key_code == end)
+    return 0xF72B;
+  if (key_code == left)
+    return 0xF702;
+  if (key_code == page_up)
+    return 0xF72C;
+  if (key_code == page_down)
+    return 0xF72D;
+  if (key_code == right)
+    return 0xF703;
+  if (key_code == tab)
+    return kTabCharCode;
+  if (key_code == up)
+    return 0xF700;
+  return 0;
+}
 #endif  // defined(OS_MACOSX)
+
+struct KeyEventConstants {
+  int pressed;
+  int released;
+  int typed;
+  int repeated;
+};
+
+constexpr KeyEventConstants kAwtKeyEventConstants = {
+    awt::kKeyPressed, awt::kKeyReleased, awt::kKeyTyped, -1};
+
+constexpr KeyEventConstants kGlfwKeyEventConstants = {
+    glfw::kPress, glfw::kRelease, glfw::kTyped, glfw::kExplicitRepeat};
+
+bool CallRequiredIntMethod(JNIEnv* env, jclass cls, jobject obj, const char* method_name, int* value) {
+  jmethodID method = env->GetMethodID(cls, method_name, "()I");
+  if (!method)
+    return false;
+  *value = env->CallIntMethod(obj, method);
+  return !env->ExceptionCheck();
+}
+
+bool CallRequiredCharMethod(JNIEnv* env, jclass cls, jobject obj, const char* method_name, char16_t* value) {
+  jmethodID method = env->GetMethodID(cls, method_name, "()C");
+  if (!method)
+    return false;
+  *value = env->CallCharMethod(obj, method);
+  return !env->ExceptionCheck();
+}
+
+bool CallRequiredDoubleMethod(JNIEnv* env, jclass cls, jobject obj, const char* method_name, double* value) {
+  jmethodID method = env->GetMethodID(cls, method_name, "()D");
+  if (!method)
+    return false;
+  *value = env->CallDoubleMethod(obj, method);
+  return !env->ExceptionCheck();
+}
+
+#if defined(OS_WIN)
+UINT GetWindowsVirtualKeyFromAwt(int key_code, int key_location) {
+  if ((key_code >= '0' && key_code <= '9') ||
+      (key_code >= 'A' && key_code <= 'Z') ||
+      (key_code >= awt::kVkF1 && key_code <= awt::kVkF12) ||
+      (key_code >= awt::kVkNumpad0 && key_code <= awt::kVkNumpad9)) {
+    return static_cast<UINT>(key_code);
+  }
+  if (key_code >= awt::kVkF13 && key_code <= awt::kVkF24)
+    return VK_F13 + key_code - awt::kVkF13;
+
+  switch (key_code) {
+    case awt::kVkCancel:
+      return VK_CANCEL;
+    case awt::kVkBackSpace:
+      return VK_BACK;
+    case awt::kVkTab:
+      return VK_TAB;
+    case awt::kVkEnter:
+      return VK_RETURN;
+    case awt::kVkClear:
+      return VK_CLEAR;
+    case awt::kVkShift:
+      return key_location == awt::kKeyLocationLeft    ? VK_LSHIFT
+             : key_location == awt::kKeyLocationRight ? VK_RSHIFT
+                                                      : VK_SHIFT;
+    case awt::kVkControl:
+      return key_location == awt::kKeyLocationLeft    ? VK_LCONTROL
+             : key_location == awt::kKeyLocationRight ? VK_RCONTROL
+                                                      : VK_CONTROL;
+    case awt::kVkAlt:
+      return key_location == awt::kKeyLocationLeft    ? VK_LMENU
+             : key_location == awt::kKeyLocationRight ? VK_RMENU
+                                                      : VK_MENU;
+    case awt::kVkPause:
+      return VK_PAUSE;
+    case awt::kVkCapsLock:
+      return VK_CAPITAL;
+    case awt::kVkEscape:
+      return VK_ESCAPE;
+    case awt::kVkSpace:
+      return VK_SPACE;
+    case awt::kVkPageUp:
+      return VK_PRIOR;
+    case awt::kVkPageDown:
+      return VK_NEXT;
+    case awt::kVkEnd:
+      return VK_END;
+    case awt::kVkHome:
+      return VK_HOME;
+    case awt::kVkLeft:
+      return VK_LEFT;
+    case awt::kVkUp:
+      return VK_UP;
+    case awt::kVkRight:
+      return VK_RIGHT;
+    case awt::kVkDown:
+      return VK_DOWN;
+    case awt::kVkMultiply:
+      return VK_MULTIPLY;
+    case awt::kVkAdd:
+      return VK_ADD;
+    case awt::kVkSeparator:
+      return VK_SEPARATOR;
+    case awt::kVkSubtract:
+      return VK_SUBTRACT;
+    case awt::kVkDecimal:
+      return VK_DECIMAL;
+    case awt::kVkDivide:
+      return VK_DIVIDE;
+    case awt::kVkDelete:
+      return VK_DELETE;
+    case awt::kVkDeadGrave:
+    case awt::kVkDeadTilde:
+      return VK_OEM_3;
+    case awt::kVkDeadAcute:
+    case awt::kVkDeadDoubleAcute:
+    case awt::kVkDeadVoicedSound:
+    case awt::kVkDeadSemivoicedSound:
+      return VK_OEM_7;
+    case awt::kVkDeadCircumflex:
+      return '6';
+    case awt::kVkDeadMacron:
+      return VK_OEM_MINUS;
+    case awt::kVkDeadBreve:
+      return 'B';
+    case awt::kVkDeadAboveDot:
+      return VK_OEM_PERIOD;
+    case awt::kVkDeadDiaeresis:
+      return 'U';
+    case awt::kVkDeadAboveRing:
+      return 'A';
+    case awt::kVkDeadCaron:
+    case awt::kVkDeadCedilla:
+      return 'C';
+    case awt::kVkDeadOgonek:
+      return 'O';
+    case awt::kVkDeadIota:
+      return 'I';
+    case awt::kVkNumLock:
+      return VK_NUMLOCK;
+    case awt::kVkScrollLock:
+      return VK_SCROLL;
+    case awt::kVkPrintScreen:
+      return VK_SNAPSHOT;
+    case awt::kVkInsert:
+      return VK_INSERT;
+    case awt::kVkHelp:
+      return VK_HELP;
+    case awt::kVkMeta:
+    case awt::kVkWindows:
+      return key_location == awt::kKeyLocationRight ? VK_RWIN : VK_LWIN;
+    case awt::kVkKpUp:
+      return VK_UP;
+    case awt::kVkKpDown:
+      return VK_DOWN;
+    case awt::kVkKpLeft:
+      return VK_LEFT;
+    case awt::kVkKpRight:
+      return VK_RIGHT;
+    case awt::kVkContextMenu:
+    case awt::kVkCompose:
+      return VK_APPS;
+    case awt::kVkAltGraph:
+      return VK_RMENU;
+    case 44:  // KeyEvent.VK_COMMA
+      return VK_OEM_COMMA;
+    case 45:  // KeyEvent.VK_MINUS
+      return VK_OEM_MINUS;
+    case 46:  // KeyEvent.VK_PERIOD
+      return VK_OEM_PERIOD;
+    case 47:  // KeyEvent.VK_SLASH
+      return VK_OEM_2;
+    case 59:  // KeyEvent.VK_SEMICOLON
+      return VK_OEM_1;
+    case 61:  // KeyEvent.VK_EQUALS
+      return VK_OEM_PLUS;
+    case 91:  // KeyEvent.VK_OPEN_BRACKET
+      return VK_OEM_4;
+    case 92:  // KeyEvent.VK_BACK_SLASH
+      return VK_OEM_5;
+    case 93:  // KeyEvent.VK_CLOSE_BRACKET
+      return VK_OEM_6;
+    case 192:  // KeyEvent.VK_BACK_QUOTE
+      return VK_OEM_3;
+    case 222:  // KeyEvent.VK_QUOTE
+      return VK_OEM_7;
+    default:
+      return 0;
+  }
+}
+
+UINT GetWindowsVirtualKeyFromGlfw(int key_code) {
+  if ((key_code >= '0' && key_code <= '9') ||
+      (key_code >= 'A' && key_code <= 'Z')) {
+    return static_cast<UINT>(key_code);
+  }
+  if (key_code >= glfw::kKeyF1 && key_code < glfw::kKeyF25)
+    return VK_F1 + key_code - glfw::kKeyF1;
+  if (key_code >= glfw::kKeyKp0 && key_code <= glfw::kKeyKp9)
+    return VK_NUMPAD0 + key_code - glfw::kKeyKp0;
+
+  switch (key_code) {
+    case 32:  // GLFW_KEY_SPACE
+      return VK_SPACE;
+    case 39:  // GLFW_KEY_APOSTROPHE
+      return VK_OEM_7;
+    case 44:  // GLFW_KEY_COMMA
+      return VK_OEM_COMMA;
+    case 45:  // GLFW_KEY_MINUS
+      return VK_OEM_MINUS;
+    case 46:  // GLFW_KEY_PERIOD
+      return VK_OEM_PERIOD;
+    case 47:  // GLFW_KEY_SLASH
+      return VK_OEM_2;
+    case 59:  // GLFW_KEY_SEMICOLON
+      return VK_OEM_1;
+    case 61:  // GLFW_KEY_EQUAL
+      return VK_OEM_PLUS;
+    case 91:  // GLFW_KEY_LEFT_BRACKET
+      return VK_OEM_4;
+    case 92:  // GLFW_KEY_BACKSLASH
+      return VK_OEM_5;
+    case 93:  // GLFW_KEY_RIGHT_BRACKET
+      return VK_OEM_6;
+    case 96:  // GLFW_KEY_GRAVE_ACCENT
+      return VK_OEM_3;
+    case glfw::kKeyEscape:
+      return VK_ESCAPE;
+    case glfw::kKeyEnter:
+      return VK_RETURN;
+    case glfw::kKeyTab:
+      return VK_TAB;
+    case glfw::kKeyBackspace:
+      return VK_BACK;
+    case glfw::kKeyInsert:
+      return VK_INSERT;
+    case glfw::kKeyDelete:
+      return VK_DELETE;
+    case glfw::kKeyRight:
+      return VK_RIGHT;
+    case glfw::kKeyLeft:
+      return VK_LEFT;
+    case glfw::kKeyDown:
+      return VK_DOWN;
+    case glfw::kKeyUp:
+      return VK_UP;
+    case glfw::kKeyPageUp:
+      return VK_PRIOR;
+    case glfw::kKeyPageDown:
+      return VK_NEXT;
+    case glfw::kKeyHome:
+      return VK_HOME;
+    case glfw::kKeyEnd:
+      return VK_END;
+    case glfw::kKeyCapsLock:
+      return VK_CAPITAL;
+    case glfw::kKeyScrollLock:
+      return VK_SCROLL;
+    case glfw::kKeyNumLock:
+      return VK_NUMLOCK;
+    case glfw::kKeyPrintScreen:
+      return VK_SNAPSHOT;
+    case glfw::kKeyPause:
+      return VK_PAUSE;
+    case glfw::kKeyKpDecimal:
+      return VK_DECIMAL;
+    case glfw::kKeyKpDivide:
+      return VK_DIVIDE;
+    case glfw::kKeyKpMultiply:
+      return VK_MULTIPLY;
+    case glfw::kKeyKpSubtract:
+      return VK_SUBTRACT;
+    case glfw::kKeyKpAdd:
+      return VK_ADD;
+    case glfw::kKeyKpEnter:
+      return VK_RETURN;
+    case glfw::kKeyKpEqual:
+      return VK_OEM_PLUS;
+    case glfw::kKeyLeftShift:
+      return VK_LSHIFT;
+    case glfw::kKeyRightShift:
+      return VK_RSHIFT;
+    case glfw::kKeyLeftControl:
+      return VK_LCONTROL;
+    case glfw::kKeyRightControl:
+      return VK_RCONTROL;
+    case glfw::kKeyLeftAlt:
+      return VK_LMENU;
+    case glfw::kKeyRightAlt:
+      return VK_RMENU;
+    case glfw::kKeyLeftSuper:
+      return VK_LWIN;
+    case glfw::kKeyRightSuper:
+      return VK_RWIN;
+    case glfw::kKeyMenu:
+      return VK_APPS;
+    default:
+      return 0;
+  }
+}
+
+UINT GetWindowsVirtualKey(int key_code, int key_location, InputEventSemantics semantics) {
+  return semantics == InputEventSemantics::kAwt
+             ? GetWindowsVirtualKeyFromAwt(key_code, key_location)
+             : GetWindowsVirtualKeyFromGlfw(key_code);
+}
+
+bool IsWindowsExtendedKey(int key_code, int key_location, UINT virtual_key, UINT scan_code, InputEventSemantics semantics) {
+  // Synthetic AWT keypad navigation events can acquire an E0 scan prefix from
+  // MapVirtualKey even though their NUMPAD location requires the non-extended
+  // keypad interpretation. Resolve that location before inspecting the scan.
+  if (semantics == InputEventSemantics::kAwt &&
+      key_location == awt::kKeyLocationNumpad)
+    return key_code == awt::kVkEnter || key_code == awt::kVkDivide ||
+           key_code == awt::kVkNumLock;
+  if ((scan_code & 0xFF00U) == 0xE000U || (scan_code & 0xFF00U) == 0xE100U)
+    return true;
+  if (semantics == InputEventSemantics::kGlfw &&
+      (key_code == glfw::kKeyKpEnter || key_code == glfw::kKeyKpDivide))
+    return true;
+  switch (virtual_key) {
+    case VK_RCONTROL:
+    case VK_RMENU:
+    case VK_INSERT:
+    case VK_DELETE:
+    case VK_HOME:
+    case VK_END:
+    case VK_PRIOR:
+    case VK_NEXT:
+    case VK_LEFT:
+    case VK_RIGHT:
+    case VK_UP:
+    case VK_DOWN:
+    case VK_NUMLOCK:
+    case VK_SNAPSHOT:
+    case VK_LWIN:
+    case VK_RWIN:
+    case VK_APPS:
+      return true;
+    default:
+      return false;
+  }
+}
+
+char16_t GetWindowsSpecialCharacter(UINT virtual_key) {
+  switch (virtual_key) {
+    case VK_RETURN:
+      return '\r';
+    case VK_BACK:
+      return '\b';
+    case VK_TAB:
+      return '\t';
+    case VK_ESCAPE:
+      return 0x1B;
+    case VK_DELETE:
+      return 0x7F;
+    default:
+      return 0;
+  }
+}
+
+UINT GetWindowsKeyCodeWithoutLocation(UINT virtual_key) {
+  switch (virtual_key) {
+    case VK_LSHIFT:
+    case VK_RSHIFT:
+      return VK_SHIFT;
+    case VK_LCONTROL:
+    case VK_RCONTROL:
+      return VK_CONTROL;
+    case VK_LMENU:
+    case VK_RMENU:
+      return VK_MENU;
+    default:
+      return virtual_key;
+  }
+}
+
+#endif  // defined(OS_WIN)
+
+void SendJavaKeyEvent(JNIEnv* env, CefRefPtr<CefBrowser> browser, jobject key_event, InputEventSemantics semantics, bool awt_repeated) {
+  if (!key_event)
+    return;
+  ScopedJNIClass event_class(env, env->GetObjectClass(key_event));
+  if (!event_class)
+    return;
+
+  int event_type = 0;
+  int key_code = 0;
+  int key_location = awt::kKeyLocationUnknown;
+  int modifiers = 0;
+  char16_t key_char = awt::kCharUndefined;
+  const char* modifiers_method = semantics == InputEventSemantics::kAwt
+                                     ? "getModifiersEx"
+                                     : "getModifiers";
+  if (!CallRequiredIntMethod(env, event_class, key_event, "getID", &event_type) ||
+      !CallRequiredIntMethod(env, event_class, key_event, "getKeyCode", &key_code) ||
+      !CallRequiredCharMethod(env, event_class, key_event, "getKeyChar", &key_char) ||
+      !CallRequiredIntMethod(env, event_class, key_event, modifiers_method, &modifiers)) {
+    return;
+  }
+  if (semantics == InputEventSemantics::kAwt &&
+      !CallRequiredIntMethod(env, event_class, key_event, "getKeyLocation", &key_location))
+    return;
+
+  const KeyEventConstants& constants = semantics == InputEventSemantics::kAwt
+                                           ? kAwtKeyEventConstants
+                                           : kGlfwKeyEventConstants;
+  const bool pressed = event_type == constants.pressed;
+  const bool released = event_type == constants.released;
+  const bool typed = event_type == constants.typed;
+  const bool explicit_repeat = event_type == constants.repeated;
+  const bool repeated =
+      explicit_repeat || (semantics == InputEventSemantics::kAwt &&
+                          awt_repeated && (pressed || typed));
+  if (!pressed && !released && !typed && !explicit_repeat)
+    return;
+  if (typed && !HasDefinedKeyChar(key_char))
+    return;
+
+  const bool glfw_raw = !typed && semantics == InputEventSemantics::kGlfw;
+  const bool glfw_shift = glfw_raw && (modifiers & glfw::kModShift) != 0;
+  const bool glfw_caps_lock = glfw_raw && (modifiers & glfw::kModCapsLock) != 0;
+  const char16_t glfw_raw_character =
+      glfw_raw
+          ? GetGlfwRawCharacter(key_code, key_char, glfw_shift, glfw_caps_lock)
+          : awt::kCharUndefined;
+
+  jlong primary_level_unicode = 0;
+  // OpenJDK populates this private Shift-neutral layout character on
+  // Windows/X11, but synthetic and macOS events normally leave it zero. Keep
+  // the lookup optional and retain physical fallbacks.
+  if (!typed && semantics == InputEventSemantics::kAwt)
+    GetJNIFieldLong(env, event_class, key_event, "primaryLevelUnicode", &primary_level_unicode);
+  char16_t identity_key_char = typed ||
+                                       semantics == InputEventSemantics::kAwt ||
+                                       IsGlfwStandardPrintableKey(key_code)
+                                   ? key_char
+                                   : awt::kCharUndefined;
+  if (glfw_raw && key_code >= 'A' && key_code <= 'Z')
+    identity_key_char = glfw_raw_character;
+  if (!typed && semantics == InputEventSemantics::kAwt &&
+      !IsPrintableKeyChar(identity_key_char) &&
+      IsValidBmpCharacter(primary_level_unicode))
+    identity_key_char = static_cast<char16_t>(primary_level_unicode);
+
+  CefKeyEvent cef_event;
+  cef_event.modifiers = GetCefKeyModifiers(modifiers, semantics);
+  if (!typed)
+    cef_event.modifiers |=
+        GetKeyIdentityModifiers(key_code, key_location, semantics);
+  if (repeated)
+    cef_event.modifiers |= EVENTFLAG_IS_REPEAT;
+  // AWT exposes no repeat flag, so Java infers it from the pressed-key
+  // lifecycle and supplies it separately. The legacy DTO retains its explicit
+  // KEY_REPEAT action and ABI.
+
+  char16_t platform_special_character = awt::kCharUndefined;
+  int control_windows_key_code = 0;
+
+#if defined(OS_WIN)
+  jlong supplied_scan_code = 0;
+  jlong supplied_raw_code = 0;
+  // Java's private AWT field is an optional optimization and CefKeyEvent's
+  // public field may be zero for synthetic MCEF input. GetJNIFieldLong clears
+  // only the optional lookup failure; required getter failures above propagate.
+  GetJNIFieldLong(env, event_class, key_event, "scancode", &supplied_scan_code);
+  if (!typed && semantics == InputEventSemantics::kAwt)
+    GetJNIFieldLong(env, event_class, key_event, "rawCode", &supplied_raw_code);
+  const UINT fallback_virtual_key =
+      typed ? 0 : GetWindowsVirtualKey(key_code, key_location, semantics);
+  const bool has_raw_code = supplied_raw_code > 0 && supplied_raw_code != 0xFF;
+  UINT virtual_key = has_raw_code ? static_cast<UINT>(supplied_raw_code)
+                                  : fallback_virtual_key;
+  if (fallback_virtual_key == VK_LSHIFT || fallback_virtual_key == VK_RSHIFT ||
+      fallback_virtual_key == VK_LCONTROL ||
+      fallback_virtual_key == VK_RCONTROL || fallback_virtual_key == VK_LMENU ||
+      fallback_virtual_key == VK_RMENU || fallback_virtual_key == VK_LWIN ||
+      fallback_virtual_key == VK_RWIN)
+    virtual_key = fallback_virtual_key;
+  UINT scan_code =
+      supplied_scan_code > 0 ? static_cast<UINT>(supplied_scan_code) : 0;
+  SHORT typed_virtual_key = -1;
+  if (typed) {
+    typed_virtual_key =
+        VkKeyScanExW(static_cast<WCHAR>(key_char), GetKeyboardLayout(0));
+    if (typed_virtual_key != -1)
+      virtual_key = LOBYTE(typed_virtual_key);
+  }
+  if (typed_virtual_key != -1 &&
+      ((static_cast<unsigned int>(typed_virtual_key) >> 8) & 0x06U) == 0x06U) {
+    cef_event.modifiers &= ~(EVENTFLAG_CONTROL_DOWN | EVENTFLAG_ALT_DOWN);
+    cef_event.modifiers |= EVENTFLAG_ALTGR_DOWN;
+  }
+  if (scan_code == 0 && virtual_key != 0)
+    scan_code = MapVirtualKey(virtual_key, MAPVK_VK_TO_VSC_EX);
+  if (!typed && virtual_key == 0 && scan_code != 0)
+    virtual_key = MapVirtualKey(scan_code, MAPVK_VSC_TO_VK_EX);
+  const bool extended = IsWindowsExtendedKey(typed ? -1 : key_code, typed ? awt::kKeyLocationUnknown : key_location, virtual_key, scan_code, semantics);
+  unsigned int native_key_code = 1U | ((scan_code & 0xFFU) << 16);
+  if (extended)
+    native_key_code |= 1U << 24;
+  if (cef_event.modifiers & EVENTFLAG_ALT_DOWN)
+    native_key_code |= 1U << 29;
+  if (repeated)
+    native_key_code |= 1U << 30;
+  if (released)
+    native_key_code |= (1U << 30) | (1U << 31);
+  cef_event.native_key_code = static_cast<int>(native_key_code);
+  cef_event.is_system_key = (cef_event.modifiers & EVENTFLAG_ALT_DOWN) != 0 ||
+                            virtual_key == VK_MENU || virtual_key == VK_LMENU ||
+                            virtual_key == VK_RMENU;
+  const char16_t windows_special_character =
+      GetWindowsSpecialCharacter(virtual_key);
+  if (windows_special_character != 0)
+    platform_special_character = windows_special_character;
+  control_windows_key_code = virtual_key;
+#elif defined(OS_LINUX)
+  const unsigned int key_sym = GetLinuxKeySym(key_code, key_location, identity_key_char, typed, semantics);
+  if (key_sym == NoSymbol)
+    return;
+  jlong supplied_native_key_code = 0;
+  GetJNIFieldLong(env, event_class, key_event, semantics == InputEventSemantics::kAwt ? "rawCode" : "scancode", &supplied_native_key_code);
+  cef_event.native_key_code = supplied_native_key_code > 0
+                                  ? static_cast<int>(supplied_native_key_code)
+                                  : static_cast<int>(key_sym);
+  KeyboardCode windows_key_code = KeyboardCodeFromXKeysym(key_sym);
+  cef_event.windows_key_code =
+      GetWindowsKeyCodeWithoutLocation(windows_key_code);
+  if (windows_key_code == VKEY_RETURN)
+    platform_special_character = '\r';
+  else if (windows_key_code == VKEY_BACK)
+    platform_special_character = '\b';
+  else if (windows_key_code == VKEY_TAB)
+    platform_special_character = '\t';
+  else if (windows_key_code == VKEY_ESCAPE)
+    platform_special_character = 0x1B;
+  else if (windows_key_code == VKEY_DELETE)
+    platform_special_character = 0x7F;
+  control_windows_key_code = windows_key_code;
+#elif defined(OS_MACOSX)
+  jlong supplied_scan_code = 0;
+  if (semantics == InputEventSemantics::kGlfw)
+    GetJNIFieldLong(env, event_class, key_event, "scancode", &supplied_scan_code);
+  const int fallback_key_code = GetMacKeyCode(key_code, key_location, identity_key_char, typed, semantics);
+  const int windows_key_code =
+      typed ? key_char
+            : GetMacWindowsKeyCode(key_code, key_location, semantics);
+  const char16_t special_character =
+      GetMacSpecialCharacter(key_code, semantics);
+  const bool has_unicode = HasDefinedKeyChar(identity_key_char);
+  if (supplied_scan_code == 0 && fallback_key_code == -1 &&
+      windows_key_code == 0 && special_character == 0 && !has_unicode)
+    return;
+  cef_event.native_key_code = supplied_scan_code != 0
+                                  ? static_cast<int>(supplied_scan_code)
+                              : fallback_key_code == -1 ? 0
+                                                        : fallback_key_code;
+  cef_event.windows_key_code = windows_key_code;
+  if (special_character != 0)
+    platform_special_character = special_character;
+  control_windows_key_code = windows_key_code;
+#endif
+
+  const bool shift = (cef_event.modifiers & EVENTFLAG_SHIFT_DOWN) != 0;
+  char16_t unmodified_character = awt::kCharUndefined;
+  if (typed) {
+    unmodified_character = key_char;
+  } else if (semantics == InputEventSemantics::kAwt) {
+    char16_t physical_fallback =
+        GetAwtPhysicalUnmodifiedCharacter(key_code, shift);
+    if (HasDefinedKeyChar(platform_special_character))
+      physical_fallback = platform_special_character;
+    unmodified_character = GetAwtUnmodifiedCharacter(env, key_char, modifiers, primary_level_unicode, physical_fallback);
+  } else {
+    unmodified_character =
+        HasDefinedKeyChar(platform_special_character)
+            ? platform_special_character
+            : GetGlfwRawUnmodifiedCharacter(key_code, key_char, shift);
+  }
+  cef_event.unmodified_character =
+      HasDefinedKeyChar(unmodified_character) ? unmodified_character : 0;
+  if (typed ||
+      (semantics == InputEventSemantics::kAwt && HasDefinedKeyChar(key_char))) {
+    cef_event.character = key_char;
+  } else if (semantics == InputEventSemantics::kGlfw) {
+    cef_event.character = HasDefinedKeyChar(glfw_raw_character)
+                              ? glfw_raw_character
+                              : cef_event.unmodified_character;
+  } else {
+    cef_event.character = cef_event.unmodified_character;
+  }
+  if (!typed && (pressed || explicit_repeat) &&
+      (cef_event.modifiers & EVENTFLAG_CONTROL_DOWN))
+    cef_event.character =
+        GetControlCharacterFromWindowsKeyCode(control_windows_key_code, shift);
+
+  if (pressed || explicit_repeat) {
+#if defined(OS_WIN)
+    cef_event.windows_key_code = GetWindowsKeyCodeWithoutLocation(virtual_key);
+#endif
+    cef_event.type = KEYEVENT_RAWKEYDOWN;
+  } else if (released) {
+#if defined(OS_WIN)
+    cef_event.windows_key_code = GetWindowsKeyCodeWithoutLocation(virtual_key);
+#endif
+    cef_event.type = KEYEVENT_KEYUP;
+  } else if (typed) {
+#if defined(OS_WIN)
+    cef_event.windows_key_code = key_char;
+#endif
+    cef_event.type = KEYEVENT_CHAR;
+  }
+
+  if (env->ExceptionCheck())
+    return;
+  browser->GetHost()->SendKeyEvent(cef_event);
+}
+
+void SendJavaMouseEvent(JNIEnv* env, CefRefPtr<CefBrowser> browser, jobject mouse_event, InputEventSemantics semantics) {
+  if (!mouse_event)
+    return;
+  ScopedJNIClass event_class(env, env->GetObjectClass(mouse_event));
+  if (!event_class)
+    return;
+
+  int event_type = 0;
+  int x = 0;
+  int y = 0;
+  int modifiers = 0;
+  const char* modifiers_method = semantics == InputEventSemantics::kAwt
+                                     ? "getModifiersEx"
+                                     : "getModifiers";
+  if (!CallRequiredIntMethod(env, event_class, mouse_event, "getID", &event_type) ||
+      !CallRequiredIntMethod(env, event_class, mouse_event, "getX", &x) ||
+      !CallRequiredIntMethod(env, event_class, mouse_event, "getY", &y) ||
+      !CallRequiredIntMethod(env, event_class, mouse_event, modifiers_method, &modifiers)) {
+    return;
+  }
+
+  CefMouseEvent cef_event;
+  cef_event.x = x;
+  cef_event.y = y;
+  cef_event.modifiers = GetCefPointerModifiers(modifiers, semantics);
+
+  const int pressed = semantics == InputEventSemantics::kAwt
+                          ? awt::kMousePressed
+                          : glfw::kPress;
+  const int released = semantics == InputEventSemantics::kAwt
+                           ? awt::kMouseReleased
+                           : glfw::kRelease;
+  if (event_type == pressed || event_type == released) {
+    int button = 0;
+    int click_count = 0;
+    if (!CallRequiredIntMethod(env, event_class, mouse_event, "getClickCount", &click_count) ||
+        !CallRequiredIntMethod(env, event_class, mouse_event, "getButton", &button)) {
+      return;
+    }
+
+    CefBrowserHost::MouseButtonType cef_button;
+    if (button == (semantics == InputEventSemantics::kAwt
+                       ? awt::kButton1
+                       : glfw::kMouseButton1)) {
+      cef_button = MBT_LEFT;
+    } else if (button == (semantics == InputEventSemantics::kAwt
+                              ? awt::kButton2
+                              : glfw::kMouseButton2)) {
+      cef_button = MBT_MIDDLE;
+    } else if (button == (semantics == InputEventSemantics::kAwt
+                              ? awt::kButton3
+                              : glfw::kMouseButton3)) {
+      cef_button = MBT_RIGHT;
+    } else {
+      return;
+    }
+    if (env->ExceptionCheck())
+      return;
+    browser->GetHost()->SendMouseClickEvent(cef_event, cef_button, event_type == released, click_count);
+    return;
+  }
+
+  const int moved = semantics == InputEventSemantics::kAwt ? awt::kMouseMoved
+                                                           : glfw::kMouseMoved;
+  const int dragged = semantics == InputEventSemantics::kAwt
+                          ? awt::kMouseDragged
+                          : glfw::kMouseDragged;
+  const int entered = semantics == InputEventSemantics::kAwt
+                          ? awt::kMouseEntered
+                          : glfw::kMouseEntered;
+  const int exited = semantics == InputEventSemantics::kAwt
+                         ? awt::kMouseExited
+                         : glfw::kMouseExited;
+  if (event_type == moved || event_type == dragged || event_type == entered ||
+      event_type == exited) {
+    if (env->ExceptionCheck())
+      return;
+    browser->GetHost()->SendMouseMoveEvent(cef_event, event_type == exited);
+  }
+}
+
+void SendJavaMouseWheelEvent(JNIEnv* env, CefRefPtr<CefBrowser> browser, jobject mouse_wheel_event, InputEventSemantics semantics) {
+  if (!mouse_wheel_event)
+    return;
+  ScopedJNIClass event_class(env, env->GetObjectClass(mouse_wheel_event));
+  if (!event_class)
+    return;
+
+  int scroll_type = 0;
+  int x = 0;
+  int y = 0;
+  int modifiers = 0;
+  const char* modifiers_method = semantics == InputEventSemantics::kAwt
+                                     ? "getModifiersEx"
+                                     : "getModifiers";
+  if (!CallRequiredIntMethod(env, event_class, mouse_wheel_event, "getScrollType", &scroll_type) ||
+      !CallRequiredIntMethod(env, event_class, mouse_wheel_event, "getX", &x) ||
+      !CallRequiredIntMethod(env, event_class, mouse_wheel_event, "getY", &y) ||
+      !CallRequiredIntMethod(env, event_class, mouse_wheel_event, modifiers_method, &modifiers)) {
+    return;
+  }
+
+  CefMouseEvent cef_event;
+  cef_event.x = x;
+  cef_event.y = y;
+  cef_event.modifiers = GetCefPointerModifiers(modifiers, semantics);
+
+  if (semantics == InputEventSemantics::kGlfw) {
+    double delta = 0;
+    if (!CallRequiredDoubleMethod(env, event_class, mouse_wheel_event, "getWheelRotation", &delta))
+      return;
+    if (scroll_type == glfw::kWheelUnitScroll &&
+        !CallRequiredDoubleMethod(env, event_class, mouse_wheel_event, "getUnitsToScroll", &delta))
+      return;
+    double delta_x = 0;
+    double delta_y = 0;
+    if (cef_event.modifiers & EVENTFLAG_SHIFT_DOWN)
+      delta_x = delta;
+    else
+      delta_y = delta;
+    if (env->ExceptionCheck())
+      return;
+    // Keep the historical DTO direction, scale and C++ double-to-int conversion
+    // unchanged.
+    browser->GetHost()->SendMouseWheelEvent(cef_event, delta_x, delta_y);
+    return;
+  }
+
+  double precise_rotation = 0;
+  if (!CallRequiredDoubleMethod(env, event_class, mouse_wheel_event, "getPreciseWheelRotation", &precise_rotation) ||
+      !std::isfinite(precise_rotation))
+    return;
+
+  int delta = 0;
+  if (scroll_type == awt::kWheelUnitScroll) {
+#if defined(OS_WIN)
+    constexpr double kWheelUnitScale = WHEEL_DELTA;
+#else
+    // CEF's Linux and macOS sample clients use 40 device units for one wheel
+    // tick.
+    constexpr double kWheelUnitScale = 40.0;
+#endif
+    delta = RoundNonZeroWheelDelta(-precise_rotation * kWheelUnitScale);
+    if (precise_rotation != std::trunc(precise_rotation))
+      cef_event.modifiers |= EVENTFLAG_PRECISION_SCROLLING_DELTA;
+  } else if (scroll_type == awt::kWheelBlockScroll) {
+    delta = RoundNonZeroWheelDelta(-precise_rotation);
+    cef_event.modifiers |= EVENTFLAG_SCROLL_BY_PAGE;
+  } else {
+    return;
+  }
+
+  const int delta_x = cef_event.modifiers & EVENTFLAG_SHIFT_DOWN ? delta : 0;
+  const int delta_y = cef_event.modifiers & EVENTFLAG_SHIFT_DOWN ? 0 : delta;
+  if (env->ExceptionCheck())
+    return;
+  browser->GetHost()->SendMouseWheelEvent(cef_event, delta_x, delta_y);
+}
 
 struct JNIObjectsForCreate {
  public:
@@ -1882,215 +3961,12 @@ Java_org_cef_browser_CefBrowser_1N_N_1SendKeyEvent(JNIEnv* env,
                                                    jobject obj,
                                                    jobject key_event) {
   CefRefPtr<CefBrowser> browser = JNI_GET_BROWSER_OR_RETURN(env, obj);
-  ScopedJNIClass cls(env, "org/lwjgl/glfw/GLFW");
-  ScopedJNIClass objClass = ScopedJNIClass(env, env->GetObjectClass(key_event));
-  if (!cls || !objClass)
-    return;
+  SendJavaKeyEvent(env, browser, key_event, InputEventSemantics::kGlfw, false);
+}
 
-  JNI_STATIC_DEFINE_INT(env, cls, GLFW_PRESS);
-  JNI_STATIC_DEFINE_INT(env, cls, GLFW_RELEASE);
-  JNI_STATIC_DEFINE_INT(env, cls, GLFW_REPEAT);
-
-  int event_type, modifiers;
-  char16_t key_char;
-  if (!CallJNIMethodI_V(env, objClass, key_event, "getID", &event_type) ||
-      !CallJNIMethodC_V(env, objClass, key_event, "getKeyChar", &key_char) ||
-      !CallJNIMethodI_V(env, objClass, key_event, "getModifiers", &modifiers)) {
-    return;
-  }
-
-  CefKeyEvent cef_event;
-  cef_event.modifiers = GetCefModifiersGlfw(env, cls, modifiers);
-
-#if defined(OS_WIN)
-  jlong scanCode = 0;
-  GetJNIFieldLong(env, objClass, key_event, "scancode", &scanCode);
-  scanCode = MapScanCodeGLFW(env, cls, key_char, scanCode);
-  BYTE VkCode = LOBYTE(MapVirtualKey(scanCode, MAPVK_VSC_TO_VK));
-  cef_event.native_key_code = (scanCode << 16) |  // key scan code
-                              1;                  // key repeat count
-#elif defined(OS_LINUX) || defined(OS_MACOSX)
-  int key_code;
-  if (!CallJNIMethodI_V(env, objClass, key_event, "getKeyCode", &key_code)) {
-    return;
-  }
-
-  JNI_STATIC_DEFINE_INT(env, cls, GLFW_KEY_BACKSPACE);
-  JNI_STATIC_DEFINE_INT(env, cls, GLFW_KEY_DELETE);
-  JNI_STATIC_DEFINE_INT(env, cls, GLFW_KEY_DOWN);
-  JNI_STATIC_DEFINE_INT(env, cls, GLFW_KEY_ENTER);
-  JNI_STATIC_DEFINE_INT(env, cls, GLFW_KEY_ESCAPE);
-  JNI_STATIC_DEFINE_INT(env, cls, GLFW_KEY_LEFT);
-  JNI_STATIC_DEFINE_INT(env, cls, GLFW_KEY_RIGHT);
-  JNI_STATIC_DEFINE_INT(env, cls, GLFW_KEY_TAB);
-  JNI_STATIC_DEFINE_INT(env, cls, GLFW_KEY_UP);
-
-#if defined(OS_LINUX)
-  if (key_code == JNI_STATIC(GLFW_KEY_BACKSPACE))
-    cef_event.native_key_code = XK_BackSpace;
-  else if (key_code == JNI_STATIC(GLFW_KEY_DELETE))
-    cef_event.native_key_code = XK_Delete;
-  else if (key_code == JNI_STATIC(GLFW_KEY_DOWN))
-    cef_event.native_key_code = XK_Down;
-  else if (key_code == JNI_STATIC(GLFW_KEY_ENTER))
-    cef_event.native_key_code = XK_Return;
-  else if (key_code == JNI_STATIC(GLFW_KEY_ESCAPE))
-    cef_event.native_key_code = XK_Escape;
-  else if (key_code == JNI_STATIC(GLFW_KEY_LEFT))
-    cef_event.native_key_code = XK_Left;
-  else if (key_code == JNI_STATIC(GLFW_KEY_RIGHT))
-    cef_event.native_key_code = XK_Right;
-  else if (key_code == JNI_STATIC(GLFW_KEY_TAB))
-    cef_event.native_key_code = XK_Tab;
-  else if (key_code == JNI_STATIC(GLFW_KEY_UP))
-    cef_event.native_key_code = XK_Up;
-  else
-    cef_event.native_key_code = key_char;
-
-  KeyboardCode windows_key_code =
-      KeyboardCodeFromXKeysym(cef_event.native_key_code);
-  cef_event.windows_key_code =
-      GetWindowsKeyCodeWithoutLocation(windows_key_code);
-
-  if (cef_event.modifiers & EVENTFLAG_ALT_DOWN)
-    cef_event.is_system_key = true;
-
-  if (windows_key_code == VKEY_RETURN) {
-    // We need to treat the enter key as a key press of character \r.  This
-    // is apparently just how webkit handles it and what it expects.
-    cef_event.unmodified_character = '\r';
-  } else {
-    cef_event.unmodified_character = cef_event.native_key_code;
-  }
-
-  // If ctrl key is pressed down, then control character shall be input.
-  if (cef_event.modifiers & EVENTFLAG_CONTROL_DOWN) {
-    cef_event.character = GetControlCharacter(
-        windows_key_code, cef_event.modifiers & EVENTFLAG_SHIFT_DOWN);
-  } else {
-    cef_event.character = cef_event.unmodified_character;
-  }
-#elif defined(OS_MACOSX)
-  if (key_code == JNI_STATIC(GLFW_KEY_BACKSPACE)) {
-    cef_event.native_key_code = kVK_Delete;
-    cef_event.unmodified_character = kBackspaceCharCode;
-  } else if (key_code == JNI_STATIC(GLFW_KEY_DELETE)) {
-    cef_event.native_key_code = kVK_ForwardDelete;
-    cef_event.unmodified_character = kDeleteCharCode;
-  } else if (key_code == JNI_STATIC(GLFW_KEY_DOWN)) {
-    cef_event.native_key_code = kVK_DownArrow;
-    cef_event.unmodified_character = /* NSDownArrowFunctionKey */ 0xF701;
-  } else if (key_code == JNI_STATIC(GLFW_KEY_ENTER)) {
-    cef_event.native_key_code = kVK_Return;
-    cef_event.unmodified_character = kReturnCharCode;
-  } else if (key_code == JNI_STATIC(GLFW_KEY_ESCAPE)) {
-    cef_event.native_key_code = kVK_Escape;
-    cef_event.unmodified_character = kEscapeCharCode;
-  } else if (key_code == JNI_STATIC(GLFW_KEY_LEFT)) {
-    cef_event.native_key_code = kVK_LeftArrow;
-    cef_event.unmodified_character = /* NSLeftArrowFunctionKey */ 0xF702;
-  } else if (key_code == JNI_STATIC(GLFW_KEY_RIGHT)) {
-    cef_event.native_key_code = kVK_RightArrow;
-    cef_event.unmodified_character = /* NSRightArrowFunctionKey */ 0xF703;
-  } else if (key_code == JNI_STATIC(GLFW_KEY_TAB)) {
-    cef_event.native_key_code = kVK_Tab;
-    cef_event.unmodified_character = kTabCharCode;
-  } else if (key_code == JNI_STATIC(GLFW_KEY_UP)) {
-    cef_event.native_key_code = kVK_UpArrow;
-    cef_event.unmodified_character = /* NSUpArrowFunctionKey */ 0xF700;
-  } else {
-    cef_event.native_key_code = GetMacKeyCodeFromChar(key_char);
-    if (cef_event.native_key_code == -1)
-      return;
-
-    cef_event.unmodified_character = key_char;
-  }
-
-  cef_event.character = cef_event.unmodified_character;
-
-  // Fill in |character| according to flags.
-  if (cef_event.modifiers & EVENTFLAG_SHIFT_DOWN) {
-    if (key_char >= '0' && key_char <= '9') {
-      cef_event.character = kShiftCharsForNumberKeys[key_char - '0'];
-    } else if (key_char >= 'A' && key_char <= 'Z') {
-      cef_event.character = 'A' + (key_char - 'A');
-    } else {
-      switch (cef_event.native_key_code) {
-        case kVK_ANSI_Grave:
-          cef_event.character = '~';
-          break;
-        case kVK_ANSI_Minus:
-          cef_event.character = '_';
-          break;
-        case kVK_ANSI_Equal:
-          cef_event.character = '+';
-          break;
-        case kVK_ANSI_LeftBracket:
-          cef_event.character = '{';
-          break;
-        case kVK_ANSI_RightBracket:
-          cef_event.character = '}';
-          break;
-        case kVK_ANSI_Backslash:
-          cef_event.character = '|';
-          break;
-        case kVK_ANSI_Semicolon:
-          cef_event.character = ':';
-          break;
-        case kVK_ANSI_Quote:
-          cef_event.character = '\"';
-          break;
-        case kVK_ANSI_Comma:
-          cef_event.character = '<';
-          break;
-        case kVK_ANSI_Period:
-          cef_event.character = '>';
-          break;
-        case kVK_ANSI_Slash:
-          cef_event.character = '?';
-          break;
-        default:
-          break;
-      }
-    }
-  }
-
-  // Control characters.
-  if (cef_event.modifiers & EVENTFLAG_CONTROL_DOWN) {
-    if (key_char >= 'A' && key_char <= 'Z')
-      cef_event.character = 1 + key_char - 'A';
-    else if (cef_event.native_key_code == kVK_ANSI_LeftBracket)
-      cef_event.character = 27;
-    else if (cef_event.native_key_code == kVK_ANSI_Backslash)
-      cef_event.character = 28;
-    else if (cef_event.native_key_code == kVK_ANSI_RightBracket)
-      cef_event.character = 29;
-  }
-#endif  // defined(OS_MACOSX)
-#endif  // defined(OS_LINUX) || defined(OS_MACOSX)
-
-  if (event_type == JNI_STATIC(GLFW_PRESS)) {
-#if defined(OS_WIN)
-    cef_event.windows_key_code = VkCode;
-#endif
-    cef_event.type = KEYEVENT_RAWKEYDOWN;
-  } else if (event_type == JNI_STATIC(GLFW_RELEASE)) {
-#if defined(OS_WIN)
-    cef_event.windows_key_code = VkCode;
-    // bits 30 and 31 should always be 1 for WM_KEYUP
-    cef_event.native_key_code |= 0xC0000000;
-#endif
-    cef_event.type = KEYEVENT_KEYUP;
-  } else if (event_type == JNI_STATIC(GLFW_REPEAT)) {
-#if defined(OS_WIN)
-    cef_event.windows_key_code = key_char;
-#endif
-    cef_event.type = KEYEVENT_CHAR;
-  } else {
-    return;
-  }
-
-  browser->GetHost()->SendKeyEvent(cef_event);
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1SendKeyEventAwt(JNIEnv* env, jobject obj, jobject key_event, jboolean repeated) {
+  CefRefPtr<CefBrowser> browser = JNI_GET_BROWSER_OR_RETURN(env, obj);
+  SendJavaKeyEvent(env, browser, key_event, InputEventSemantics::kAwt, repeated == JNI_TRUE);
 }
 
 JNIEXPORT void JNICALL
@@ -2098,62 +3974,12 @@ Java_org_cef_browser_CefBrowser_1N_N_1SendMouseEvent(JNIEnv* env,
                                                      jobject obj,
                                                      jobject mouse_event) {
   CefRefPtr<CefBrowser> browser = JNI_GET_BROWSER_OR_RETURN(env, obj);
-  ScopedJNIClass cls(env, "org/lwjgl/glfw/GLFW");
-  ScopedJNIClass objClass =
-      ScopedJNIClass(env, env->GetObjectClass(mouse_event));
-  if (!cls || !objClass)
-    return;
+  SendJavaMouseEvent(env, browser, mouse_event, InputEventSemantics::kGlfw);
+}
 
-  JNI_STATIC_DEFINE_INT(env, cls, GLFW_MOUSE_BUTTON_1);
-  JNI_STATIC_DEFINE_INT(env, cls, GLFW_MOUSE_BUTTON_2);
-  JNI_STATIC_DEFINE_INT(env, cls, GLFW_MOUSE_BUTTON_3);
-  JNI_STATIC_DEFINE_INT(env, cls, GLFW_PRESS);
-  JNI_STATIC_DEFINE_INT(env, cls, GLFW_RELEASE);
-
-  int event_type, x, y, modifiers;
-  if (!CallJNIMethodI_V(env, objClass, mouse_event, "getID", &event_type) ||
-      !CallJNIMethodI_V(env, objClass, mouse_event, "getX", &x) ||
-      !CallJNIMethodI_V(env, objClass, mouse_event, "getY", &y) ||
-      !CallJNIMethodI_V(env, objClass, mouse_event, "getModifiers",
-                        &modifiers)) {
-    return;
-  }
-
-  CefMouseEvent cef_event;
-  cef_event.x = x;
-  cef_event.y = y;
-
-  cef_event.modifiers = GetCefModifiersGlfw(env, cls, modifiers);
-
-  if (event_type == JNI_STATIC(GLFW_PRESS) ||
-      event_type == JNI_STATIC(GLFW_RELEASE)) {
-    int click_count, button;
-    if (!CallJNIMethodI_V(env, objClass, mouse_event, "getClickCount",
-                          &click_count) ||
-        !CallJNIMethodI_V(env, objClass, mouse_event, "getButton", &button)) {
-      return;
-    }
-
-    CefBrowserHost::MouseButtonType cef_mbt;
-    if (button == JNI_STATIC(GLFW_MOUSE_BUTTON_1))
-      cef_mbt = MBT_LEFT;
-    else if (button == JNI_STATIC(GLFW_MOUSE_BUTTON_2))
-      cef_mbt = MBT_MIDDLE;
-    else if (button == JNI_STATIC(GLFW_MOUSE_BUTTON_3))
-      cef_mbt = MBT_RIGHT;
-    else
-      return;
-
-    browser->GetHost()->SendMouseClickEvent(
-        cef_event, cef_mbt, (event_type == JNI_STATIC(GLFW_RELEASE)),
-        click_count);
-  } else if (event_type == 503 ||  // MOUSE_MOVED
-             event_type == 506 ||  // MOUSE_DRAGGED
-             event_type == 504 ||  // MOUSE_ENTERED
-             event_type == 505) {  // MOUSE_EXITED
-    browser->GetHost()->SendMouseMoveEvent(
-        cef_event, (event_type == 505));  // MOUSE_EXITED
-  }
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1SendMouseEventAwt(JNIEnv* env, jobject obj, jobject mouse_event) {
+  CefRefPtr<CefBrowser> browser = JNI_GET_BROWSER_OR_RETURN(env, obj);
+  SendJavaMouseEvent(env, browser, mouse_event, InputEventSemantics::kAwt);
 }
 
 JNIEXPORT void JNICALL
@@ -2162,46 +3988,12 @@ Java_org_cef_browser_CefBrowser_1N_N_1SendMouseWheelEvent(
     jobject obj,
     jobject mouse_wheel_event) {
   CefRefPtr<CefBrowser> browser = JNI_GET_BROWSER_OR_RETURN(env, obj);
-  ScopedJNIClass cls(env, "org/lwjgl/glfw/GLFW");
-  ScopedJNIClass objClass =
-      ScopedJNIClass(env, env->GetObjectClass(mouse_wheel_event));
-  if (!cls || !objClass)
-    return;
+  SendJavaMouseWheelEvent(env, browser, mouse_wheel_event, InputEventSemantics::kGlfw);
+}
 
-  JNI_STATIC_DEFINE_INT(env, objClass, WHEEL_UNIT_SCROLL);
-
-  int scroll_type, x, y, modifiers;
-  double delta;
-  if (!CallJNIMethodI_V(env, objClass, mouse_wheel_event, "getScrollType",
-                        &scroll_type) ||
-      !CallJNIMethodD_V(env, objClass, mouse_wheel_event, "getWheelRotation",
-                        &delta) ||
-      !CallJNIMethodI_V(env, objClass, mouse_wheel_event, "getX", &x) ||
-      !CallJNIMethodI_V(env, objClass, mouse_wheel_event, "getY", &y) ||
-      !CallJNIMethodI_V(env, objClass, mouse_wheel_event, "getModifiers",
-                        &modifiers)) {
-    return;
-  }
-
-  CefMouseEvent cef_event;
-  cef_event.x = x;
-  cef_event.y = y;
-
-  cef_event.modifiers = GetCefModifiersGlfw(env, cls, modifiers);
-
-  if (scroll_type == 0) {  // WHEEL_UNIT_SCROLL
-    // Use the smarter version that considers platform settings.
-    CallJNIMethodD_V(env, objClass, mouse_wheel_event, "getUnitsToScroll",
-                     &delta);
-  }
-
-  double deltaX = 0, deltaY = 0;
-  if (cef_event.modifiers & EVENTFLAG_SHIFT_DOWN)
-    deltaX = delta;
-  else
-    deltaY = delta;
-
-  browser->GetHost()->SendMouseWheelEvent(cef_event, deltaX, deltaY);
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1SendMouseWheelEventAwt(JNIEnv* env, jobject obj, jobject mouse_wheel_event) {
+  CefRefPtr<CefBrowser> browser = JNI_GET_BROWSER_OR_RETURN(env, obj);
+  SendJavaMouseWheelEvent(env, browser, mouse_wheel_event, InputEventSemantics::kAwt);
 }
 
 JNIEXPORT void JNICALL
@@ -2215,13 +4007,13 @@ Java_org_cef_browser_CefBrowser_1N_N_1DragTargetDragEnter(JNIEnv* env,
       GetCefFromJNIObject<CefDragData>(env, jdragData, "CefDragData");
   if (!drag_data.get())
     return;
-  ScopedJNIClass cls(env, "org/lwjgl/glfw/GLFW");
-  if (!cls)
-    return;
 
   CefMouseEvent cef_event;
-  GetJNIPoint(env, pos, &cef_event.x, &cef_event.y);
-  cef_event.modifiers = GetCefModifiersGlfw(env, cls, jmodifiers);
+  if (!GetJNIPoint(env, pos, &cef_event.x, &cef_event.y))
+    return;
+  // The Java drag API explicitly accepts org.cef.misc.EventFlags, which are
+  // already CEF values and must never be reinterpreted as AWT or GLFW masks.
+  cef_event.modifiers = jmodifiers;
 
   CefRefPtr<CefBrowser> browser = JNI_GET_BROWSER_OR_RETURN(env, obj);
   browser->GetHost()->DragTargetDragEnter(
@@ -2234,13 +4026,10 @@ Java_org_cef_browser_CefBrowser_1N_N_1DragTargetDragOver(JNIEnv* env,
                                                          jobject pos,
                                                          jint jmodifiers,
                                                          jint allowedOps) {
-  ScopedJNIClass cls(env, "org/lwjgl/glfw/GLFW");
-  if (!cls)
-    return;
-
   CefMouseEvent cef_event;
-  GetJNIPoint(env, pos, &cef_event.x, &cef_event.y);
-  cef_event.modifiers = GetCefModifiersGlfw(env, cls, jmodifiers);
+  if (!GetJNIPoint(env, pos, &cef_event.x, &cef_event.y))
+    return;
+  cef_event.modifiers = jmodifiers;
 
   CefRefPtr<CefBrowser> browser = JNI_GET_BROWSER_OR_RETURN(env, obj);
   browser->GetHost()->DragTargetDragOver(
@@ -2259,13 +4048,10 @@ Java_org_cef_browser_CefBrowser_1N_N_1DragTargetDrop(JNIEnv* env,
                                                      jobject obj,
                                                      jobject pos,
                                                      jint jmodifiers) {
-  ScopedJNIClass cls(env, "org/lwjgl/glfw/GLFW");
-  if (!cls)
-    return;
-
   CefMouseEvent cef_event;
-  GetJNIPoint(env, pos, &cef_event.x, &cef_event.y);
-  cef_event.modifiers = GetCefModifiersGlfw(env, cls, jmodifiers);
+  if (!GetJNIPoint(env, pos, &cef_event.x, &cef_event.y))
+    return;
+  cef_event.modifiers = jmodifiers;
 
   CefRefPtr<CefBrowser> browser = JNI_GET_BROWSER_OR_RETURN(env, obj);
   browser->GetHost()->DragTargetDrop(cef_event);
@@ -2278,7 +4064,8 @@ Java_org_cef_browser_CefBrowser_1N_N_1DragSourceEndedAt(JNIEnv* env,
                                                         jint operation) {
   CefRefPtr<CefBrowser> browser = JNI_GET_BROWSER_OR_RETURN(env, obj);
   int x, y;
-  GetJNIPoint(env, pos, &x, &y);
+  if (!GetJNIPoint(env, pos, &x, &y))
+    return;
   browser->GetHost()->DragSourceEndedAt(
       x, y, (CefBrowserHost::DragOperationsMask)operation);
 }

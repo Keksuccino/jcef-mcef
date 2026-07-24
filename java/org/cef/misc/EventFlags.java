@@ -18,4 +18,8 @@ public final class EventFlags {
     public final static int EVENTFLAG_IS_KEY_PAD = 1 << 9;
     public final static int EVENTFLAG_IS_LEFT = 1 << 10;
     public final static int EVENTFLAG_IS_RIGHT = 1 << 11;
+    public final static int EVENTFLAG_ALTGR_DOWN = 1 << 12;
+    public final static int EVENTFLAG_IS_REPEAT = 1 << 13;
+    public final static int EVENTFLAG_PRECISION_SCROLLING_DELTA = 1 << 14;
+    public final static int EVENTFLAG_SCROLL_BY_PAGE = 1 << 15;
 }

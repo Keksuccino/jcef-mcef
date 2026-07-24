@@ -385,6 +385,14 @@ JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1SendKeyEvent
 
 /*
  * Class:     org_cef_browser_CefBrowser_N
+ * Method:    N_SendKeyEventAwt
+ * Signature: (Ljava/awt/event/KeyEvent;Z)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1SendKeyEventAwt
+  (JNIEnv *, jobject, jobject, jboolean);
+
+/*
+ * Class:     org_cef_browser_CefBrowser_N
  * Method:    N_SendMouseEvent
  * Signature: (Lorg/cef/event/CefMouseEvent;)V
  */
@@ -393,10 +401,26 @@ JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1SendMouseEvent
 
 /*
  * Class:     org_cef_browser_CefBrowser_N
+ * Method:    N_SendMouseEventAwt
+ * Signature: (Ljava/awt/event/MouseEvent;)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1SendMouseEventAwt
+  (JNIEnv *, jobject, jobject);
+
+/*
+ * Class:     org_cef_browser_CefBrowser_N
  * Method:    N_SendMouseWheelEvent
  * Signature: (Lorg/cef/event/CefMouseWheelEvent;)V
  */
 JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1SendMouseWheelEvent
+  (JNIEnv *, jobject, jobject);
+
+/*
+ * Class:     org_cef_browser_CefBrowser_N
+ * Method:    N_SendMouseWheelEventAwt
+ * Signature: (Ljava/awt/event/MouseWheelEvent;)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1SendMouseWheelEventAwt
   (JNIEnv *, jobject, jobject);
 
 /*

@@ -5,6 +5,8 @@ public class CefKeyEvent {
     public static final int KEY_PRESS = 1;
     public static final int KEY_RELEASE = 0;
     public static final int KEY_TYPE = 2;
+    /** Explicit repeated key-down action. KEY_TYPE remains the legacy typed-character action. */
+    public static final int KEY_REPEAT = 3;
 
     // intentionally leaving these public for now
     // may remove the getters, or maybe add setters, or maybe move to private

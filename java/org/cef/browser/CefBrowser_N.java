@@ -20,6 +20,7 @@ import org.cef.handler.CefDialogHandler.FileDialogMode;
 import org.cef.handler.CefRenderHandler;
 import org.cef.handler.CefWindowHandler;
 import org.cef.misc.CefPdfPrintSettings;
+import org.cef.misc.EventFlags;
 import org.cef.network.CefRequest;
 
 import java.awt.Component;
@@ -41,6 +42,7 @@ import javax.swing.SwingUtilities;
 public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowser {
     private final CefBrowserCreationController creationController_ =
             new CefBrowserCreationController();
+    private final CefAwtKeyRepeatTracker awtKeyRepeatTracker_ = new CefAwtKeyRepeatTracker();
     private final CefClient client_;
     private final String url_;
     private final CefRequestContext request_context_;
@@ -154,6 +156,7 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
             devToolsClient = devToolsClient_;
             devToolsClient_ = null;
         }
+        clearAwtKeyRepeatState();
         // Request contexts are caller-owned and may be shared by multiple browsers. Closing one
         // browser only releases CEF's native browser reference; it must not invalidate the Java
         // context wrapper for its owner or siblings.
@@ -260,6 +263,7 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
             return;
         if (!client_.onBrowserCreationStarted(this)) {
             isClosing_ = true;
+            clearAwtKeyRepeatState();
             creationController_.failed();
             return;
         }
@@ -319,6 +323,7 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
             return;
         if (!client_.onBrowserCreationStarted(this)) {
             isClosing_ = true;
+            clearAwtKeyRepeatState();
             creationController_.failed();
             return;
         }
@@ -595,15 +600,22 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
 
     @Override
     public void close(boolean force) {
-        if (isClosing_ || isClosed_) return;
+        if (isClosing_ || isClosed_) {
+            clearAwtKeyRepeatState();
+            return;
+        }
         if (force) isClosing_ = true;
+        clearAwtKeyRepeatState();
 
         closeNative(force);
     }
 
     private void completeCloseWithoutWindowOwner() {
         synchronized (this) {
-            if (isClosed_) return;
+            if (isClosed_) {
+                clearAwtKeyRepeatState();
+                return;
+            }
 
             // DoClose already runs after before-unload handling. No custom owner exists to finish
             // the close promised by returning true, so allow the next callback and issue the
@@ -611,6 +623,7 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
             closeAllowed_ = true;
             isClosing_ = true;
         }
+        clearAwtKeyRepeatState();
         closeNative(true);
     }
 
@@ -624,6 +637,7 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
 
     @Override
     public void setFocus(boolean enable) {
+        if (!enable) clearAwtKeyRepeatState();
         try {
             N_SetFocus(enable);
         } catch (UnsatisfiedLinkError ule) {
@@ -733,10 +747,12 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
                 // openDevTools() invokes createImmediately outside this lock. Mark the throwaway
                 // wrapper first so that racing creation observes the ending lifecycle and stops.
                 devTools_.isClosing_ = true;
+                devTools_.clearAwtKeyRepeatState();
                 devTools_.parent_ = null;
                 devTools_ = null;
                 closeNative = creationController_.isCreated() && !isClosing_ && !isClosed_;
             } else {
+                devTools_.clearAwtKeyRepeatState();
                 devToolsClosing_ = true;
                 closeNative = true;
             }
@@ -789,10 +805,12 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     }
 
     /**
-     * Send a key event.
-     * @param e The event to send.
+     * Send an MCEF key event. Its IDs, key codes, modifier bits and scan code use the legacy GLFW
+     * contract represented by {@link CefKeyEvent}; they are not AWT values.
+     * @param e The MCEF/GLFW event to send.
      */
     protected final void sendKeyEvent(CefKeyEvent e) {
+        if (e == null || isClosing_ || isClosed_) return;
         try {
             N_SendKeyEvent(e);
         } catch (UnsatisfiedLinkError ule) {
@@ -801,10 +819,48 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     }
 
     /**
-     * Send a mouse event.
-     * @param e The event to send.
+     * Send a Swing key event using the original AWT IDs, key codes and modifier masks.
+     * @param e The AWT event to send.
+     */
+    protected final void sendAwtKeyEvent(java.awt.event.KeyEvent e) {
+        if (e == null) return;
+        if (!isAwtKeyInputEligible()) {
+            clearAwtKeyRepeatState();
+            return;
+        }
+        boolean repeated = awtKeyRepeatTracker_.update(e);
+        if (!isAwtKeyInputEligible()) {
+            clearAwtKeyRepeatState();
+            return;
+        }
+        try {
+            N_SendKeyEventAwt(e, repeated);
+        } catch (UnsatisfiedLinkError ule) {
+            clearAwtKeyRepeatState();
+            ule.printStackTrace();
+        }
+    }
+
+    private boolean isAwtKeyInputEligible() {
+        // Native publishes the browser reference before transitioning the synchronized creation
+        // controller to CREATED. Reading the controller first therefore also makes that reference
+        // visible and prevents input rejected during NEW/PENDING from poisoning repeat state.
+        return !isClosing_ && !isClosed_ && creationController_.isCreated()
+                && getNativeRef("CefBrowser") != 0;
+    }
+
+    private void clearAwtKeyRepeatState() {
+        awtKeyRepeatTracker_.clear();
+    }
+
+    /**
+     * Send an MCEF mouse event. Its event IDs and modifier bits use the legacy DTO contract, while
+     * button values are normalized as 0=left, 1=middle and 2=right. They are not raw AWT or GLFW
+     * button values.
+     * @param e The MCEF event to send.
      */
     protected final void sendMouseEvent(CefMouseEvent e) {
+        if (e == null || isClosing_ || isClosed_) return;
         try {
             N_SendMouseEvent(e);
         } catch (UnsatisfiedLinkError ule) {
@@ -813,12 +869,40 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     }
 
     /**
-     * Send a mouse wheel event.
-     * @param e The event to send.
+     * Send a Swing mouse event using the original AWT IDs, button codes and modifier masks.
+     * @param e The AWT event to send.
+     */
+    protected final void sendAwtMouseEvent(java.awt.event.MouseEvent e) {
+        if (e == null || isClosing_ || isClosed_) return;
+        try {
+            N_SendMouseEventAwt(e);
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+    }
+
+    /**
+     * Send an MCEF mouse-wheel event. Its modifier bits use the legacy GLFW contract represented by
+     * {@link CefMouseWheelEvent}; they are not AWT values.
+     * @param e The MCEF/GLFW event to send.
      */
     protected final void sendMouseWheelEvent(CefMouseWheelEvent e) {
+        if (e == null || isClosing_ || isClosed_) return;
         try {
             N_SendMouseWheelEvent(e);
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+    }
+
+    /**
+     * Send a Swing mouse-wheel event using the original AWT scroll and modifier semantics.
+     * @param e The AWT event to send.
+     */
+    protected final void sendAwtMouseWheelEvent(java.awt.event.MouseWheelEvent e) {
+        if (e == null || isClosing_ || isClosed_) return;
+        try {
+            N_SendMouseWheelEventAwt(e);
         } catch (UnsatisfiedLinkError ule) {
             ule.printStackTrace();
         }
@@ -832,9 +916,12 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
      * CefDragData::ResetFileContents (for example, if |drag_data| comes from
      * CefRenderHandler::StartDragging).
      * This method is only used when window rendering is disabled.
+     * @param modifiers A bitwise combination of {@link EventFlags} values. These are already CEF
+     *        flags, not AWT or GLFW modifier masks.
      */
     protected final void dragTargetDragEnter(
             CefDragData dragData, Point pos, int modifiers, int allowedOps) {
+        if (dragData == null || pos == null || isClosing_ || isClosed_) return;
         try {
             N_DragTargetDragEnter(dragData, pos, modifiers, allowedOps);
         } catch (UnsatisfiedLinkError ule) {
@@ -847,8 +934,11 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
      * a drag operation (after calling DragTargetDragEnter and before calling
      * DragTargetDragLeave/DragTargetDrop).
      * This method is only used when window rendering is disabled.
+     * @param modifiers A bitwise combination of {@link EventFlags} values. These are already CEF
+     *        flags, not AWT or GLFW modifier masks.
      */
     protected final void dragTargetDragOver(Point pos, int modifiers, int allowedOps) {
+        if (pos == null || isClosing_ || isClosed_) return;
         try {
             N_DragTargetDragOver(pos, modifiers, allowedOps);
         } catch (UnsatisfiedLinkError ule) {
@@ -862,6 +952,7 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
      * This method is only used when window rendering is disabled.
      */
     protected final void dragTargetDragLeave() {
+        if (isClosing_ || isClosed_) return;
         try {
             N_DragTargetDragLeave();
         } catch (UnsatisfiedLinkError ule) {
@@ -875,8 +966,11 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
      * The object being dropped is |drag_data|, given as an argument to
      * the previous DragTargetDragEnter call.
      * This method is only used when window rendering is disabled.
+     * @param modifiers A bitwise combination of {@link EventFlags} values. These are already CEF
+     *        flags, not AWT or GLFW modifier masks.
      */
     protected final void dragTargetDrop(Point pos, int modifiers) {
+        if (pos == null || isClosing_ || isClosed_) return;
         try {
             N_DragTargetDrop(pos, modifiers);
         } catch (UnsatisfiedLinkError ule) {
@@ -894,6 +988,7 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
      * This method is only used when window rendering is disabled.
      */
     protected final void dragSourceEndedAt(Point pos, int operation) {
+        if (pos == null || isClosing_ || isClosed_) return;
         try {
             N_DragSourceEndedAt(pos, operation);
         } catch (UnsatisfiedLinkError ule) {
@@ -911,6 +1006,7 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
      * This method is only used when window rendering is disabled.
      */
     protected final void dragSourceSystemDragEnded() {
+        if (isClosing_ || isClosed_) return;
         try {
             N_DragSourceSystemDragEnded();
         } catch (UnsatisfiedLinkError ule) {
@@ -1027,8 +1123,11 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     private final native void N_WasResized(int width, int height);
     private final native void N_Invalidate();
     private final native void N_SendKeyEvent(CefKeyEvent e);
+    private final native void N_SendKeyEventAwt(java.awt.event.KeyEvent e, boolean repeated);
     private final native void N_SendMouseEvent(CefMouseEvent e);
+    private final native void N_SendMouseEventAwt(java.awt.event.MouseEvent e);
     private final native void N_SendMouseWheelEvent(CefMouseWheelEvent e);
+    private final native void N_SendMouseWheelEventAwt(java.awt.event.MouseWheelEvent e);
     private final native void N_DragTargetDragEnter(
             CefDragData dragData, Point pos, int modifiers, int allowed_ops);
     private final native void N_DragTargetDragOver(Point pos, int modifiers, int allowed_ops);

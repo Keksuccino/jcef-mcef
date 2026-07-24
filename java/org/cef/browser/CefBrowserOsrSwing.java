@@ -37,7 +37,6 @@ import java.awt.dnd.DragSourceDropEvent;
 import java.awt.dnd.DropTarget;
 import java.awt.event.FocusAdapter;
 import java.awt.event.FocusEvent;
-import java.awt.event.InputEvent;
 import java.awt.event.KeyAdapter;
 import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
@@ -183,46 +182,42 @@ class CefBrowserOsrSwing extends CefBrowserOsr {
         MouseAdapter mouseListener = new MouseAdapter() {
             @Override
             public void mousePressed(MouseEvent event) {
-                sendMouseEvent(toCefMouseEvent(event));
+                sendAwtMouseEvent(event);
             }
 
             @Override
             public void mouseReleased(MouseEvent event) {
-                sendMouseEvent(toCefMouseEvent(event));
+                sendAwtMouseEvent(event);
             }
 
             @Override
             public void mouseEntered(MouseEvent event) {
-                sendMouseEvent(toCefMouseEvent(event));
+                sendAwtMouseEvent(event);
             }
 
             @Override
             public void mouseExited(MouseEvent event) {
-                sendMouseEvent(toCefMouseEvent(event));
+                sendAwtMouseEvent(event);
             }
 
             @Override
             public void mouseClicked(MouseEvent event) {
-                sendMouseEvent(toCefMouseEvent(event));
+                sendAwtMouseEvent(event);
             }
 
             @Override
             public void mouseMoved(MouseEvent event) {
-                sendMouseEvent(toCefMouseEvent(event));
+                sendAwtMouseEvent(event);
             }
 
             @Override
             public void mouseDragged(MouseEvent event) {
-                sendMouseEvent(toCefMouseEvent(event));
+                sendAwtMouseEvent(event);
             }
 
             @Override
             public void mouseWheelMoved(MouseWheelEvent event) {
-                org.cef.event.CefMouseWheelEvent cefEvent =
-                        new org.cef.event.CefMouseWheelEvent(event.getScrollType(), event.getX(),
-                                event.getY(), event.getWheelRotation(), getCefModifiers(event));
-                cefEvent.amount = event.getScrollAmount();
-                sendMouseWheelEvent(cefEvent);
+                sendAwtMouseWheelEvent(event);
             }
         };
         canvas_.addMouseListener(mouseListener);
@@ -231,20 +226,21 @@ class CefBrowserOsrSwing extends CefBrowserOsr {
         canvas_.addKeyListener(new KeyAdapter() {
             @Override
             public void keyTyped(KeyEvent event) {
-                sendKeyEvent(toCefKeyEvent(event));
+                sendAwtKeyEvent(event);
             }
 
             @Override
             public void keyPressed(KeyEvent event) {
-                sendKeyEvent(toCefKeyEvent(event));
+                sendAwtKeyEvent(event);
             }
 
             @Override
             public void keyReleased(KeyEvent event) {
-                sendKeyEvent(toCefKeyEvent(event));
+                sendAwtKeyEvent(event);
             }
         });
         canvas_.setFocusable(true);
+        canvas_.setFocusTraversalKeysEnabled(false);
         canvas_.addFocusListener(new FocusAdapter() {
             @Override
             public void focusLost(FocusEvent event) {
@@ -258,73 +254,6 @@ class CefBrowserOsrSwing extends CefBrowserOsr {
             }
         });
         new DropTarget(canvas_, new CefDropTargetListener(this));
-    }
-
-    private static org.cef.event.CefMouseEvent toCefMouseEvent(MouseEvent event) {
-        int eventId = event.getID();
-        if (eventId == MouseEvent.MOUSE_PRESSED) eventId = org.cef.event.CefKeyEvent.KEY_PRESS;
-        if (eventId == MouseEvent.MOUSE_RELEASED) eventId = org.cef.event.CefKeyEvent.KEY_RELEASE;
-        int button = 0;
-        if (event.getButton() == MouseEvent.BUTTON2) button = 2;
-        if (event.getButton() == MouseEvent.BUTTON3) button = 1;
-        return new org.cef.event.CefMouseEvent(eventId, event.getX(), event.getY(),
-                event.getClickCount(), button, getCefModifiers(event));
-    }
-
-    private static org.cef.event.CefKeyEvent toCefKeyEvent(KeyEvent event) {
-        int eventId = org.cef.event.CefKeyEvent.KEY_TYPE;
-        if (event.getID() == KeyEvent.KEY_PRESSED) eventId = org.cef.event.CefKeyEvent.KEY_PRESS;
-        if (event.getID() == KeyEvent.KEY_RELEASED) eventId = org.cef.event.CefKeyEvent.KEY_RELEASE;
-        return new org.cef.event.CefKeyEvent(eventId, toGlfwKeyCode(event.getKeyCode()),
-                event.getKeyChar(), getCefModifiers(event));
-    }
-
-    private static int getCefModifiers(InputEvent event) {
-        int awtModifiers = event.getModifiersEx();
-        int modifiers = 0;
-        if ((awtModifiers & InputEvent.SHIFT_DOWN_MASK) != 0) modifiers |= 0x1;
-        if ((awtModifiers & InputEvent.CTRL_DOWN_MASK) != 0) modifiers |= 0x2;
-        if ((awtModifiers & InputEvent.ALT_DOWN_MASK) != 0) modifiers |= 0x4;
-        if ((awtModifiers & InputEvent.META_DOWN_MASK) != 0) modifiers |= 0x8;
-        if ((awtModifiers & InputEvent.BUTTON1_DOWN_MASK) != 0) modifiers |= 0x10;
-        if ((awtModifiers & InputEvent.BUTTON2_DOWN_MASK) != 0) modifiers |= 0x20;
-        if ((awtModifiers & InputEvent.BUTTON3_DOWN_MASK) != 0) modifiers |= 0x40;
-        return modifiers;
-    }
-
-    private static int toGlfwKeyCode(int awtKeyCode) {
-        switch (awtKeyCode) {
-            case KeyEvent.VK_ESCAPE:
-                return 256;
-            case KeyEvent.VK_ENTER:
-                return 257;
-            case KeyEvent.VK_TAB:
-                return 258;
-            case KeyEvent.VK_BACK_SPACE:
-                return 259;
-            case KeyEvent.VK_INSERT:
-                return 260;
-            case KeyEvent.VK_DELETE:
-                return 261;
-            case KeyEvent.VK_RIGHT:
-                return 262;
-            case KeyEvent.VK_LEFT:
-                return 263;
-            case KeyEvent.VK_DOWN:
-                return 264;
-            case KeyEvent.VK_UP:
-                return 265;
-            case KeyEvent.VK_PAGE_UP:
-                return 266;
-            case KeyEvent.VK_PAGE_DOWN:
-                return 267;
-            case KeyEvent.VK_HOME:
-                return 268;
-            case KeyEvent.VK_END:
-                return 269;
-            default:
-                return awtKeyCode;
-        }
     }
 
     @Override

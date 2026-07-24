@@ -9,26 +9,6 @@
 
 namespace {
 
-// Create a new java.awt.Rectangle.
-jobject NewJNIRect(JNIEnv* env, const CefRect& rect) {
-  ScopedJNIClass cls(env, "java/awt/Rectangle");
-  if (!cls)
-    return nullptr;
-
-  ScopedJNIObjectLocal obj(env, NewJNIObject(env, cls));
-  if (!obj)
-    return nullptr;
-
-  if (SetJNIFieldInt(env, cls, obj, "x", rect.x) &&
-      SetJNIFieldInt(env, cls, obj, "y", rect.y) &&
-      SetJNIFieldInt(env, cls, obj, "width", rect.width) &&
-      SetJNIFieldInt(env, cls, obj, "height", rect.height)) {
-    return obj.Release();
-  }
-
-  return nullptr;
-}
-
 jobject NewJNIScreenInfo(JNIEnv* env, CefScreenInfo& screenInfo) {
   ScopedJNIClass cls(env, "org/cef/handler/CefScreenInfo");
   if (!cls) {

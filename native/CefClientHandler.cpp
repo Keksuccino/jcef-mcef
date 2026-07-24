@@ -81,6 +81,10 @@ Java_org_cef_handler_CefClientHandler_N_1removeDragHandler(
                                      "CefDragHandler");
 }
 
+JNIEXPORT void JNICALL Java_org_cef_handler_CefClientHandler_N_1removeFindHandler(JNIEnv* env, jobject clientHandler, jobject findHandler) {
+  SetCefForJNIObject<CefFindHandler>(env, findHandler, nullptr, "CefFindHandler");
+}
+
 JNIEXPORT void JNICALL
 Java_org_cef_handler_CefClientHandler_N_1removeFocusHandler(
     JNIEnv* env,

@@ -80,14 +80,14 @@ public abstract class CefClientHandler implements CefNative {
      * default implementation will be used.
      */
     abstract protected CefDialogHandler getDialogHandler();
-    
+
     /**
      * Return the handler for browser display state events.
      * This method is a callback method and is called by
      * the native code.
      */
     abstract protected CefDisplayHandler getDisplayHandler();
-    
+
     /**
      * Return the handler for browser audio events.
      * This method is a callback method and is called by
@@ -108,6 +108,12 @@ public abstract class CefClientHandler implements CefNative {
      * the native code.
      */
     abstract protected CefDragHandler getDragHandler();
+
+    /**
+     * Return the handler for find result events. This method is a callback method and is called by
+     * the native code.
+     */
+    abstract protected CefFindHandler getFindHandler();
 
     /**
      * Return the handler for focus events.
@@ -205,7 +211,7 @@ public abstract class CefClientHandler implements CefNative {
             err.printStackTrace();
         }
     }
-    
+
     protected void removeAudioHandler(CefAudioHandler h) {
         try {
             N_removeAudioHandler(h);
@@ -225,6 +231,14 @@ public abstract class CefClientHandler implements CefNative {
     protected void removeDragHandler(CefDragHandler h) {
         try {
             N_removeDragHandler(h);
+        } catch (UnsatisfiedLinkError err) {
+            err.printStackTrace();
+        }
+    }
+
+    protected void removeFindHandler(CefFindHandler h) {
+        try {
+            N_removeFindHandler(h);
         } catch (UnsatisfiedLinkError err) {
             err.printStackTrace();
         }
@@ -319,6 +333,7 @@ public abstract class CefClientHandler implements CefNative {
     private final native void N_removeAudioHandler(CefAudioHandler h);
     private final native void N_removeDownloadHandler(CefDownloadHandler h);
     private final native void N_removeDragHandler(CefDragHandler h);
+    private final native void N_removeFindHandler(CefFindHandler h);
     private final native void N_removeFocusHandler(CefFocusHandler h);
     private final native void N_removeJSDialogHandler(CefJSDialogHandler h);
     private final native void N_removeKeyboardHandler(CefKeyboardHandler h);

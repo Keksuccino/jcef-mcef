@@ -18,6 +18,7 @@
 #include "audio_handler.h"
 #include "download_handler.h"
 #include "drag_handler.h"
+#include "find_handler.h"
 #include "focus_handler.h"
 #include "jsdialog_handler.h"
 #include "keyboard_handler.h"
@@ -116,6 +117,10 @@ CefRefPtr<CefDownloadHandler> ClientHandler::GetDownloadHandler() {
 
 CefRefPtr<CefDragHandler> ClientHandler::GetDragHandler() {
   return GetHandler<DragHandler>("DragHandler");
+}
+
+CefRefPtr<CefFindHandler> ClientHandler::GetFindHandler() {
+  return GetHandler<FindHandler>("FindHandler");
 }
 
 CefRefPtr<CefFocusHandler> ClientHandler::GetFocusHandler() {

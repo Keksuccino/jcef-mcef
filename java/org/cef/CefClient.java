@@ -39,6 +39,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.Vector;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 /**
@@ -46,7 +47,7 @@ import java.util.function.Consumer;
  */
 public class CefClient extends CefClientHandler
         implements CefContextMenuHandler, CefDialogHandler, CefDisplayHandler, CefDownloadHandler,
-                   CefDragHandler, CefFocusHandler, CefJSDialogHandler, CefKeyboardHandler,
+                   CefDragHandler, CefFindHandler, CefFocusHandler, CefJSDialogHandler, CefKeyboardHandler,
                    CefLifeSpanHandler, CefLoadHandler, CefPrintHandler, CefRenderHandler,
                    CefRequestHandler, CefWindowHandler, CefAudioHandler {
     private final HashMap<Integer, CefBrowser> browser_ = new HashMap<Integer, CefBrowser>();
@@ -58,6 +59,9 @@ public class CefClient extends CefClientHandler
     private CefAudioHandler audioHandler_ = null;
     private CefDownloadHandler downloadHandler_ = null;
     private CefDragHandler dragHandler_ = null;
+    // Find callbacks run on CEF UI while application threads may replace the delegate. The atomic
+    // first-writer-wins update matches the existing add-handler contract with explicit visibility.
+    private final AtomicReference<CefFindHandler> findHandler_ = new AtomicReference<CefFindHandler>();
     private CefFocusHandler focusHandler_ = null;
     private CefJSDialogHandler jsDialogHandler_ = null;
     private CefKeyboardHandler keyboardHandler_ = null;
@@ -237,6 +241,14 @@ public class CefClient extends CefClientHandler
 
     @Override
     protected CefDragHandler getDragHandler() {
+        return this;
+    }
+
+    @Override
+    protected CefFindHandler getFindHandler() {
+        // Keep a stable Java relay installed even when no application delegate is registered. CEF
+        // may retain native handlers, so detaching this relay during a public remove would prevent
+        // a later add from receiving callbacks for an existing browser.
         return this;
     }
 
@@ -458,6 +470,24 @@ public class CefClient extends CefClientHandler
         if (dragHandler_ != null && browser != null)
             return dragHandler_.onDragEnter(browser, dragData, mask);
         return false;
+    }
+
+    // CefFindHandler
+
+    public CefClient addFindHandler(CefFindHandler handler) {
+        if (handler != null) findHandler_.compareAndSet(null, handler);
+        return this;
+    }
+
+    public void removeFindHandler() {
+        findHandler_.set(null);
+    }
+
+    @Override
+    public void onFindResult(CefBrowser browser, int identifier, int count, Rectangle selectionRect, int activeMatchOrdinal, boolean finalUpdate) {
+        if (browser == null) return;
+        CefFindHandler handler = findHandler_.get();
+        if (handler != null) handler.onFindResult(browser, identifier, count, selectionRect, activeMatchOrdinal, finalUpdate);
     }
 
     // CefFocusHandler
@@ -688,6 +718,7 @@ public class CefClient extends CefClientHandler
             failure = CefLifecycleExecutor.runAndCollectFailure(failure, () -> removeAudioHandler(this));
             failure = CefLifecycleExecutor.runAndCollectFailure(failure, () -> removeDownloadHandler(this));
             failure = CefLifecycleExecutor.runAndCollectFailure(failure, () -> removeDragHandler(this));
+            failure = CefLifecycleExecutor.runAndCollectFailure(failure, () -> removeFindHandler(this));
             failure = CefLifecycleExecutor.runAndCollectFailure(failure, () -> removeFocusHandler(this));
             failure = CefLifecycleExecutor.runAndCollectFailure(failure, () -> removeJSDialogHandler(this));
             failure = CefLifecycleExecutor.runAndCollectFailure(failure, () -> removeKeyboardHandler(this));

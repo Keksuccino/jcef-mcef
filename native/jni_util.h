@@ -231,6 +231,9 @@ bool CallJNIMethodD_V(JNIEnv* env,
 // Rertieve the CefSize equivalent of a java.awt.Dimension.
 CefSize GetJNISize(JNIEnv* env, jobject obj);
 
+// Create a new java.awt.Rectangle snapshot from a native rectangle.
+jobject NewJNIRect(JNIEnv* env, const CefRect& rect);
+
 // Retrieve the CefRect equivalent of a java.awt.Rectangle.
 CefRect GetJNIRect(JNIEnv* env, jobject obj);
 

@@ -108,6 +108,8 @@ set(JCEF_SRCS
   download_handler.h
   drag_handler.cpp
   drag_handler.h
+  find_handler.cpp
+  find_handler.h
   focus_handler.cpp
   focus_handler.h
   int_callback.cpp

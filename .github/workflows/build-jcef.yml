@@ -192,7 +192,7 @@ jobs:
           call tools\distrib\java17_check.bat java javac jar javadoc
           java -version
           javac -version
-          ant -version
+          call ant -version
           python tools/make_jni_headers.py --verify
       - name: Compile Java and JUnit tests
         shell: cmd

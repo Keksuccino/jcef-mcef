@@ -198,6 +198,26 @@ class PlatformToolingContractTest(unittest.TestCase):
     self.assertIn('if "%JAVA_VERSION:~0,3%" == "17."', helper)
     self.assertNotIn('java.exe" -version', helper)
 
+  def test_windows_jni_header_verification_returns_from_ant_before_python(self):
+    workflow = (
+        REPOSITORY_ROOT / '.github' / 'workflows' / 'build-jcef.yml').read_text(
+            encoding='utf-8')
+    windows_job = re.search(r'^  windows:\n(.*?)(?=^  [a-z][a-z0-9_-]*:\n|\Z)',
+                            workflow, re.DOTALL | re.MULTILINE)
+    self.assertIsNotNone(windows_job)
+    verification_step = re.search(
+        r'^      - name: Verify toolchain and generated JNI headers\n(.*?)(?=^      - (?:name:|uses:)|\Z)',
+        windows_job.group(1), re.DOTALL | re.MULTILINE)
+    self.assertIsNotNone(verification_step)
+    step_text = verification_step.group(1)
+    ant_call = 'call ant -version'
+    header_verification = 'python tools/make_jni_headers.py --verify'
+    self.assertIn('shell: cmd', step_text)
+    self.assertEqual(1, step_text.count(ant_call))
+    self.assertEqual(1, step_text.count(header_verification))
+    self.assertLess(
+        step_text.index(ant_call), step_text.index(header_verification))
+
   def test_windows_arm64_places_chromium_fence_on_original_process_command_line(self):
     runner = (TOOLS_ROOT / 'run_tests.bat').read_text(encoding='utf-8')
     arm64_block = re.search(r'if /I "%PLATFORM%" == "windows_arm64" \((.*?)\n\)', runner, re.DOTALL)

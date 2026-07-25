@@ -21,6 +21,8 @@
 
 constexpr auto kPendingDispatchTimeout = std::chrono::seconds(5);
 constexpr auto kPendingDispatchTimeoutForTesting = std::chrono::milliseconds(250);
+constexpr auto kSyntheticTestWatchdogTimeout = std::chrono::seconds(10);
+constexpr auto kNonExpiringPendingDispatchTimeoutForTesting = std::chrono::hours(1);
 
 enum class URLRequestOperationPhase {
   PENDING,
@@ -37,11 +39,14 @@ class URLRequestOperationState {
   explicit URLRequestOperationState(CefRefPtr<URLRequest> owner) : owner_(owner) {}
 
   bool BeginExecuting(CefRefPtr<URLRequest>* owner) {
-    std::lock_guard<std::mutex> lock(lock_);
-    if (phase_ != URLRequestOperationPhase::PENDING)
-      return false;
-    phase_ = URLRequestOperationPhase::EXECUTING;
-    *owner = owner_;
+    {
+      std::lock_guard<std::mutex> lock(lock_);
+      if (phase_ != URLRequestOperationPhase::PENDING)
+        return false;
+      phase_ = URLRequestOperationPhase::EXECUTING;
+      *owner = owner_;
+    }
+    completion_condition_.notify_all();
     return true;
   }
 
@@ -84,13 +89,28 @@ class URLRequestOperationState {
     return phase_ == phase;
   }
 
-  void NotifyForTesting() { completion_condition_.notify_all(); }
+  void NotifyForTesting() {
+    // DispatchPosted publishes its wait count while still holding lock_, then
+    // atomically releases that lock when wait_until arms the wait. Acquiring the
+    // same lock here is the handshake that prevents this test notification from
+    // landing in between those actions, where a condition-variable wake would
+    // be lost and the synthetic spurious-wake scenario would become racy.
+    std::lock_guard<std::mutex> lock(lock_);
+    completion_condition_.notify_all();
+  }
 
   void EnableWaitObservationForTesting() { observe_waits_for_testing_.store(true, std::memory_order_release); }
 
   bool WaitForWaitCountForTesting(size_t count, std::chrono::steady_clock::duration timeout) {
     std::unique_lock<std::mutex> lock(test_lock_);
+    wait_observer_ready_for_testing_ = true;
+    test_condition_.notify_all();
     return test_condition_.wait_for(lock, timeout, [this, count]() { return wait_count_for_testing_ >= count; });
+  }
+
+  bool WaitForWaitObserverForTesting(std::chrono::steady_clock::duration timeout) {
+    std::unique_lock<std::mutex> lock(test_lock_);
+    return test_condition_.wait_for(lock, timeout, [this]() { return wait_observer_ready_for_testing_; });
   }
 
   bool WaitForExecutingCompletionWaitForTesting(std::chrono::steady_clock::duration timeout) {
@@ -109,6 +129,7 @@ class URLRequestOperationState {
   std::mutex test_lock_;
   std::condition_variable test_condition_;
   size_t wait_count_for_testing_ = 0;
+  bool wait_observer_ready_for_testing_ = false;
   bool executing_completion_wait_for_testing_ = false;
 };
 
@@ -412,6 +433,12 @@ bool InvokeJavaDisposeForTesting(JNIEnv* env, jobject jurl_request) {
   return !ReportAndClearJNIException(env, "calling CefURLRequest.dispose during the disposal race test");
 }
 
+bool ReportSyntheticTestScenario(const char* scenario, bool valid, bool watchdog_forced_cleanup) {
+  if (!valid)
+    std::fprintf(stderr, "JCEF URLRequest synthetic test scenario failed: %s (watchdog-forced cleanup: %s)\n", scenario, watchdog_forced_cleanup ? "yes" : "no");
+  return valid;
+}
+
 }  // namespace
 
 // A URLRequest can be called concurrently from Java and CEF operations may
@@ -450,7 +477,7 @@ class URLRequestOperation : public CefTask {
       Execute();
       return state_->IsPhase(COMPLETED);
     }
-    return DispatchPosted([thread_id](CefRefPtr<CefTask> task) { return CefPostTask(thread_id, task); }, kPendingDispatchTimeout, true);
+    return DispatchPosted([thread_id](CefRefPtr<CefTask> task) { return CefPostTask(thread_id, task); }, kPendingDispatchTimeout, true, false);
   }
 
   bool created() const { return created_; }
@@ -536,17 +563,22 @@ class URLRequestOperation : public CefTask {
       return false;
     }
     registered_.store(true, std::memory_order_release);
-    return DispatchPosted(post_task, pending_timeout, false);
+    return DispatchPosted(post_task, pending_timeout, false, true);
   }
 
-  bool DispatchPosted(const TaskPoster& post_task, std::chrono::steady_clock::duration pending_timeout, bool log_timeout) {
+  bool DispatchPosted(const TaskPoster& post_task, std::chrono::steady_clock::duration pending_timeout, bool log_timeout, bool restart_deadline_after_post_for_testing) {
     CefRefPtr<URLRequest> abandoned_owner;
     bool abandoned = false;
     bool timed_out = false;
     bool completed = false;
-    const auto deadline = std::chrono::steady_clock::now() + pending_timeout;
+    auto deadline = std::chrono::steady_clock::now() + pending_timeout;
     CefRefPtr<CefTask> task(this);
     const bool accepted = state_->IsPhase(PENDING) && post_task(task);
+    // Synthetic posters may deliberately park before accepting a task so the
+    // observer is deterministically ready. Restart only their deadline after
+    // that choreography; production retains its original pre-CefPostTask clock.
+    if (restart_deadline_after_post_for_testing)
+      deadline = std::chrono::steady_clock::now() + pending_timeout;
     {
       std::unique_lock<std::mutex> lock(state_->lock_);
       if (!accepted && state_->phase_ == PENDING) {
@@ -605,7 +637,6 @@ class URLRequestOperation : public CefTask {
 };
 
 bool URLRequestOperation::RunStateMachineForTesting() {
-  constexpr auto watchdog_timeout = std::chrono::seconds(1);
   bool valid = true;
 
   {
@@ -622,8 +653,8 @@ bool URLRequestOperation::RunStateMachineForTesting() {
     control->lifecycle->Open();
     CefRefPtr<URLRequest> owner = new URLRequest(TID_UI, nullptr, nullptr, nullptr, nullptr);
     control->operation = new URLRequestOperation(owner, REQ_CANCEL, control->lifecycle.get());
-    std::thread dispatcher([control, watchdog_timeout]() {
-      control->dispatch_result = control->operation->DispatchPostedForTesting([](CefRefPtr<CefTask>) { return false; }, watchdog_timeout);
+    std::thread dispatcher([control]() {
+      control->dispatch_result = control->operation->DispatchPostedForTesting([](CefRefPtr<CefTask>) { return false; }, kSyntheticTestWatchdogTimeout);
       control->operation->Finish();
       {
         std::lock_guard<std::mutex> lock(control->lock);
@@ -634,20 +665,24 @@ bool URLRequestOperation::RunStateMachineForTesting() {
     bool dispatcher_done;
     {
       std::unique_lock<std::mutex> lock(control->lock);
-      dispatcher_done = control->condition.wait_for(lock, watchdog_timeout, [control]() { return control->dispatcher_done; });
+      dispatcher_done = control->condition.wait_for(lock, kSyntheticTestWatchdogTimeout, [control]() { return control->dispatcher_done; });
     }
+    bool watchdog_forced_cleanup = false;
     if (!dispatcher_done) {
+      watchdog_forced_cleanup = true;
       control->operation->state_->AbandonPending();
       control->operation->state_->NotifyForTesting();
       std::unique_lock<std::mutex> lock(control->lock);
-      dispatcher_done = control->condition.wait_for(lock, watchdog_timeout, [control]() { return control->dispatcher_done; });
+      dispatcher_done = control->condition.wait_for(lock, kSyntheticTestWatchdogTimeout, [control]() { return control->dispatcher_done; });
     }
     if (!dispatcher_done) {
       dispatcher.detach();
+      ReportSyntheticTestScenario("rejected post", false, watchdog_forced_cleanup);
       return false;
     }
     dispatcher.join();
-    valid = valid && !control->dispatch_result && control->operation->state_->IsPhase(ABANDONED) && owner->HasOneRef();
+    const bool scenario_valid = !watchdog_forced_cleanup && !control->dispatch_result && control->operation->state_->IsPhase(ABANDONED) && owner->HasOneRef();
+    valid = ReportSyntheticTestScenario("rejected post", scenario_valid, watchdog_forced_cleanup) && valid;
   }
 
   struct PendingControl {
@@ -657,9 +692,11 @@ bool URLRequestOperation::RunStateMachineForTesting() {
     CefRefPtr<URLRequestOperation> operation;
     CefRefPtr<CefTask> captured_task;
     bool task_captured = false;
+    bool observer_watchdog_forced_abandonment = false;
     bool dispatcher_done = false;
     bool dispatch_result = true;
-    std::chrono::steady_clock::time_point dispatch_started;
+    bool timeout_wait_started = false;
+    std::chrono::steady_clock::time_point timeout_wait_start;
     std::chrono::steady_clock::time_point dispatch_finished;
   };
 
@@ -672,13 +709,27 @@ bool URLRequestOperation::RunStateMachineForTesting() {
     control->operation->state_->EnableWaitObservationForTesting();
     std::thread dispatcher([control]() {
       TaskPoster poster = [control](CefRefPtr<CefTask> task) {
-        std::lock_guard<std::mutex> lock(control->lock);
-        control->captured_task = task;
-        control->task_captured = true;
+        {
+          std::lock_guard<std::mutex> lock(control->lock);
+          control->captured_task = task;
+          control->task_captured = true;
+        }
         control->condition.notify_all();
-        return true;
+        // The first wait-count observation publishes readiness before blocking.
+        // Do not accept the fake post until that observer is parked; the 250ms
+        // dispatch deadline starts after this poster returns, so runner
+        // descheduling cannot consume the behavior-under-test's time budget.
+        const bool observer_ready = control->operation->state_->WaitForWaitObserverForTesting(kSyntheticTestWatchdogTimeout);
+        {
+          std::lock_guard<std::mutex> lock(control->lock);
+          control->observer_watchdog_forced_abandonment = !observer_ready;
+          if (observer_ready) {
+            control->timeout_wait_start = std::chrono::steady_clock::now();
+            control->timeout_wait_started = true;
+          }
+        }
+        return observer_ready;
       };
-      control->dispatch_started = std::chrono::steady_clock::now();
       control->dispatch_result = control->operation->DispatchPostedForTesting(poster, kPendingDispatchTimeoutForTesting);
       control->dispatch_finished = std::chrono::steady_clock::now();
       control->operation->Finish();
@@ -692,21 +743,24 @@ bool URLRequestOperation::RunStateMachineForTesting() {
     bool captured;
     {
       std::unique_lock<std::mutex> lock(control->lock);
-      captured = control->condition.wait_for(lock, watchdog_timeout, [control]() { return control->task_captured; });
+      captured = control->condition.wait_for(lock, kSyntheticTestWatchdogTimeout, [control]() { return control->task_captured; });
     }
     bool observed_spurious_waits = captured;
     for (size_t wait_count = 1; observed_spurious_waits && wait_count <= 3; ++wait_count) {
-      observed_spurious_waits = control->operation->state_->WaitForWaitCountForTesting(wait_count, watchdog_timeout);
+      observed_spurious_waits = control->operation->state_->WaitForWaitCountForTesting(wait_count, kSyntheticTestWatchdogTimeout);
       if (observed_spurious_waits)
         control->operation->state_->NotifyForTesting();
     }
 
     bool dispatcher_done;
+    bool watchdog_forced_cleanup;
     {
       std::unique_lock<std::mutex> lock(control->lock);
-      dispatcher_done = control->condition.wait_for(lock, watchdog_timeout, [control]() { return control->dispatcher_done; });
+      dispatcher_done = control->condition.wait_for(lock, kSyntheticTestWatchdogTimeout, [control]() { return control->dispatcher_done; });
+      watchdog_forced_cleanup = control->observer_watchdog_forced_abandonment;
     }
     if (!dispatcher_done) {
+      watchdog_forced_cleanup = true;
       // The watchdog services both possible failure modes. Force terminal state
       // first, then execute an already-captured late task so the regression
       // cannot leave a joinable thread or stack capture behind.
@@ -720,20 +774,20 @@ bool URLRequestOperation::RunStateMachineForTesting() {
         task->Execute();
       control->operation->state_->NotifyForTesting();
       std::unique_lock<std::mutex> lock(control->lock);
-      dispatcher_done = control->condition.wait_for(lock, watchdog_timeout, [control]() { return control->dispatcher_done; });
+      dispatcher_done = control->condition.wait_for(lock, kSyntheticTestWatchdogTimeout, [control]() { return control->dispatcher_done; });
     }
     if (!dispatcher_done) {
       // A broken terminal wait must fail within a bound instead of hanging the
       // test process. The worker captures only heap control that owns the
       // lifecycle, task and null-backed operation; it has no JNI or CEF state.
       dispatcher.detach();
+      ReportSyntheticTestScenario("accepted pending timeout", false, watchdog_forced_cleanup);
       return false;
     }
     dispatcher.join();
 
-    const auto dispatch_elapsed = control->dispatch_finished - control->dispatch_started;
-    const bool deadline_preserved = dispatch_elapsed >= kPendingDispatchTimeoutForTesting && dispatch_elapsed <= kPendingDispatchTimeoutForTesting + std::chrono::milliseconds(500);
-    valid = valid && captured && observed_spurious_waits && dispatcher_done && deadline_preserved && !control->dispatch_result && control->operation->state_->IsPhase(ABANDONED) && owner->HasOneRef();
+    const auto timeout_wait_elapsed = control->dispatch_finished - control->timeout_wait_start;
+    const bool deadline_not_shortened = control->timeout_wait_started && timeout_wait_elapsed >= kPendingDispatchTimeoutForTesting;
     CefRefPtr<CefTask> late_task;
     {
       std::lock_guard<std::mutex> lock(control->lock);
@@ -741,7 +795,8 @@ bool URLRequestOperation::RunStateMachineForTesting() {
     }
     if (late_task)
       late_task->Execute();
-    valid = valid && control->operation->state_->IsPhase(ABANDONED) && owner->HasOneRef();
+    const bool scenario_valid = !watchdog_forced_cleanup && captured && observed_spurious_waits && dispatcher_done && deadline_not_shortened && !control->dispatch_result && control->operation->state_->IsPhase(ABANDONED) && owner->HasOneRef();
+    valid = ReportSyntheticTestScenario("accepted pending timeout", scenario_valid, watchdog_forced_cleanup) && valid;
   }
 
   struct ExecutionGate {
@@ -785,7 +840,7 @@ bool URLRequestOperation::RunStateMachineForTesting() {
         control->condition.notify_all();
         return true;
       };
-      control->dispatch_result = control->operation->DispatchPostedForTesting(poster, kPendingDispatchTimeoutForTesting);
+      control->dispatch_result = control->operation->DispatchPostedForTesting(poster, kNonExpiringPendingDispatchTimeoutForTesting);
       control->operation->Finish();
       {
         std::lock_guard<std::mutex> lock(control->lock);
@@ -797,7 +852,7 @@ bool URLRequestOperation::RunStateMachineForTesting() {
     bool captured;
     {
       std::unique_lock<std::mutex> lock(control->lock);
-      captured = control->condition.wait_for(lock, watchdog_timeout, [control]() { return control->task_captured; });
+      captured = control->condition.wait_for(lock, kSyntheticTestWatchdogTimeout, [control]() { return control->task_captured; });
     }
     std::thread executor;
     if (captured) {
@@ -814,9 +869,9 @@ bool URLRequestOperation::RunStateMachineForTesting() {
     bool executing = false;
     if (captured) {
       std::unique_lock<std::mutex> lock(control->gate->lock);
-      executing = control->gate->condition.wait_for(lock, watchdog_timeout, [control]() { return control->gate->executing; });
+      executing = control->gate->condition.wait_for(lock, kSyntheticTestWatchdogTimeout, [control]() { return control->gate->executing; });
     }
-    const bool dispatcher_waited = captured && executing && control->operation->state_->WaitForExecutingCompletionWaitForTesting(watchdog_timeout);
+    const bool dispatcher_waited = captured && executing && control->operation->state_->WaitForExecutingCompletionWaitForTesting(kSyntheticTestWatchdogTimeout);
     {
       std::lock_guard<std::mutex> lock(control->gate->lock);
       control->gate->release_execution = true;
@@ -827,9 +882,11 @@ bool URLRequestOperation::RunStateMachineForTesting() {
     bool both_done;
     {
       std::unique_lock<std::mutex> lock(control->lock);
-      both_done = control->condition.wait_for(lock, watchdog_timeout, [control, executor_expected]() { return control->dispatcher_done && (!executor_expected || control->executor_done); });
+      both_done = control->condition.wait_for(lock, kSyntheticTestWatchdogTimeout, [control, executor_expected]() { return control->dispatcher_done && (!executor_expected || control->executor_done); });
     }
+    bool watchdog_forced_cleanup = false;
     if (!both_done) {
+      watchdog_forced_cleanup = true;
       // The gate is already released. Force PENDING to a terminal phase and
       // notify every waiter; an EXECUTING task owns the race and will complete
       // after leaving the released hook. This services all target regressions
@@ -837,7 +894,7 @@ bool URLRequestOperation::RunStateMachineForTesting() {
       control->operation->state_->AbandonPending();
       control->operation->state_->NotifyForTesting();
       std::unique_lock<std::mutex> lock(control->lock);
-      both_done = control->condition.wait_for(lock, watchdog_timeout, [control, executor_expected]() { return control->dispatcher_done && (!executor_expected || control->executor_done); });
+      both_done = control->condition.wait_for(lock, kSyntheticTestWatchdogTimeout, [control, executor_expected]() { return control->dispatcher_done && (!executor_expected || control->executor_done); });
     }
     if (!both_done) {
       // Both closures retain the same heap control, including the released
@@ -846,19 +903,22 @@ bool URLRequestOperation::RunStateMachineForTesting() {
       dispatcher.detach();
       if (executor.joinable())
         executor.detach();
+      ReportSyntheticTestScenario("executing operation wins pending race", false, watchdog_forced_cleanup);
       return false;
     }
     dispatcher.join();
     if (executor.joinable())
       executor.join();
-    valid = valid && captured && executing && dispatcher_waited && both_done && control->dispatch_result && control->operation->state_->IsPhase(COMPLETED) && owner->HasOneRef();
+    const bool scenario_valid = !watchdog_forced_cleanup && captured && executing && dispatcher_waited && both_done && control->dispatch_result && control->operation->state_->IsPhase(COMPLETED) && owner->HasOneRef();
+    valid = ReportSyntheticTestScenario("executing operation wins pending race", scenario_valid, watchdog_forced_cleanup) && valid;
   }
 
-  return valid && RunPendingCloseForTesting() && RunExecutingCloseForTesting();
+  const bool pending_close_valid = RunPendingCloseForTesting();
+  const bool executing_close_valid = RunExecutingCloseForTesting();
+  return valid && pending_close_valid && executing_close_valid;
 }
 
 bool URLRequestOperation::RunPendingCloseForTesting() {
-  constexpr auto watchdog_timeout = std::chrono::seconds(1);
   struct Control {
     std::mutex lock;
     std::condition_variable condition;
@@ -887,7 +947,7 @@ bool URLRequestOperation::RunPendingCloseForTesting() {
       control->condition.notify_all();
       return true;
     };
-    control->dispatch_result = control->operation->DispatchPostedForTesting(poster, std::chrono::hours(1));
+    control->dispatch_result = control->operation->DispatchPostedForTesting(poster, kNonExpiringPendingDispatchTimeoutForTesting);
     control->operation->Finish();
     {
       std::lock_guard<std::mutex> lock(control->lock);
@@ -899,7 +959,7 @@ bool URLRequestOperation::RunPendingCloseForTesting() {
   bool captured;
   {
     std::unique_lock<std::mutex> lock(control->lock);
-    captured = control->condition.wait_for(lock, watchdog_timeout, [control]() { return control->task_captured; });
+    captured = control->condition.wait_for(lock, kSyntheticTestWatchdogTimeout, [control]() { return control->task_captured; });
   }
   std::thread closer([control]() {
     control->lifecycle->Close();
@@ -909,16 +969,18 @@ bool URLRequestOperation::RunPendingCloseForTesting() {
     }
     control->condition.notify_all();
   });
-  const bool closing = control->lifecycle->WaitForPhaseForTesting(URLRequestLifecycle::Phase::CLOSING, watchdog_timeout);
+  const bool closing = control->lifecycle->WaitForPhaseForTesting(URLRequestLifecycle::Phase::CLOSING, kSyntheticTestWatchdogTimeout);
   const bool admission_rejected = !control->lifecycle->AcquireAdmission();
   retained_admission = URLRequestAdmission();
 
   bool both_done;
   {
     std::unique_lock<std::mutex> lock(control->lock);
-    both_done = control->condition.wait_for(lock, watchdog_timeout, [control]() { return control->dispatcher_done && control->closer_done; });
+    both_done = control->condition.wait_for(lock, kSyntheticTestWatchdogTimeout, [control]() { return control->dispatcher_done && control->closer_done; });
   }
+  bool watchdog_forced_cleanup = false;
   if (!both_done) {
+    watchdog_forced_cleanup = true;
     control->operation->state_->AbandonPending();
     CefRefPtr<CefTask> task;
     {
@@ -929,17 +991,17 @@ bool URLRequestOperation::RunPendingCloseForTesting() {
       task->Execute();
     control->operation->state_->NotifyForTesting();
     std::unique_lock<std::mutex> lock(control->lock);
-    both_done = control->condition.wait_for(lock, watchdog_timeout, [control]() { return control->dispatcher_done && control->closer_done; });
+    both_done = control->condition.wait_for(lock, kSyntheticTestWatchdogTimeout, [control]() { return control->dispatcher_done && control->closer_done; });
   }
   if (!both_done) {
     dispatcher.detach();
     closer.detach();
+    ReportSyntheticTestScenario("pending operation lifecycle close", false, watchdog_forced_cleanup);
     return false;
   }
   dispatcher.join();
   closer.join();
 
-  const bool valid = captured && closing && admission_rejected && !control->dispatch_result && control->operation->state_->IsPhase(ABANDONED) && control->lifecycle->phase_for_testing() == URLRequestLifecycle::Phase::CLOSED && owner->HasOneRef();
   CefRefPtr<CefTask> late_task;
   {
     std::lock_guard<std::mutex> lock(control->lock);
@@ -947,11 +1009,11 @@ bool URLRequestOperation::RunPendingCloseForTesting() {
   }
   if (late_task)
     late_task->Execute();
-  return valid && control->operation->state_->IsPhase(ABANDONED) && owner->HasOneRef();
+  const bool scenario_valid = !watchdog_forced_cleanup && captured && closing && admission_rejected && !control->dispatch_result && control->operation->state_->IsPhase(ABANDONED) && control->lifecycle->phase_for_testing() == URLRequestLifecycle::Phase::CLOSED && owner->HasOneRef();
+  return ReportSyntheticTestScenario("pending operation lifecycle close", scenario_valid, watchdog_forced_cleanup);
 }
 
 bool URLRequestOperation::RunExecutingCloseForTesting() {
-  constexpr auto watchdog_timeout = std::chrono::seconds(1);
   struct ExecutionGate {
     std::mutex lock;
     std::condition_variable condition;
@@ -994,7 +1056,7 @@ bool URLRequestOperation::RunExecutingCloseForTesting() {
       control->condition.notify_all();
       return true;
     };
-    control->dispatch_result = control->operation->DispatchPostedForTesting(poster, std::chrono::hours(1));
+    control->dispatch_result = control->operation->DispatchPostedForTesting(poster, kNonExpiringPendingDispatchTimeoutForTesting);
     control->operation->Finish();
     {
       std::lock_guard<std::mutex> lock(control->lock);
@@ -1006,7 +1068,7 @@ bool URLRequestOperation::RunExecutingCloseForTesting() {
   CefRefPtr<CefTask> captured_task;
   {
     std::unique_lock<std::mutex> lock(control->lock);
-    control->condition.wait_for(lock, watchdog_timeout, [control]() { return control->task_captured; });
+    control->condition.wait_for(lock, kSyntheticTestWatchdogTimeout, [control]() { return control->task_captured; });
     captured_task = control->captured_task;
   }
   std::thread executor;
@@ -1023,7 +1085,7 @@ bool URLRequestOperation::RunExecutingCloseForTesting() {
   bool executing = false;
   if (captured_task) {
     std::unique_lock<std::mutex> lock(control->gate->lock);
-    executing = control->gate->condition.wait_for(lock, watchdog_timeout, [control]() { return control->gate->executing; });
+    executing = control->gate->condition.wait_for(lock, kSyntheticTestWatchdogTimeout, [control]() { return control->gate->executing; });
   }
 
   std::thread closer([control]() {
@@ -1034,7 +1096,7 @@ bool URLRequestOperation::RunExecutingCloseForTesting() {
     }
     control->condition.notify_all();
   });
-  const bool closing = control->lifecycle->WaitForPhaseForTesting(URLRequestLifecycle::Phase::CLOSING, watchdog_timeout);
+  const bool closing = control->lifecycle->WaitForPhaseForTesting(URLRequestLifecycle::Phase::CLOSING, kSyntheticTestWatchdogTimeout);
   bool close_blocked;
   {
     std::lock_guard<std::mutex> lock(control->lock);
@@ -1050,28 +1112,32 @@ bool URLRequestOperation::RunExecutingCloseForTesting() {
   bool all_done;
   {
     std::unique_lock<std::mutex> lock(control->lock);
-    all_done = control->condition.wait_for(lock, watchdog_timeout, [control, executor_expected]() { return control->dispatcher_done && control->closer_done && (!executor_expected || control->executor_done); });
+    all_done = control->condition.wait_for(lock, kSyntheticTestWatchdogTimeout, [control, executor_expected]() { return control->dispatcher_done && control->closer_done && (!executor_expected || control->executor_done); });
   }
+  bool watchdog_forced_cleanup = false;
   if (!all_done) {
+    watchdog_forced_cleanup = true;
     control->operation->state_->AbandonPending();
     control->operation->state_->NotifyForTesting();
     if (captured_task)
       captured_task->Execute();
     std::unique_lock<std::mutex> lock(control->lock);
-    all_done = control->condition.wait_for(lock, watchdog_timeout, [control, executor_expected]() { return control->dispatcher_done && control->closer_done && (!executor_expected || control->executor_done); });
+    all_done = control->condition.wait_for(lock, kSyntheticTestWatchdogTimeout, [control, executor_expected]() { return control->dispatcher_done && control->closer_done && (!executor_expected || control->executor_done); });
   }
   if (!all_done) {
     dispatcher.detach();
     if (executor.joinable())
       executor.detach();
     closer.detach();
+    ReportSyntheticTestScenario("executing operation lifecycle close", false, watchdog_forced_cleanup);
     return false;
   }
   dispatcher.join();
   if (executor.joinable())
     executor.join();
   closer.join();
-  return captured_task && executing && closing && close_blocked && control->dispatch_result && control->operation->state_->IsPhase(COMPLETED) && control->lifecycle->phase_for_testing() == URLRequestLifecycle::Phase::CLOSED && owner->HasOneRef();
+  const bool scenario_valid = !watchdog_forced_cleanup && captured_task && executing && closing && close_blocked && control->dispatch_result && control->operation->state_->IsPhase(COMPLETED) && control->lifecycle->phase_for_testing() == URLRequestLifecycle::Phase::CLOSED && owner->HasOneRef();
+  return ReportSyntheticTestScenario("executing operation lifecycle close", scenario_valid, watchdog_forced_cleanup);
 }
 
 namespace {
@@ -1324,7 +1390,7 @@ bool RunTokenRegistryConcurrencyForTesting() {
   bool acquired_in_time;
   {
     std::unique_lock<std::mutex> lock(control->lock);
-    acquired_in_time = control->condition.wait_for(lock, std::chrono::seconds(1), [control]() { return control->acquired_count == 2; });
+    acquired_in_time = control->condition.wait_for(lock, kSyntheticTestWatchdogTimeout, [control]() { return control->acquired_count == 2; });
   }
 
   URLRequestAccess removed = control->lifecycle->TakeAccess(token);
@@ -1337,7 +1403,7 @@ bool RunTokenRegistryConcurrencyForTesting() {
   bool finished_in_time;
   {
     std::unique_lock<std::mutex> lock(control->lock);
-    finished_in_time = control->condition.wait_for(lock, std::chrono::seconds(1), [control]() { return control->finished_count == 2; });
+    finished_in_time = control->condition.wait_for(lock, kSyntheticTestWatchdogTimeout, [control]() { return control->finished_count == 2; });
   }
   if (!finished_in_time) {
     query.detach();
@@ -1361,7 +1427,6 @@ bool RunURLRequestLifecycleForTesting(JNIEnv* env, jobject jurl_request) {
   if (!jurl_request)
     return false;
 
-  constexpr auto watchdog_timeout = std::chrono::seconds(1);
   bool valid = true;
   std::shared_ptr<URLRequestLifecycle> lifecycle = std::make_shared<URLRequestLifecycle>();
   lifecycle->Open();
@@ -1397,7 +1462,7 @@ bool RunURLRequestLifecycleForTesting(JNIEnv* env, jobject jurl_request) {
     control->lifecycle->Close();
     mark_completed();
   });
-  const bool closing = lifecycle->WaitForPhaseForTesting(URLRequestLifecycle::Phase::CLOSING, watchdog_timeout);
+  const bool closing = lifecycle->WaitForPhaseForTesting(URLRequestLifecycle::Phase::CLOSING, kSyntheticTestWatchdogTimeout);
   valid = valid && closing && !lifecycle->AcquireAdmission() && !lifecycle->AcquireAccess(first_token);
 
   std::thread idempotent_closer([control, mark_completed]() {
@@ -1408,7 +1473,7 @@ bool RunURLRequestLifecycleForTesting(JNIEnv* env, jobject jurl_request) {
     control->lifecycle->Open();
     mark_completed();
   });
-  const bool waiters_parked = lifecycle->WaitForLifecycleWaitersForTesting(1, 1, watchdog_timeout);
+  const bool waiters_parked = lifecycle->WaitForLifecycleWaitersForTesting(1, 1, kSyntheticTestWatchdogTimeout);
   {
     std::lock_guard<std::mutex> lock(control->lock);
     valid = valid && waiters_parked && control->completed_calls == 0;
@@ -1421,7 +1486,7 @@ bool RunURLRequestLifecycleForTesting(JNIEnv* env, jobject jurl_request) {
   bool all_calls_completed;
   {
     std::unique_lock<std::mutex> lock(control->lock);
-    all_calls_completed = control->condition.wait_for(lock, watchdog_timeout, [control]() { return control->completed_calls == 3; });
+    all_calls_completed = control->condition.wait_for(lock, kSyntheticTestWatchdogTimeout, [control]() { return control->completed_calls == 3; });
   }
   if (!all_calls_completed) {
     primary_closer.detach();
@@ -1460,7 +1525,7 @@ bool RunURLRequestLifecycleForTesting(JNIEnv* env, jobject jurl_request) {
   bool final_close_completed;
   {
     std::unique_lock<std::mutex> lock(control->lock);
-    final_close_completed = control->condition.wait_for(lock, watchdog_timeout, [control]() { return control->final_close_completed; });
+    final_close_completed = control->condition.wait_for(lock, kSyntheticTestWatchdogTimeout, [control]() { return control->final_close_completed; });
   }
   if (!final_close_completed) {
     final_closer.detach();

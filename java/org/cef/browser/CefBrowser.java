@@ -726,6 +726,22 @@ public interface CefBrowser {
     public CompletableFuture<Boolean> isAudioMuted();
 
     /**
+     * Returns whether the render process associated with this browser is currently unresponsive
+     * because it has not processed input events for at least 15 seconds.
+     *
+     * <p>The native query runs on the CEF UI thread. Code that drives CEF's external message pump
+     * must not block that pump while waiting for the returned future. This is a momentary snapshot;
+     * the renderer may become responsive or unresponsive after the future completes.
+     *
+     * @return a future containing the current renderer responsiveness state; the future completes
+     *         exceptionally if the browser implementation does not support this operation, the
+     *         native browser is unavailable, or the UI-thread query cannot be scheduled
+     */
+    public default CompletableFuture<Boolean> isRenderProcessUnresponsive() {
+        return unsupportedBrowserFuture("isRenderProcessUnresponsive");
+    }
+
+    /**
      * Returns whether the renderer is currently in browser fullscreen entered through the
      * JavaScript Fullscreen API. Browser fullscreen is distinct from fullscreen state of the
      * containing native window.

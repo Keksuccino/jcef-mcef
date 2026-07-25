@@ -3544,6 +3544,7 @@ enum class ZoomLevelQuery {
 enum class BrowserBooleanQuery {
   kAudioMuted,
   kHasDevTools,
+  kRenderProcessUnresponsive,
   kFullscreen,
 };
 
@@ -3674,6 +3675,9 @@ void queryBrowserBooleanState(CefRefPtr<CefBrowser> browser, BrowserBooleanQuery
       break;
     case BrowserBooleanQuery::kHasDevTools:
       value = host->HasDevTools();
+      break;
+    case BrowserBooleanQuery::kRenderProcessUnresponsive:
+      value = host->IsRenderProcessUnresponsive();
       break;
     case BrowserBooleanQuery::kFullscreen:
       value = host->IsFullscreen();
@@ -4848,6 +4852,10 @@ JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1SetAudioMuted(JNIEn
 
 JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1IsAudioMuted(JNIEnv* env, jobject jbrowser, jobject jintCallback) {
   startBrowserBooleanQuery(env, jbrowser, jintCallback, BrowserBooleanQuery::kAudioMuted);
+}
+
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1IsRenderProcessUnresponsive(JNIEnv* env, jobject jbrowser, jobject jintCallback) {
+  startBrowserBooleanQuery(env, jbrowser, jintCallback, BrowserBooleanQuery::kRenderProcessUnresponsive);
 }
 
 JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1IsFullscreen(JNIEnv* env, jobject jbrowser, jobject jintCallback) {

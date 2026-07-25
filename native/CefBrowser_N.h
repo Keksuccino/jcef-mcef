@@ -703,6 +703,14 @@ JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1IsAudioMuted
 
 /*
  * Class:     org_cef_browser_CefBrowser_N
+ * Method:    N_IsRenderProcessUnresponsive
+ * Signature: (Lorg/cef/browser/CefBrowser_N/IntCallback;)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1IsRenderProcessUnresponsive
+  (JNIEnv *, jobject, jobject);
+
+/*
+ * Class:     org_cef_browser_CefBrowser_N
  * Method:    N_IsFullscreen
  * Signature: (Lorg/cef/browser/CefBrowser_N/IntCallback;)V
  */

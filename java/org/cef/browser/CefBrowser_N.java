@@ -1354,6 +1354,11 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     }
 
     @Override
+    public CompletableFuture<Boolean> isRenderProcessUnresponsive() {
+        return executeBooleanQuery("render process responsiveness query", this::N_IsRenderProcessUnresponsive);
+    }
+
+    @Override
     public CompletableFuture<Boolean> isFullscreen() {
         return executeBooleanQuery("fullscreen query", this::N_IsFullscreen);
     }
@@ -1606,6 +1611,7 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     private final native void N_GetWindowlessFrameRate(IntCallback frameRateCallback);
     private final native void N_SetAudioMuted(boolean muted);
     private final native void N_IsAudioMuted(IntCallback callback);
+    private final native void N_IsRenderProcessUnresponsive(IntCallback callback);
     private final native void N_IsFullscreen(IntCallback callback);
     private final native void N_ExitFullscreen(boolean willCauseResize);
 }

@@ -24,6 +24,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
@@ -40,13 +41,14 @@ class CefTextSelectionChangedNativeTest {
     private static final String PAGE_READY_TITLE = "jcef-text-selection:page-ready";
     private static final String SELECTION_CLICK_READY_TITLE = "jcef-text-selection:selection-click-ready";
     private static final String COLLAPSE_CLICK_READY_TITLE = "jcef-text-selection:collapse-click-ready";
+    private static final String FOCUS_RELEASED_TITLE = "jcef-text-selection:focus-released";
     private static final String EXPECTED_TEXT = "\uD83D\uDE00\0\u00E9";
     private static final CefRange EXPECTED_RANGE = new CefRange(1, 5);
     private static final CefRange COLLAPSED_RANGE = new CefRange(5, 5);
     private static final String TEST_CONTENT =
             "<!doctype html><html><head><meta charset='utf-8'><style>html,body{margin:0;width:100%;height:100%}textarea{margin:24px;width:360px;height:60px;font:24px sans-serif}</style></head><body><textarea id='selection'></textarea><script>(()=>{const input=document.getElementById('selection');input.value=String.fromCharCode(65,0xD83D,0xDE00,0,0xE9,90);input.addEventListener('click',()=>input.dataset.collapse==='true'?input.setSelectionRange(5,5,'none'):input.setSelectionRange(1,5,'forward'));window.beginTextSelection=()=>{const awaitFocus=()=>{input.focus();if(document.hasFocus()&&document.activeElement===input){requestAnimationFrame(()=>requestAnimationFrame(()=>{document.title='"
-            + SELECTION_CLICK_READY_TITLE + "';}));return;}requestAnimationFrame(awaitFocus);};awaitFocus();};window.prepareTextSelectionCollapse=()=>{input.dataset.collapse='true';document.title='" + COLLAPSE_CLICK_READY_TITLE + "';};document.title='"
-            + PAGE_READY_TITLE + "';})();</script></body></html>";
+            + SELECTION_CLICK_READY_TITLE + "';}));return;}requestAnimationFrame(awaitFocus);};awaitFocus();};window.prepareTextSelectionCollapse=()=>{input.dataset.collapse='true';document.title='" + COLLAPSE_CLICK_READY_TITLE + "';};window.prepareTextSelectionBlur=()=>{const awaitBlur=()=>{if(!document.hasFocus()){document.title='"
+            + FOCUS_RELEASED_TITLE + "';return;}requestAnimationFrame(awaitBlur);};awaitBlur();};document.title='" + PAGE_READY_TITLE + "';})();</script></body></html>";
     private static final Method IS_ON_CEF_UI_THREAD = getCefUiThreadMethod();
 
     private record CallbackSnapshot(CefBrowser browser, String selectedText, CefRange selectedRange, boolean cefUiThread) {}
@@ -59,6 +61,7 @@ class CefTextSelectionChangedNativeTest {
         CompletableFuture<CallbackSnapshot> secondCollapse = new CompletableFuture<CallbackSnapshot>();
         CompletableFuture<Void> secondClosed = new CompletableFuture<Void>();
         AtomicReference<SelectionBrowser> secondBrowser = new AtomicReference<SelectionBrowser>();
+        AtomicReference<FocusTransfer> focusTransfer = new AtomicReference<FocusTransfer>();
         Supplier<TestFrame> frameFactory = () -> new TestFrame() {
             @Override
             protected void setupTest() {
@@ -69,6 +72,16 @@ class CefTextSelectionChangedNativeTest {
                         SelectionBrowser selectionBrowser = (SelectionBrowser) browser;
                         if (PAGE_READY_TITLE.equals(title)) {
                             selectionBrowser.markPageReady();
+                        } else if (FOCUS_RELEASED_TITLE.equals(title)) {
+                            FocusTransfer transfer = focusTransfer.get();
+                            if (transfer != null) {
+                                transfer.onRendererBlurred(selectionBrowser);
+                            } else {
+                                AssertionError failure = new AssertionError("Renderer acknowledged text-selection blur before the focus-transfer controller was installed");
+                                selectionBrowser.fail(failure);
+                                SelectionBrowser second = secondBrowser.get();
+                                if (second != null) second.fail(failure);
+                            }
                         } else if (SELECTION_CLICK_READY_TITLE.equals(title) || COLLAPSE_CLICK_READY_TITLE.equals(title)) {
                             selectionBrowser.clickInput();
                         }
@@ -80,8 +93,10 @@ class CefTextSelectionChangedNativeTest {
                 browser_ = new SelectionBrowser(client_, FIRST_URL, firstSelection, firstCollapse);
                 SelectionBrowser second = new SelectionBrowser(client_, SECOND_URL, secondSelection, secondCollapse);
                 SelectionBrowser first = (SelectionBrowser) browser_;
-                first.setAfterCollapse(() -> enqueueFocusTransfer(first, second));
                 secondBrowser.set(second);
+                FocusTransfer transfer = new FocusTransfer(first, second);
+                focusTransfer.set(transfer);
+                first.setAfterCollapse(transfer::begin);
                 first.requestSelectionWhenReady();
                 browser_.createImmediately();
                 second.createImmediately();
@@ -98,6 +113,7 @@ class CefTextSelectionChangedNativeTest {
             }
         };
         TestFrame frame = TestFrame.createOnEventDispatchThread(frameFactory);
+        Supplier<String> diagnostics = () -> selectionDiagnostics(frame, secondBrowser.get(), focusTransfer.get());
 
         CallbackSnapshot retainedFirstSelection = null;
         CallbackSnapshot retainedFirstCollapse = null;
@@ -105,10 +121,10 @@ class CefTextSelectionChangedNativeTest {
         CallbackSnapshot retainedSecondCollapse = null;
         Throwable failure = null;
         try {
-            retainedFirstSelection = await(firstSelection);
-            retainedFirstCollapse = await(firstCollapse);
-            retainedSecondSelection = await(secondSelection);
-            retainedSecondCollapse = await(secondCollapse);
+            retainedFirstSelection = await(firstSelection, "first selection", diagnostics);
+            retainedFirstCollapse = await(firstCollapse, "first collapsed selection", diagnostics);
+            retainedSecondSelection = await(secondSelection, "second selection", diagnostics);
+            retainedSecondCollapse = await(secondCollapse, "second collapsed selection", diagnostics);
         } catch (Throwable caught) {
             failure = caught;
         }
@@ -166,30 +182,9 @@ class CefTextSelectionChangedNativeTest {
         return current;
     }
 
-    private static void enqueueFocusTransfer(SelectionBrowser first, SelectionBrowser second) {
-        try {
-            // OnTextSelectionChanged is a native callback on CEF's UI thread. Defer both sides of
-            // the browser focus handoff until that callback has returned instead of reentering CEF
-            // from the first browser's collapsed-selection notification.
-            SwingUtilities.invokeLater(() -> transferFocus(first, second));
-        } catch (Throwable failure) {
-            failFocusTransfer(first, second, failure);
-        }
-    }
-
-    private static void transferFocus(SelectionBrowser first, SelectionBrowser second) {
-        try {
-            first.setFocus(false);
-            second.requestSelectionWhenReady();
-        } catch (Throwable failure) {
-            failFocusTransfer(first, second, failure);
-        }
-    }
-
-    private static void failFocusTransfer(SelectionBrowser first, SelectionBrowser second, Throwable failure) {
-        AssertionError handoffFailure = new AssertionError("Unable to transfer OSR focus between text-selection browsers", failure);
-        first.fail(handoffFailure);
-        second.fail(handoffFailure);
+    private static String selectionDiagnostics(TestFrame frame, SelectionBrowser second, FocusTransfer transfer) {
+        SelectionBrowser first = frame.browser_ instanceof SelectionBrowser ? (SelectionBrowser) frame.browser_ : null;
+        return "focusTransfer=" + (transfer == null ? "<unavailable>" : transfer.diagnostics()) + ", first=" + (first == null ? "<unavailable>" : first.diagnostics()) + ", second=" + (second == null ? "<unavailable>" : second.diagnostics());
     }
 
     private static void rethrow(Throwable failure) throws Exception {
@@ -200,6 +195,14 @@ class CefTextSelectionChangedNativeTest {
 
     private static <T> T await(CompletableFuture<T> future) throws Exception {
         return future.get(FUTURE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+    }
+
+    private static <T> T await(CompletableFuture<T> future, String phase, Supplier<String> diagnostics) throws Exception {
+        try {
+            return await(future);
+        } catch (TimeoutException timeout) {
+            throw new AssertionError("Timed out waiting for " + phase + "; " + diagnostics.get(), timeout);
+        }
     }
 
     private static void execute(CefBrowser browser, String script) {
@@ -235,7 +238,78 @@ class CefTextSelectionChangedNativeTest {
         }
     }
 
+    private static final class FocusTransfer {
+        private final SelectionBrowser first_;
+        private final SelectionBrowser second_;
+        private final AtomicBoolean blurQueued_ = new AtomicBoolean();
+        private final AtomicBoolean blurDispatched_ = new AtomicBoolean();
+        private final AtomicBoolean rendererBlurConfirmed_ = new AtomicBoolean();
+        private final AtomicBoolean secondSelectionQueued_ = new AtomicBoolean();
+        private final AtomicBoolean secondSelectionDispatched_ = new AtomicBoolean();
+
+        FocusTransfer(SelectionBrowser first, SelectionBrowser second) {
+            first_ = first;
+            second_ = second;
+        }
+
+        void begin() {
+            if (!blurQueued_.compareAndSet(false, true)) return;
+            try {
+                // OnTextSelectionChanged is a native callback on CEF's UI thread. Return from it
+                // before requesting the first browser's asynchronous renderer focus release.
+                SwingUtilities.invokeLater(this::dispatchBlur);
+            } catch (Throwable failure) {
+                fail(failure);
+            }
+        }
+
+        void onRendererBlurred(SelectionBrowser browser) {
+            if (browser != first_) {
+                fail(new AssertionError("Text-selection focus release was reported by the wrong browser"));
+                return;
+            }
+            if (!rendererBlurConfirmed_.compareAndSet(false, true) || !secondSelectionQueued_.compareAndSet(false, true)) return;
+            try {
+                // The title proves Blink consumed the first browser's focus loss. Defer once more
+                // so the second browser cannot reenter CEF from this title callback.
+                SwingUtilities.invokeLater(this::dispatchSecondSelection);
+            } catch (Throwable failure) {
+                fail(failure);
+            }
+        }
+
+        String diagnostics() {
+            return "{blurQueued=" + blurQueued_.get() + ", blurDispatched=" + blurDispatched_.get() + ", rendererBlurConfirmed=" + rendererBlurConfirmed_.get() + ", secondSelectionQueued=" + secondSelectionQueued_.get() + ", secondSelectionDispatched=" + secondSelectionDispatched_.get() + "}";
+        }
+
+        private void dispatchBlur() {
+            try {
+                first_.setFocus(false);
+                blurDispatched_.set(true);
+                execute(first_, "window.prepareTextSelectionBlur();");
+            } catch (Throwable failure) {
+                fail(failure);
+            }
+        }
+
+        private void dispatchSecondSelection() {
+            try {
+                secondSelectionDispatched_.set(true);
+                second_.requestSelectionWhenReady();
+            } catch (Throwable failure) {
+                fail(failure);
+            }
+        }
+
+        private void fail(Throwable failure) {
+            AssertionError handoffFailure = new AssertionError("Unable to transfer OSR focus between text-selection browsers", failure);
+            first_.fail(handoffFailure);
+            second_.fail(handoffFailure);
+        }
+    }
+
     private static final class SelectionBrowser extends CefBrowserOsr {
+        private final String url_;
         private final CompletableFuture<CallbackSnapshot> selection_;
         private final CompletableFuture<CallbackSnapshot> collapse_;
         private final AtomicBoolean pageReady_ = new AtomicBoolean();
@@ -246,6 +320,7 @@ class CefTextSelectionChangedNativeTest {
 
         SelectionBrowser(CefClient client, String url, CompletableFuture<CallbackSnapshot> selection, CompletableFuture<CallbackSnapshot> collapse) {
             super(client, url, false, null);
+            url_ = url;
             selection_ = selection;
             collapse_ = collapse;
             updateViewGeometry(0, 0, VIEW_WIDTH, VIEW_HEIGHT, new Point(0, 0));
@@ -288,6 +363,10 @@ class CefTextSelectionChangedNativeTest {
         void fail(Throwable failure) {
             selection_.completeExceptionally(failure);
             collapse_.completeExceptionally(failure);
+        }
+
+        String diagnostics() {
+            return "{url=" + url_ + ", pageReady=" + pageReady_.get() + ", startRequested=" + startRequested_.get() + ", selectionRequested=" + selectionRequested_.get() + ", collapseRequested=" + collapseRequested_.get() + ", selectionDone=" + selection_.isDone() + ", collapseDone=" + collapse_.isDone() + "}";
         }
 
         @Override

@@ -28,10 +28,14 @@ import java.awt.Point;
 import java.awt.Rectangle;
 import java.awt.Window;
 import java.awt.event.WindowEvent;
+import java.time.Duration;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Vector;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import javax.swing.SwingUtilities;
 
@@ -42,14 +46,16 @@ import javax.swing.SwingUtilities;
  * CefBrowser instance, please use CefBrowserFactory.
  */
 public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowser {
-    // javac exports these values to the generated JNI header, where AudioMuteQueryResult consumes
-    // them directly. -1 distinguishes query failure from the two valid boolean results.
-    private static final int AUDIO_MUTE_QUERY_FAILED = -1;
-    private static final int AUDIO_MUTE_QUERY_UNMUTED = 0;
-    private static final int AUDIO_MUTE_QUERY_MUTED = 1;
+    // javac exports these values to the generated JNI header, where native UI-thread queries
+    // consume them directly. -1 distinguishes failure from the two valid boolean results.
+    private static final int BOOLEAN_QUERY_FAILED = -1;
+    private static final int BOOLEAN_QUERY_FALSE = 0;
+    private static final int BOOLEAN_QUERY_TRUE = 1;
+    private static final Duration LEGACY_ZOOM_QUERY_TIMEOUT = Duration.ofSeconds(1);
 
     private final CefBrowserCreationController creationController_ =
             new CefBrowserCreationController();
+    private final CefBrowserQueryController queryController_ = new CefBrowserQueryController();
     private final CefAwtKeyRepeatTracker awtKeyRepeatTracker_ = new CefAwtKeyRepeatTracker();
     private final CefClient client_;
     private final String url_;
@@ -230,6 +236,7 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
             devToolsClient = devToolsClient_;
             devToolsClient_ = null;
         }
+        queryController_.close();
         clearAwtKeyRepeatState();
         // Request contexts are caller-owned and may be shared by multiple browsers. Closing one
         // browser only releases CEF's native browser reference; it must not invalidate the Java
@@ -675,11 +682,14 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
 
     @Override
     public void close(boolean force) {
-        if (isClosing_ || isClosed_) {
-            clearAwtKeyRepeatState();
-            return;
+        synchronized (this) {
+            if (isClosing_ || isClosed_) {
+                clearAwtKeyRepeatState();
+                return;
+            }
+            if (force) isClosing_ = true;
         }
-        if (force) isClosing_ = true;
+        if (force) queryController_.close();
         clearAwtKeyRepeatState();
 
         closeNative(force);
@@ -698,6 +708,7 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
             closeAllowed_ = true;
             isClosing_ = true;
         }
+        queryController_.close();
         clearAwtKeyRepeatState();
         closeNative(true);
     }
@@ -760,21 +771,61 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     }
 
     @Override
+    public CompletableFuture<Boolean> canZoom(CefZoomCommand command) {
+        Objects.requireNonNull(command, "command");
+        return executeBooleanQuery("zoom capability query", callback -> N_CanZoom(command.getValue(), callback));
+    }
+
+    @Override
+    public void zoom(CefZoomCommand command) {
+        Objects.requireNonNull(command, "command");
+        synchronized (this) {
+            if (!isNativeBrowserAvailable()) return;
+            try {
+                N_Zoom(command.getValue());
+            } catch (UnsatisfiedLinkError ule) {
+                ule.printStackTrace();
+            }
+        }
+    }
+
+    @Override
+    public CompletableFuture<Double> getDefaultZoomLevel() {
+        return executeDoubleQuery("default zoom level query", this::N_GetDefaultZoomLevel);
+    }
+
+    @Override
     public double getZoomLevel() {
+        CompletableFuture<Double> zoomLevel = getZoomLevelAsync();
         try {
-            return N_GetZoomLevel();
-        } catch (UnsatisfiedLinkError ule) {
-            ule.printStackTrace();
+            return zoomLevel.get(LEGACY_ZOOM_QUERY_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS).doubleValue();
+        } catch (InterruptedException exception) {
+            zoomLevel.cancel(false);
+            Thread.currentThread().interrupt();
+        } catch (TimeoutException exception) {
+            // The legacy contract returns 0.0 after a bounded wait. Canceling also releases the
+            // query controller's ownership if the CEF UI task has not won completion already.
+            zoomLevel.cancel(false);
+        } catch (ExecutionException exception) {
+            // Preserve the legacy 0.0 failure sentinel for an unsuccessful asynchronous query.
         }
         return 0.0;
     }
 
     @Override
+    public CompletableFuture<Double> getZoomLevelAsync() {
+        return executeDoubleQuery("current zoom level query", this::N_GetZoomLevelAsync);
+    }
+
+    @Override
     public void setZoomLevel(double zoomLevel) {
-        try {
-            N_SetZoomLevel(zoomLevel);
-        } catch (UnsatisfiedLinkError ule) {
-            ule.printStackTrace();
+        synchronized (this) {
+            if (!isNativeBrowserAvailable()) return;
+            try {
+                N_SetZoomLevel(zoomLevel);
+            } catch (UnsatisfiedLinkError ule) {
+                ule.printStackTrace();
+            }
         }
     }
 
@@ -1187,28 +1238,134 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
 
     @Override
     public CompletableFuture<Boolean> isAudioMuted() {
-        CompletableFuture<Boolean> future = new CompletableFuture<Boolean>();
-        try {
-            N_IsAudioMuted(result -> {
-                if (result == AUDIO_MUTE_QUERY_UNMUTED) {
-                    future.complete(Boolean.FALSE);
-                } else if (result == AUDIO_MUTE_QUERY_MUTED) {
-                    future.complete(Boolean.TRUE);
-                } else if (result == AUDIO_MUTE_QUERY_FAILED) {
-                    future.completeExceptionally(new IllegalStateException("Failed to query browser audio mute state"));
-                } else {
-                    future.completeExceptionally(new IllegalStateException("Unexpected browser audio mute query result: " + result));
-                }
-            });
-        } catch (UnsatisfiedLinkError ule) {
-            ule.printStackTrace();
-            future.completeExceptionally(ule);
+        return executeBooleanQuery("audio mute query", this::N_IsAudioMuted);
+    }
+
+    private CompletableFuture<Boolean> executeBooleanQuery(String operation, IntQueryStarter starter) {
+        QueryStarter<Boolean> queryStarter = completion -> {
+            IntCallback callback = result -> completeBooleanQuery(operation, completion, result);
+            starter.start(callback);
+        };
+        return executeQuery(operation, queryStarter);
+    }
+
+    private CompletableFuture<Double> executeDoubleQuery(String operation, DoubleQueryStarter starter) {
+        QueryStarter<Double> queryStarter = completion -> {
+            DoubleCallback callback = (success, value) -> completeDoubleQuery(operation, completion, success, value);
+            starter.start(callback);
+        };
+        return executeQuery(operation, queryStarter);
+    }
+
+    private static void completeBooleanQuery(String operation, QueryCompletion<Boolean> completion, int result) {
+        if (result == BOOLEAN_QUERY_FALSE) {
+            completion.complete(Boolean.FALSE);
+        } else if (result == BOOLEAN_QUERY_TRUE) {
+            completion.complete(Boolean.TRUE);
+        } else if (result == BOOLEAN_QUERY_FAILED) {
+            completion.fail(new IllegalStateException("Failed to execute browser " + operation));
+        } else {
+            completion.fail(new IllegalStateException("Unexpected browser " + operation + " result: " + result));
         }
-        return future;
+    }
+
+    private static void completeDoubleQuery(String operation, QueryCompletion<Double> completion, boolean success, double value) {
+        if (success) {
+            completion.complete(Double.valueOf(value));
+        } else {
+            completion.fail(new IllegalStateException("Failed to execute browser " + operation));
+        }
+    }
+
+    private <T> CompletableFuture<T> executeQuery(String operation, QueryStarter<T> starter) {
+        CefBrowserQueryController.Query<T> query;
+        QueryCompletion<T> completion;
+        synchronized (this) {
+            query = queryController_.begin(operation, isNativeBrowserAvailable());
+            if (!queryController_.isPending(query)) return query.future();
+            completion = new QueryCompletion<T>(queryController_, query);
+            try {
+                // LifeSpanHandler clears the JNI browser handle only after onBeforeClose returns.
+                // Holding this lifecycle monitor until JNI acquires its CefRef prevents native
+                // dispatch from dereferencing a handle that close has already released.
+                starter.start(completion);
+            } catch (UnsatisfiedLinkError ule) {
+                ule.printStackTrace();
+                completion.fail(ule);
+            } catch (RuntimeException | Error exception) {
+                completion.fail(exception);
+            }
+        }
+        // A CEF UI-thread query may invoke its callback during starter.start. Publish that result
+        // only after releasing the lifecycle monitor so user continuations cannot reenter close
+        // while admission is locked.
+        completion.finishAdmission();
+        return query.future();
+    }
+
+    private boolean isNativeBrowserAvailable() {
+        return !isClosing_ && !isClosed_ && creationController_.isCreated() && getNativeRef("CefBrowser") != 0;
     }
 
     private interface IntCallback {
         void onComplete(int value);
+    }
+
+    private interface DoubleCallback {
+        void onComplete(boolean success, double value);
+    }
+
+    private interface IntQueryStarter {
+        void start(IntCallback callback);
+    }
+
+    private interface DoubleQueryStarter {
+        void start(DoubleCallback callback);
+    }
+
+    private interface QueryStarter<T> {
+        void start(QueryCompletion<T> completion);
+    }
+
+    private static final class QueryCompletion<T> {
+        private final CefBrowserQueryController controller_;
+        private final CefBrowserQueryController.Query<T> query_;
+        private boolean admitting_ = true;
+        private Runnable deferredTerminalAction_;
+
+        private QueryCompletion(CefBrowserQueryController controller, CefBrowserQueryController.Query<T> query) {
+            controller_ = controller;
+            query_ = query;
+        }
+
+        private void complete(T value) {
+            acceptTerminalAction(controller_.prepareCompletion(query_, value));
+        }
+
+        private void fail(Throwable failure) {
+            acceptTerminalAction(controller_.prepareFailure(query_, failure));
+        }
+
+        private void finishAdmission() {
+            Runnable terminalAction;
+            synchronized (this) {
+                admitting_ = false;
+                terminalAction = deferredTerminalAction_;
+                deferredTerminalAction_ = null;
+            }
+            if (terminalAction != null) terminalAction.run();
+        }
+
+        private void acceptTerminalAction(Runnable terminalAction) {
+            if (terminalAction == null) return;
+            synchronized (this) {
+                if (admitting_) {
+                    deferredTerminalAction_ = terminalAction;
+                    return;
+                }
+            }
+            terminalAction.run();
+        }
     }
 
     private static native Map<String, Object> N_ConvertBrowserSettingsForTesting(CefBrowserSettings settings, boolean osr, boolean transparent);
@@ -1254,7 +1411,12 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     private final native void N_SetFocus(boolean enable);
     private final native void N_SetWindowVisibility(boolean visible);
     private final native void N_NotifyScreenInfoChanged();
+    private final native void N_CanZoom(int command, IntCallback callback);
+    private final native void N_Zoom(int command);
+    private final native void N_GetDefaultZoomLevel(DoubleCallback callback);
+    // Retain this exact ()D JNI descriptor for compatibility with older CefBrowser_N bytecode.
     private final native double N_GetZoomLevel();
+    private final native void N_GetZoomLevelAsync(DoubleCallback callback);
     private final native void N_SetZoomLevel(double zoomLevel);
     private final native void N_RunFileDialog(FileDialogMode mode, String title,
             String defaultFilePath, Vector<String> acceptFilters, int selectedAcceptFilter,

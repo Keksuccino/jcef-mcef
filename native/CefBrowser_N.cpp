@@ -22,6 +22,7 @@
 #include "browser_settings.h"
 #include "client_handler.h"
 #include "devtools_message_observer.h"
+#include "double_callback.h"
 #include "int_callback.h"
 #include "jni_util.h"
 #include "key_event_platform_util.h"
@@ -63,6 +64,9 @@ namespace {
 
 static_assert(PET_VIEW == 0, "CEF API 15100 PET_VIEW value changed");
 static_assert(PET_POPUP == 1, "CEF API 15100 PET_POPUP value changed");
+static_assert(CEF_ZOOM_COMMAND_OUT == 0, "CEF API 15100 CEF_ZOOM_COMMAND_OUT value changed");
+static_assert(CEF_ZOOM_COMMAND_RESET == 1, "CEF API 15100 CEF_ZOOM_COMMAND_RESET value changed");
+static_assert(CEF_ZOOM_COMMAND_IN == 2, "CEF API 15100 CEF_ZOOM_COMMAND_IN value changed");
 
 bool GetPaintElementType(JNIEnv* env, jint value, CefBrowserHost::PaintElementType* type) {
   switch (value) {
@@ -76,6 +80,25 @@ bool GetPaintElementType(JNIEnv* env, jint value, CefBrowserHost::PaintElementTy
       ScopedJNIClass exception_class(env, "java/lang/IllegalArgumentException");
       if (exception_class)
         env->ThrowNew(exception_class, "Unknown CEF paint element type");
+      return false;
+  }
+}
+
+bool GetZoomCommand(JNIEnv* env, jint value, cef_zoom_command_t* command) {
+  switch (value) {
+    case CEF_ZOOM_COMMAND_OUT:
+      *command = CEF_ZOOM_COMMAND_OUT;
+      return true;
+    case CEF_ZOOM_COMMAND_RESET:
+      *command = CEF_ZOOM_COMMAND_RESET;
+      return true;
+    case CEF_ZOOM_COMMAND_IN:
+      *command = CEF_ZOOM_COMMAND_IN;
+      return true;
+    default:
+      ScopedJNIClass exception_class(env, "java/lang/IllegalArgumentException");
+      if (exception_class)
+        env->ThrowNew(exception_class, "Unknown CEF zoom command");
       return false;
   }
 }
@@ -3385,18 +3408,125 @@ class ZoomLevelResult {
   double value_ = 0.0;
 };
 
-void getZoomLevel(CefRefPtr<CefBrowserHost> host,
-                  std::shared_ptr<ZoomLevelResult> result) {
-  result->Complete(host->GetZoomLevel());
+void getZoomLevel(CefRefPtr<CefBrowser> browser, std::shared_ptr<ZoomLevelResult> result) {
+  REQUIRE_UI_THREAD();
+  if (!browser.get() || !browser->IsValid()) {
+    result->Complete(0.0);
+    return;
+  }
+
+  CefRefPtr<CefBrowserHost> host = browser->GetHost();
+  result->Complete(host.get() ? host->GetZoomLevel() : 0.0);
 }
 
 // Use the constants generated from CefBrowser_N.java so query failure remains
-// distinguishable from a valid unmuted result without duplicating JNI values.
-enum AudioMuteQueryResult {
-  kAudioMuteQueryFailed = org_cef_browser_CefBrowser_N_AUDIO_MUTE_QUERY_FAILED,
-  kAudioMuteQueryUnmuted = org_cef_browser_CefBrowser_N_AUDIO_MUTE_QUERY_UNMUTED,
-  kAudioMuteQueryMuted = org_cef_browser_CefBrowser_N_AUDIO_MUTE_QUERY_MUTED,
+// distinguishable from a valid false result without duplicating JNI values.
+enum BooleanQueryResult {
+  kBooleanQueryFailed = org_cef_browser_CefBrowser_N_BOOLEAN_QUERY_FAILED,
+  kBooleanQueryFalse = org_cef_browser_CefBrowser_N_BOOLEAN_QUERY_FALSE,
+  kBooleanQueryTrue = org_cef_browser_CefBrowser_N_BOOLEAN_QUERY_TRUE,
 };
+
+enum class ZoomLevelQuery {
+  kDefault,
+  kCurrent,
+};
+
+// LifeSpanHandler clears the raw N_CefHandle immediately after Java onBeforeClose returns. Older
+// CefBrowser_N bytecode can call retained JNI entries without the Java admission gate, so every
+// affected native entry must take the same Java lifecycle monitor while checking state and
+// converting that raw pointer into an owning CefRefPtr. Never retain this monitor across a CEF UI
+// task post or wait because onBeforeClose also needs it on the UI thread.
+class ScopedBrowserLifecycleMonitor {
+ public:
+  ScopedBrowserLifecycleMonitor(JNIEnv* env, jobject browser) : env_(env), browser_(browser), entered_(env && browser && env->MonitorEnter(browser) == JNI_OK) {}
+
+  ScopedBrowserLifecycleMonitor(const ScopedBrowserLifecycleMonitor&) = delete;
+  ScopedBrowserLifecycleMonitor& operator=(const ScopedBrowserLifecycleMonitor&) = delete;
+
+  ~ScopedBrowserLifecycleMonitor() {
+    if (entered_)
+      env_->MonitorExit(browser_);
+  }
+
+  bool entered() const { return entered_; }
+
+ private:
+  JNIEnv* const env_;
+  jobject const browser_;
+  const bool entered_;
+};
+
+CefRefPtr<CefBrowser> GetLifecycleSafeJNIBrowser(JNIEnv* env, jobject jbrowser) {
+  CefRefPtr<CefBrowser> browser;
+  {
+    ScopedBrowserLifecycleMonitor monitor(env, jbrowser);
+    if (!monitor.entered())
+      return nullptr;
+
+    ScopedJNIClass cls(env, env->GetObjectClass(jbrowser));
+    int closing = 0;
+    int closed = 0;
+    if (!cls || !GetJNIFieldBoolean(env, cls, jbrowser, "isClosing_", &closing) || !GetJNIFieldBoolean(env, cls, jbrowser, "isClosed_", &closed) || closing || closed)
+      return nullptr;
+
+    browser = GetJNIBrowser(env, jbrowser);
+  }
+  return env->ExceptionCheck() ? nullptr : browser;
+}
+
+// CEF zoom queries are UI-thread-only. Every posted task retains the browser
+// instead of only the host so it can recheck validity after OnBeforeClose.
+void queryCanZoom(CefRefPtr<CefBrowser> browser, cef_zoom_command_t command, CefRefPtr<IntCallback> callback) {
+  REQUIRE_UI_THREAD();
+  if (!browser.get() || !browser->IsValid()) {
+    callback->onComplete(kBooleanQueryFailed);
+    return;
+  }
+
+  CefRefPtr<CefBrowserHost> host = browser->GetHost();
+  if (!host.get()) {
+    callback->onComplete(kBooleanQueryFailed);
+    return;
+  }
+
+  callback->onComplete(host->CanZoom(command) ? kBooleanQueryTrue : kBooleanQueryFalse);
+}
+
+void queryZoomLevel(CefRefPtr<CefBrowser> browser, ZoomLevelQuery query, CefRefPtr<DoubleCallback> callback) {
+  REQUIRE_UI_THREAD();
+  if (!browser.get() || !browser->IsValid()) {
+    callback->onComplete(false, 0.0);
+    return;
+  }
+
+  CefRefPtr<CefBrowserHost> host = browser->GetHost();
+  if (!host.get()) {
+    callback->onComplete(false, 0.0);
+    return;
+  }
+
+  const double value = query == ZoomLevelQuery::kDefault ? host->GetDefaultZoomLevel() : host->GetZoomLevel();
+  callback->onComplete(true, value);
+}
+
+void startZoomLevelQuery(JNIEnv* env, jobject obj, jobject jdoubleCallback, ZoomLevelQuery query) {
+  CefRefPtr<DoubleCallback> callback = new DoubleCallback(env, jdoubleCallback);
+  CefRefPtr<CefBrowser> browser = GetLifecycleSafeJNIBrowser(env, obj);
+  if (!browser.get() || !browser->IsValid()) {
+    if (!env->ExceptionCheck())
+      callback->onComplete(false, 0.0);
+    return;
+  }
+
+  if (CefCurrentlyOn(TID_UI)) {
+    queryZoomLevel(browser, query, callback);
+    return;
+  }
+
+  if (!CefPostTask(TID_UI, base::BindOnce(queryZoomLevel, browser, query, callback)))
+    callback->onComplete(false, 0.0);
+}
 
 // CefBrowserHost::IsAudioMuted is UI-thread-only. Keep the browser and Java
 // callback alive across the posted task, then recheck validity because
@@ -3404,17 +3534,17 @@ enum AudioMuteQueryResult {
 void queryAudioMuted(CefRefPtr<CefBrowser> browser, CefRefPtr<IntCallback> callback) {
   REQUIRE_UI_THREAD();
   if (!browser.get() || !browser->IsValid()) {
-    callback->onComplete(kAudioMuteQueryFailed);
+    callback->onComplete(kBooleanQueryFailed);
     return;
   }
 
   CefRefPtr<CefBrowserHost> host = browser->GetHost();
   if (!host.get()) {
-    callback->onComplete(kAudioMuteQueryFailed);
+    callback->onComplete(kBooleanQueryFailed);
     return;
   }
 
-  callback->onComplete(host->IsAudioMuted() ? kAudioMuteQueryMuted : kAudioMuteQueryUnmuted);
+  callback->onComplete(host->IsAudioMuted() ? kBooleanQueryTrue : kBooleanQueryFalse);
 }
 
 void executeDevToolsMethod(CefRefPtr<CefBrowserHost> host,
@@ -3992,17 +4122,60 @@ JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1NotifyScreenInfoCha
   browser->GetHost()->NotifyScreenInfoChanged();
 }
 
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1CanZoom(JNIEnv* env, jobject obj, jint commandValue, jobject jintCallback) {
+  CefRefPtr<IntCallback> callback = new IntCallback(env, jintCallback);
+  cef_zoom_command_t command;
+  if (!GetZoomCommand(env, commandValue, &command))
+    return;
+
+  CefRefPtr<CefBrowser> browser = GetLifecycleSafeJNIBrowser(env, obj);
+  if (!browser.get() || !browser->IsValid()) {
+    if (!env->ExceptionCheck())
+      callback->onComplete(kBooleanQueryFailed);
+    return;
+  }
+
+  if (CefCurrentlyOn(TID_UI)) {
+    queryCanZoom(browser, command, callback);
+    return;
+  }
+
+  if (!CefPostTask(TID_UI, base::BindOnce(queryCanZoom, browser, command, callback)))
+    callback->onComplete(kBooleanQueryFailed);
+}
+
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1Zoom(JNIEnv* env, jobject obj, jint commandValue) {
+  cef_zoom_command_t command;
+  if (!GetZoomCommand(env, commandValue, &command))
+    return;
+
+  CefRefPtr<CefBrowser> browser = GetLifecycleSafeJNIBrowser(env, obj);
+  if (!browser.get() || !browser->IsValid())
+    return;
+  CefRefPtr<CefBrowserHost> host = browser->GetHost();
+  if (host.get())
+    host->Zoom(command);
+}
+
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1GetDefaultZoomLevel(JNIEnv* env, jobject obj, jobject jdoubleCallback) {
+  startZoomLevelQuery(env, obj, jdoubleCallback, ZoomLevelQuery::kDefault);
+}
+
 JNIEXPORT jdouble JNICALL
 Java_org_cef_browser_CefBrowser_1N_N_1GetZoomLevel(JNIEnv* env, jobject obj) {
-  CefRefPtr<CefBrowser> browser = JNI_GET_BROWSER_OR_RETURN(env, obj, 0.0);
+  CefRefPtr<CefBrowser> browser = GetLifecycleSafeJNIBrowser(env, obj);
+  if (!browser.get() || !browser->IsValid())
+    return 0.0;
   CefRefPtr<CefBrowserHost> host = browser->GetHost();
+  if (!host.get())
+    return 0.0;
   double result = 0.0;
   if (CefCurrentlyOn(TID_UI))
     result = host->GetZoomLevel();
   else {
     std::shared_ptr<ZoomLevelResult> asyncResult =
         std::make_shared<ZoomLevelResult>();
-    if (!CefPostTask(TID_UI, base::BindOnce(getZoomLevel, host, asyncResult)) ||
+    if (!CefPostTask(TID_UI, base::BindOnce(getZoomLevel, browser, asyncResult)) ||
         !asyncResult->Wait(&result)) {
       LOG(WARNING) << "Failed or timed out retrieving browser zoom level";
     }
@@ -4010,12 +4183,20 @@ Java_org_cef_browser_CefBrowser_1N_N_1GetZoomLevel(JNIEnv* env, jobject obj) {
   return result;
 }
 
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1GetZoomLevelAsync(JNIEnv* env, jobject obj, jobject jdoubleCallback) {
+  startZoomLevelQuery(env, obj, jdoubleCallback, ZoomLevelQuery::kCurrent);
+}
+
 JNIEXPORT void JNICALL
 Java_org_cef_browser_CefBrowser_1N_N_1SetZoomLevel(JNIEnv* env,
                                                    jobject obj,
                                                    jdouble zoom) {
-  CefRefPtr<CefBrowser> browser = JNI_GET_BROWSER_OR_RETURN(env, obj);
-  browser->GetHost()->SetZoomLevel(zoom);
+  CefRefPtr<CefBrowser> browser = GetLifecycleSafeJNIBrowser(env, obj);
+  if (!browser.get() || !browser->IsValid())
+    return;
+  CefRefPtr<CefBrowserHost> host = browser->GetHost();
+  if (host.get())
+    host->SetZoomLevel(zoom);
 }
 
 JNIEXPORT void JNICALL
@@ -4400,7 +4581,7 @@ Java_org_cef_browser_CefBrowser_1N_N_1GetWindowlessFrameRate(
 }
 
 JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1SetAudioMuted(JNIEnv* env, jobject jbrowser, jboolean muted) {
-  CefRefPtr<CefBrowser> browser = GetJNIBrowser(env, jbrowser);
+  CefRefPtr<CefBrowser> browser = GetLifecycleSafeJNIBrowser(env, jbrowser);
   if (!browser.get() || !browser->IsValid())
     return;
 
@@ -4411,9 +4592,10 @@ JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1SetAudioMuted(JNIEn
 
 JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1IsAudioMuted(JNIEnv* env, jobject jbrowser, jobject jintCallback) {
   CefRefPtr<IntCallback> callback = new IntCallback(env, jintCallback);
-  CefRefPtr<CefBrowser> browser = GetJNIBrowser(env, jbrowser);
+  CefRefPtr<CefBrowser> browser = GetLifecycleSafeJNIBrowser(env, jbrowser);
   if (!browser.get() || !browser->IsValid()) {
-    callback->onComplete(kAudioMuteQueryFailed);
+    if (!env->ExceptionCheck())
+      callback->onComplete(kBooleanQueryFailed);
     return;
   }
 
@@ -4423,5 +4605,5 @@ JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1IsAudioMuted(JNIEnv
   }
 
   if (!CefPostTask(TID_UI, base::BindOnce(queryAudioMuted, browser, callback)))
-    callback->onComplete(kAudioMuteQueryFailed);
+    callback->onComplete(kBooleanQueryFailed);
 }

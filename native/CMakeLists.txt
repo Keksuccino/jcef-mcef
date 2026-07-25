@@ -114,6 +114,8 @@ set(JCEF_SRCS
   find_handler.h
   focus_handler.cpp
   focus_handler.h
+  double_callback.cpp
+  double_callback.h
   int_callback.cpp
   int_callback.h
   jcef_version.h

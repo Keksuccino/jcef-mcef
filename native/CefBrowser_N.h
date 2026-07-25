@@ -7,12 +7,12 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-#undef org_cef_browser_CefBrowser_N_AUDIO_MUTE_QUERY_FAILED
-#define org_cef_browser_CefBrowser_N_AUDIO_MUTE_QUERY_FAILED -1L
-#undef org_cef_browser_CefBrowser_N_AUDIO_MUTE_QUERY_UNMUTED
-#define org_cef_browser_CefBrowser_N_AUDIO_MUTE_QUERY_UNMUTED 0L
-#undef org_cef_browser_CefBrowser_N_AUDIO_MUTE_QUERY_MUTED
-#define org_cef_browser_CefBrowser_N_AUDIO_MUTE_QUERY_MUTED 1L
+#undef org_cef_browser_CefBrowser_N_BOOLEAN_QUERY_FAILED
+#define org_cef_browser_CefBrowser_N_BOOLEAN_QUERY_FAILED -1L
+#undef org_cef_browser_CefBrowser_N_BOOLEAN_QUERY_FALSE
+#define org_cef_browser_CefBrowser_N_BOOLEAN_QUERY_FALSE 0L
+#undef org_cef_browser_CefBrowser_N_BOOLEAN_QUERY_TRUE
+#define org_cef_browser_CefBrowser_N_BOOLEAN_QUERY_TRUE 1L
 /*
  * Class:     org_cef_browser_CefBrowser_N
  * Method:    N_ConvertBrowserSettingsForTesting
@@ -319,11 +319,43 @@ JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1NotifyScreenInfoCha
 
 /*
  * Class:     org_cef_browser_CefBrowser_N
+ * Method:    N_CanZoom
+ * Signature: (ILorg/cef/browser/CefBrowser_N/IntCallback;)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1CanZoom
+  (JNIEnv *, jobject, jint, jobject);
+
+/*
+ * Class:     org_cef_browser_CefBrowser_N
+ * Method:    N_Zoom
+ * Signature: (I)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1Zoom
+  (JNIEnv *, jobject, jint);
+
+/*
+ * Class:     org_cef_browser_CefBrowser_N
+ * Method:    N_GetDefaultZoomLevel
+ * Signature: (Lorg/cef/browser/CefBrowser_N/DoubleCallback;)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1GetDefaultZoomLevel
+  (JNIEnv *, jobject, jobject);
+
+/*
+ * Class:     org_cef_browser_CefBrowser_N
  * Method:    N_GetZoomLevel
  * Signature: ()D
  */
 JNIEXPORT jdouble JNICALL Java_org_cef_browser_CefBrowser_1N_N_1GetZoomLevel
   (JNIEnv *, jobject);
+
+/*
+ * Class:     org_cef_browser_CefBrowser_N
+ * Method:    N_GetZoomLevelAsync
+ * Signature: (Lorg/cef/browser/CefBrowser_N/DoubleCallback;)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1GetZoomLevelAsync
+  (JNIEnv *, jobject, jobject);
 
 /*
  * Class:     org_cef_browser_CefBrowser_N

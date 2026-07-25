@@ -10,8 +10,9 @@
 
 #include "jni_scoped_helpers.h"
 
-// Callback for returning int primatives. The methods of
-// this class will be called on the browser process UI thread.
+// Callback for returning int primitives. Scheduling failures may complete on
+// the JNI caller while successful UI-only queries complete on the browser
+// process UI thread.
 class IntCallback : public virtual CefBaseRefCounted {
  public:
   IntCallback(JNIEnv* env, jobject jcallback);

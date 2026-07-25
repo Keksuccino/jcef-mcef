@@ -17,6 +17,7 @@ import org.cef.network.CefRequest;
 import java.awt.Component;
 import java.awt.Point;
 import java.awt.image.BufferedImage;
+import java.util.Objects;
 import java.util.Vector;
 import java.util.concurrent.CompletableFuture;
 
@@ -289,18 +290,96 @@ public interface CefBrowser {
     public void invalidate(CefPaintElementType type);
 
     /**
-     * Get the current zoom level. The default zoom level is 0.0.
-     * @return The current zoom level.
+     * Returns whether this browser can currently execute {@code command}.
+     *
+     * <p>This is a momentary capability snapshot, not an atomic guard for a later {@link
+     * #zoom(CefZoomCommand)} call. Browser state may change between the query and command.
+     * The native query runs on the CEF UI thread. Code that drives CEF's external message pump
+     * must not block that pump while waiting for the returned future.
+     *
+     * @param command the zoom command to query
+     * @return a future containing whether CEF reports the command available for the current zoom
+     *         state; the future completes exceptionally if the native browser is unavailable or
+     *         the CEF UI query cannot be scheduled
+     * @throws NullPointerException if {@code command} is {@code null}
+     */
+    public default CompletableFuture<Boolean> canZoom(CefZoomCommand command) {
+        Objects.requireNonNull(command, "command");
+        return unsupportedZoomFuture("canZoom");
+    }
+
+    /**
+     * Executes one Chromium zoom step or resets the browser to its configured default zoom level.
+     * CEF applies the command immediately on its UI thread and otherwise queues it asynchronously.
+     *
+     * @param command the zoom command to execute
+     * @throws NullPointerException if {@code command} is {@code null}
+     * @throws UnsupportedOperationException if this browser implementation does not support CEF
+     *         zoom commands
+     */
+    public default void zoom(CefZoomCommand command) {
+        Objects.requireNonNull(command, "command");
+        throw new UnsupportedOperationException("zoom is not supported by this browser");
+    }
+
+    /**
+     * Returns the configured default zoom level. The value is usually 0.0 but may be configured to
+     * another value.
+     *
+     * <p>The native query runs on the CEF UI thread. Code that drives CEF's external message pump
+     * must not block that pump while waiting for the returned future.
+     *
+     * @return a future containing the configured default zoom level; the future completes
+     *         exceptionally if the native browser is unavailable or the CEF UI query cannot be
+     *         scheduled
+     */
+    public default CompletableFuture<Double> getDefaultZoomLevel() {
+        return unsupportedZoomFuture("getDefaultZoomLevel");
+    }
+
+    /**
+     * Get the current zoom level synchronously. The configured default is usually 0.0.
+     *
+     * <p>Prefer {@link #getZoomLevelAsync()} away from the CEF UI thread. This compatibility method
+     * can wait for the externally driven CEF message pump and returns 0.0 if the query fails or
+     * times out.
+     *
+     * @return The current zoom level, or 0.0 if the synchronous native query fails.
      */
     public double getZoomLevel();
 
     /**
-     * Change the zoom level to the specified value. Specify 0.0 to reset the
-     * zoom level.
+     * Returns the current zoom level as a future.
+     *
+     * <p>Native JCEF browsers schedule a CEF UI-thread query without blocking the caller. The
+     * default implementation preserves compatibility with existing third-party {@code CefBrowser}
+     * implementations by invoking and wrapping the synchronous {@link #getZoomLevel()} method.
+     * Code that drives CEF's external message pump must not block that pump while waiting for a
+     * native browser's returned future.
+     *
+     * @return a future containing the current zoom level; the future completes exceptionally if
+     *         the native browser is unavailable or the CEF UI query cannot be scheduled
+     */
+    public default CompletableFuture<Double> getZoomLevelAsync() {
+        try {
+            return CompletableFuture.completedFuture(Double.valueOf(getZoomLevel()));
+        } catch (RuntimeException | Error failure) {
+            return CompletableFuture.failedFuture(failure);
+        }
+    }
+
+    /**
+     * Change the zoom level to the specified value. Specify 0.0 to reset the zoom level to the
+     * configured default. CEF applies the change immediately on its UI thread and otherwise queues
+     * it asynchronously.
      *
      * @param zoomLevel The zoom level to be set.
      */
     public void setZoomLevel(double zoomLevel);
+
+    private static <T> CompletableFuture<T> unsupportedZoomFuture(String method) {
+        return CompletableFuture.failedFuture(new UnsupportedOperationException(method + " is not supported by this browser"));
+    }
 
     /**
      * Call to run a file chooser dialog. Only a single file chooser dialog may be

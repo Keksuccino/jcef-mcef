@@ -4124,7 +4124,7 @@ JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1NotifyScreenInfoCha
 
 JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1CanZoom(JNIEnv* env, jobject obj, jint commandValue, jobject jintCallback) {
   CefRefPtr<IntCallback> callback = new IntCallback(env, jintCallback);
-  cef_zoom_command_t command;
+  cef_zoom_command_t command = CEF_ZOOM_COMMAND_RESET;
   if (!GetZoomCommand(env, commandValue, &command))
     return;
 
@@ -4145,7 +4145,7 @@ JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1CanZoom(JNIEnv* env
 }
 
 JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1Zoom(JNIEnv* env, jobject obj, jint commandValue) {
-  cef_zoom_command_t command;
+  cef_zoom_command_t command = CEF_ZOOM_COMMAND_RESET;
   if (!GetZoomCommand(env, commandValue, &command))
     return;
 

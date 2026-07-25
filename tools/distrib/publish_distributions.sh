@@ -52,6 +52,9 @@ HASH_COMMAND=''
 CMP_PATH=''
 WC_PATH=''
 TR_PATH=''
+PYTHON_PATH=''
+SCRIPT_DIRECTORY=''
+VERIFIER_PATH=''
 COMMIT_SHA=''
 ARTIFACT_DIRECTORY=''
 TAG_NAME=''
@@ -449,6 +452,20 @@ TAG_NAME="java-cef-${COMMIT_SHA}"
 RELEASE_TITLE="JCEF distributions ${COMMIT_SHA}"
 RELEASE_BODY="Automated JCEF distributions for commit ${COMMIT_SHA};${RELEASE_MARKER}"
 
+script_source="${BASH_SOURCE[0]}"
+if [[ "$script_source" != */* ]]; then
+  script_source="$(resolve_executable "$script_source" || true)"
+fi
+if [ -z "$script_source" ] || [ ! -f "$script_source" ] || [ -L "$script_source" ]; then
+  die 'Unable to resolve the regular publisher script source'
+fi
+script_parent="${script_source%/*}"
+SCRIPT_DIRECTORY="$(cd -- "$script_parent" && pwd -P)" || die 'Unable to resolve the publisher directory'
+VERIFIER_PATH="${SCRIPT_DIRECTORY}/verify_distribution_archive.py"
+if [ ! -f "$VERIFIER_PATH" ] || [ -L "$VERIFIER_PATH" ] || [ ! -r "$VERIFIER_PATH" ]; then
+  die "Required sibling distribution verifier is unavailable: ${VERIFIER_PATH}"
+fi
+
 shopt -s dotglob nullglob
 ARTIFACT_ENTRIES=("${ARTIFACT_DIRECTORY}"/*)
 if [ "${#ARTIFACT_ENTRIES[@]}" -ne 12 ]; then
@@ -467,8 +484,12 @@ fi
 CMP_PATH="$(resolve_executable cmp || true)"
 WC_PATH="$(resolve_executable wc || true)"
 TR_PATH="$(resolve_executable tr || true)"
-if [ -z "$CMP_PATH" ] || [ -z "$WC_PATH" ] || [ -z "$TR_PATH" ]; then
-  die 'cmp, wc and tr are required to validate distribution artifacts'
+PYTHON_PATH="$(resolve_executable python3 || true)"
+if [ -z "$CMP_PATH" ] || [ -z "$WC_PATH" ] || [ -z "$TR_PATH" ] || [ -z "$PYTHON_PATH" ]; then
+  die 'cmp, wc, tr and Python 3.9+ are required to validate distribution artifacts'
+fi
+if ! "$SYSTEM_ENV_PATH" "${SANITIZED_ENV_ARGS[@]}" "$PYTHON_PATH" -I -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)'; then
+  die 'Python 3.9 or newer is required to validate distribution artifacts'
 fi
 
 for target in "${TARGETS[@]}"; do
@@ -492,6 +513,9 @@ for target in "${TARGETS[@]}"; do
   fi
   if ! archive_size="$(file_size "$archive_path")" || ! checksum_size="$(file_size "$checksum_path")" || ! checksum_digest="$(hash_file "$checksum_path")"; then
     die "Unable to calculate asset metadata for ${target}"
+  fi
+  if ! "$SYSTEM_ENV_PATH" "${SANITIZED_ENV_ARGS[@]}" "$PYTHON_PATH" -I "$VERIFIER_PATH" --target "$target" --archive "$archive_path" --java-cef-commit "$COMMIT_SHA"; then
+    die "Distribution archive byte verification failed: ${archive_name}"
   fi
   append_asset "$archive_name" "$archive_size" "$archive_digest"
   append_asset "$checksum_name" "$checksum_size" "$checksum_digest"

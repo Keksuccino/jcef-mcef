@@ -41,6 +41,7 @@ readonly WORKFLOW_PATH='.github/workflows/build-jcef.yml'
 readonly SYSTEM_ENV_PATH='/usr/bin/env'
 readonly WRAPPER_PATH='tools/distrib/publish_workflow_run.sh'
 readonly PUBLISHER_PATH='tools/distrib/publish_distributions.sh'
+readonly VERIFIER_PATH='tools/distrib/verify_distribution_archive.py'
 readonly -a EXPECTED_JOBS=(
   'Linux x86_64'
   'Linux arm64'
@@ -77,6 +78,7 @@ AUTHENTICATED_LOGIN=''
 PRIVATE_ROOT=''
 ARTIFACT_DIRECTORY=''
 PUBLISHER_COPY=''
+VERIFIER_COPY=''
 
 JOB_NAMES=()
 JOB_IDS=()
@@ -194,20 +196,23 @@ require_unique_value() {
 
 require_pristine_publication_scripts() {
   local relative_path
-  for relative_path in "$WRAPPER_PATH" "$PUBLISHER_PATH"; do
-    if [ ! -f "$REPOSITORY_ROOT/$relative_path" ] || [ -L "$REPOSITORY_ROOT/$relative_path" ] || [ ! -x "$REPOSITORY_ROOT/$relative_path" ]; then
-      die "Publication script must be an executable regular file: ${relative_path}"
+  for relative_path in "$WRAPPER_PATH" "$PUBLISHER_PATH" "$VERIFIER_PATH"; do
+    if [ ! -f "$REPOSITORY_ROOT/$relative_path" ] || [ -L "$REPOSITORY_ROOT/$relative_path" ] || [ ! -r "$REPOSITORY_ROOT/$relative_path" ]; then
+      die "Publication helper must be a readable regular file: ${relative_path}"
+    fi
+    if [ "$relative_path" != "$VERIFIER_PATH" ] && [ ! -x "$REPOSITORY_ROOT/$relative_path" ]; then
+      die "Publication script must be executable: ${relative_path}"
     fi
     if ! "$GIT_PATH" -C "$REPOSITORY_ROOT" ls-files --error-unmatch -- "$relative_path" >/dev/null 2>&1; then
-      die "Publication script is not tracked by HEAD: ${relative_path}"
+      die "Publication helper is not tracked by HEAD: ${relative_path}"
     fi
     if ! "$GIT_PATH" -C "$REPOSITORY_ROOT" diff --quiet HEAD -- "$relative_path"; then
-      die "Publication script does not match HEAD: ${relative_path}"
+      die "Publication helper does not match HEAD: ${relative_path}"
     fi
     # Compare the actual bytes as well because Git's working-tree diff honors
     # assume-unchanged and skip-worktree hints that must not bypass publication.
     if ! "$GIT_PATH" -C "$REPOSITORY_ROOT" show "HEAD:${relative_path}" | "$CMP_PATH" -s - "$REPOSITORY_ROOT/$relative_path"; then
-      die "Publication script bytes do not match HEAD: ${relative_path}"
+      die "Publication helper bytes do not match HEAD: ${relative_path}"
     fi
   done
 }
@@ -231,24 +236,35 @@ prepare_trusted_publisher() {
     die 'Private artifact directory is unavailable for the trusted publisher copy'
   fi
   PUBLISHER_COPY="${PRIVATE_ROOT}/publish_distributions.sh"
+  VERIFIER_COPY="${PRIVATE_ROOT}/verify_distribution_archive.py"
   if [[ ! "$VALIDATED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
     die 'Validated HEAD is unavailable for the trusted publisher copy'
   fi
   if ! "$GIT_PATH" -C "$REPOSITORY_ROOT" show "${VALIDATED_HEAD_SHA}:${PUBLISHER_PATH}" > "$PUBLISHER_COPY"; then
     die 'Unable to copy the publisher from HEAD'
   fi
-  if [ ! -f "$PUBLISHER_COPY" ] || [ -L "$PUBLISHER_COPY" ]; then
-    die 'The trusted publisher copy is not a regular file'
+  if ! "$GIT_PATH" -C "$REPOSITORY_ROOT" show "${VALIDATED_HEAD_SHA}:${VERIFIER_PATH}" > "$VERIFIER_COPY"; then
+    die 'Unable to copy the distribution verifier from HEAD'
+  fi
+  if [ ! -f "$PUBLISHER_COPY" ] || [ -L "$PUBLISHER_COPY" ] || [ ! -f "$VERIFIER_COPY" ] || [ -L "$VERIFIER_COPY" ]; then
+    die 'The trusted publication copies are not regular files'
   fi
   if ! "$GIT_PATH" -C "$REPOSITORY_ROOT" show "${VALIDATED_HEAD_SHA}:${PUBLISHER_PATH}" | "$CMP_PATH" -s - "$PUBLISHER_COPY"; then
     die 'The trusted publisher copy does not byte-match HEAD'
   fi
+  if ! "$GIT_PATH" -C "$REPOSITORY_ROOT" show "${VALIDATED_HEAD_SHA}:${VERIFIER_PATH}" | "$CMP_PATH" -s - "$VERIFIER_COPY"; then
+    die 'The trusted distribution verifier copy does not byte-match HEAD'
+  fi
   chmod 400 "$PUBLISHER_COPY"
+  chmod 400 "$VERIFIER_COPY"
 }
 
 invoke_trusted_publisher() {
   if [ -z "$PUBLISHER_COPY" ] || [ ! -f "$PUBLISHER_COPY" ] || [ -L "$PUBLISHER_COPY" ] || [ ! -r "$PUBLISHER_COPY" ]; then
     die 'Trusted publisher copy is unavailable'
+  fi
+  if [ -z "$VERIFIER_COPY" ] || [ ! -f "$VERIFIER_COPY" ] || [ -L "$VERIFIER_COPY" ] || [ ! -r "$VERIFIER_COPY" ] || [ "${VERIFIER_COPY%/*}" != "${PUBLISHER_COPY%/*}" ]; then
+    die 'Trusted sibling distribution verifier copy is unavailable'
   fi
   # Give Bash the private path so it owns and protects its parser input. An
   # inherited descriptor would remain shared with publisher descendants, which
@@ -521,9 +537,10 @@ fi
 # Trust boundary: the local caller chooses the wrapper bytes that /bin/bash
 # begins interpreting, so a running script cannot retroactively authenticate
 # its own startup. Before exposing credentials we verify the checked-out
-# wrapper and publisher against HEAD and create a private artifact directory.
-# The publisher is copied from HEAD only at the final delegation boundary so
-# no intermediary child can replace it before validation.
+# wrapper and publication helpers against HEAD and create a private artifact
+# directory. The publisher and verifier are copied from HEAD only at the final
+# delegation boundary so no intermediary child can replace either one before
+# validation.
 refresh_and_validate_master
 prepare_private_directory
 load_repository_identity
@@ -535,8 +552,8 @@ load_and_validate_artifacts
 download_and_validate_artifacts
 
 # Artifact downloads may be long-running. Repeat the fetch and source checks
-# before delegation, then copy the HEAD-derived publisher immediately before
-# invocation. Later worktree replacement cannot change the private copy.
+# before delegation, then copy the HEAD-derived publication helpers immediately
+# before invocation. Later worktree replacement cannot change the private copies.
 refresh_and_validate_master
 revalidate_run_identity
 prepare_trusted_publisher

@@ -11,17 +11,24 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 from unittest import mock
 
 DISTRIB_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(DISTRIB_ROOT))
+TEST_ROOT = Path(__file__).resolve().parent
+if str(DISTRIB_ROOT) not in sys.path:
+  sys.path.insert(0, str(DISTRIB_ROOT))
+if str(TEST_ROOT) not in sys.path:
+  sys.path.insert(0, str(TEST_ROOT))
 
+from distribution_archive_test_util import canonical_distribution_files  # noqa: E402
 from distribution import DistributionError, TARGETS  # noqa: E402
 from make_distrib import MANIFEST_SCHEMA  # noqa: E402
 from make_distrib import _build_runtime_file_inventory  # noqa: E402
 from make_distrib import _capture_runtime_file_paths  # noqa: E402
+from make_distrib import _copy_documentation_and_licenses  # noqa: E402
 from make_distrib import _copy_runtime, _create_archive  # noqa: E402
 from make_distrib import _is_link_like  # noqa: E402
 from make_distrib import _normalize_java_cef_commit  # noqa: E402
@@ -30,7 +37,12 @@ from make_distrib import _require_java_cef_commit  # noqa: E402
 from make_distrib import _resolve_java_cef_commit  # noqa: E402
 from make_distrib import _validate_native_source_commit  # noqa: E402
 from make_distrib import _validate_readme_source_commit  # noqa: E402
+from make_distrib import _verify_created_archive  # noqa: E402
 from make_distrib import _write_distribution_manifest  # noqa: E402
+from verify_distribution_archive import VerificationError  # noqa: E402
+from verify_distribution_archive import TARGET_JOGAMP_JARS  # noqa: E402
+from verify_distribution_archive import TARGET_RUNTIME_ENTRIES  # noqa: E402
+from verify_distribution_archive import verify_distribution_archive  # noqa: E402
 
 JAVA_CEF_COMMIT = '0123456789abcdef0123456789abcdef01234567'
 
@@ -285,11 +297,41 @@ class RuntimeManifestTest(unittest.TestCase):
       self.assertEqual(
           sorted(contents),
           [item['path'] for item in manifest['runtime_files']])
+      self.assertEqual(['locales'], manifest['distribution_directories'])
+      self.assertEqual(sorted(contents), [item['path'] for item in manifest['distribution_files']])
       for item in manifest['runtime_files']:
         expected_contents = contents[item['path']]
         self.assertEqual(len(expected_contents), item['size'])
         self.assertEqual(
             hashlib.sha256(expected_contents).hexdigest(), item['sha256'])
+
+  def test_distribution_inventory_covers_empty_nonruntime_files_and_explicit_directories(self):
+    target = TARGETS['linux_amd64']
+    with tempfile.TemporaryDirectory() as temporary_directory:
+      destination = Path(temporary_directory)
+      write_file(destination / 'runtime.bin', b'runtime')
+      write_file(destination / 'docs/empty.txt', b'')
+      (destination / 'tests').mkdir()
+      captured = _capture_runtime_file_paths(destination, ('runtime.bin',))
+
+      manifest = self.write_manifest(destination, target, ('runtime.bin',), captured)
+
+      self.assertEqual(['docs', 'tests'], manifest['distribution_directories'])
+      inventory = {item['path']: item for item in manifest['distribution_files']}
+      self.assertEqual({'docs/empty.txt', 'runtime.bin'}, set(inventory))
+      self.assertEqual(0, inventory['docs/empty.txt']['size'])
+      self.assertEqual(hashlib.sha256(b'').hexdigest(), inventory['docs/empty.txt']['sha256'])
+      self.assertNotIn('DISTRIBUTION-MANIFEST.json', inventory)
+
+  def test_distribution_inventory_reserves_casefolded_manifest_path(self):
+    with tempfile.TemporaryDirectory() as temporary_directory:
+      destination = Path(temporary_directory)
+      write_file(destination / 'runtime.bin', b'runtime')
+      write_file(destination / 'distribution-manifest.JSON', b'collision')
+      captured = _capture_runtime_file_paths(destination, ('runtime.bin',))
+
+      with self.assertRaisesRegex(DistributionError, 'case-colliding path'):
+        self.write_manifest(destination, TARGETS['linux_amd64'], ('runtime.bin',), captured)
 
   def test_manifest_bytes_are_deterministic_across_creation_order_and_mtime(
       self):
@@ -393,6 +435,35 @@ class RuntimeManifestTest(unittest.TestCase):
       self.assertTrue((destination / framework_relative /
                        'Resources/en.lproj/locale.pak').is_file())
 
+  def test_jogamp_license_copy_is_exact_and_missing_file_fails_closed(self):
+    target = TARGETS['linux_amd64']
+    with tempfile.TemporaryDirectory() as temporary_directory:
+      root = Path(temporary_directory)
+      repository = root / 'repository'
+      cef_root = root / 'cef'
+      destination = root / 'distribution'
+      destination.mkdir()
+      write_file(repository / 'out/docs/index.html', b'docs')
+      write_file(repository / 'java/tests/sample.txt', b'tests')
+      write_file(repository / 'LICENSE.txt', b'jcef license')
+      write_file(repository / 'third_party/jogamp/gluegen.LICENSE.txt', b'gluegen license')
+      write_file(repository / 'third_party/jogamp/jogl.LICENSE.txt', b'jogl license')
+      write_file(repository / 'third_party/jogamp/unexpected.LICENSE.txt', b'unexpected')
+      write_file(cef_root / 'LICENSE.txt', b'cef license')
+      write_file(cef_root / 'CREDITS.html', b'credits')
+
+      _copy_documentation_and_licenses(repository, destination, cef_root, target)
+
+      self.assertTrue((destination / 'gluegen.LICENSE.txt').is_file())
+      self.assertTrue((destination / 'jogl.LICENSE.txt').is_file())
+      self.assertFalse((destination / 'unexpected.LICENSE.txt').exists())
+
+      (repository / 'third_party/jogamp/jogl.LICENSE.txt').unlink()
+      second_destination = root / 'second-distribution'
+      second_destination.mkdir()
+      with self.assertRaisesRegex(DistributionError, 'Required JogAmp license is missing'):
+        _copy_documentation_and_licenses(repository, second_destination, cef_root, target)
+
   def test_runtime_file_set_must_not_gain_or_lose_paths_after_capture(self):
     for mutation in ('add', 'remove'):
       with self.subTest(mutation=mutation):
@@ -472,6 +543,20 @@ class RuntimeManifestTest(unittest.TestCase):
           with self.assertRaisesRegex(DistributionError, 'symbolic links'):
             _capture_runtime_file_paths(destination, (entry,))
 
+  @unittest.skipIf(os.name == 'nt', 'Windows symlink creation is restricted')
+  def test_distribution_inventory_rejects_nonruntime_link(self):
+    with tempfile.TemporaryDirectory() as temporary_directory:
+      root = Path(temporary_directory)
+      destination = root / 'distribution'
+      destination.mkdir()
+      write_file(destination / 'runtime.bin', b'runtime')
+      write_file(root / 'external.txt', b'external')
+      (destination / 'documentation-link').symlink_to(root / 'external.txt')
+      captured = _capture_runtime_file_paths(destination, ('runtime.bin',))
+
+      with self.assertRaisesRegex(DistributionError, 'Distribution tree.*symbolic links'):
+        self.write_manifest(destination, TARGETS['linux_amd64'], ('runtime.bin',), captured)
+
   @unittest.skipIf(os.name == 'nt', 'Backslash is a path separator on Windows')
   def test_unsafe_descendant_name_is_rejected(self):
     with tempfile.TemporaryDirectory() as temporary_directory:
@@ -530,6 +615,62 @@ class RuntimeManifestTest(unittest.TestCase):
 
 
 class ArchiveCreationSourceTest(unittest.TestCase):
+
+  def test_producer_manifest_and_tar_match_verifier_for_all_six_targets(self):
+    for target_name in TARGET_RUNTIME_ENTRIES:
+      with self.subTest(target=target_name):
+        target = TARGETS[target_name]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+          root = Path(temporary_directory)
+          distribution = root / target_name
+          distribution.mkdir()
+          for relative_path, contents in canonical_distribution_files(target_name).items():
+            write_file(distribution / relative_path, contents)
+          runtime_entries = TARGET_RUNTIME_ENTRIES[target_name]
+          captured = _capture_runtime_file_paths(distribution, runtime_entries)
+          _write_distribution_manifest(distribution, target, runtime_entries, captured, JAVA_CEF_COMMIT, ('jcef.jar', 'jcef-tests.jar'), TARGET_JOGAMP_JARS[target_name])
+          archive_path = root / '{}.tar.gz'.format(target_name)
+
+          _create_archive(distribution, archive_path, target)
+          verify_distribution_archive(archive_path, target_name, JAVA_CEF_COMMIT)
+
+  @mock.patch('make_distrib.verify_distribution_archive')
+  def test_created_archive_is_verified_against_target_and_source_commit(self, verifier):
+    target = TARGETS['macos_arm64']
+    archive_path = Path('/tmp/macos_arm64.tar.gz')
+    _verify_created_archive(archive_path, target, JAVA_CEF_COMMIT)
+    verifier.assert_called_once_with(archive_path, target.name, JAVA_CEF_COMMIT)
+
+  @mock.patch('make_distrib.verify_distribution_archive')
+  def test_created_archive_verification_failure_blocks_packaging(self, verifier):
+    verifier.side_effect = VerificationError('inventory mismatch')
+    with self.assertRaisesRegex(DistributionError, 'schema-2 byte verification.*inventory mismatch'):
+      _verify_created_archive(Path('/tmp/linux_amd64.tar.gz'), TARGETS['linux_amd64'], JAVA_CEF_COMMIT)
+
+  def test_archive_creation_emits_only_verifier_canonical_metadata(self):
+    target = TARGETS['linux_amd64']
+    with tempfile.TemporaryDirectory() as temporary_directory:
+      root = Path(temporary_directory)
+      distribution = root / target.name
+      distribution.mkdir()
+      write_file(distribution / 'plain.txt', b'plain')
+      write_file(distribution / 'executable.sh', b'#!/bin/sh\n')
+      (distribution / 'executable.sh').chmod(0o755)
+      write_file(distribution / ('long-' + 'x' * 110), b'long path')
+      archive_path = root / '{}.tar.gz'.format(target.name)
+
+      _create_archive(distribution, archive_path, target)
+
+      with tarfile.open(archive_path, mode='r:gz') as archive:
+        members = archive.getmembers()
+      self.assertTrue(any(member.pax_headers for member in members))
+      for member in members:
+        self.assertEqual((0, 0, 'root', 'root', 946684800), (member.uid, member.gid, member.uname, member.gname, member.mtime))
+        self.assertTrue(set(member.pax_headers).issubset({'path'}), member.pax_headers)
+        if member.isdir():
+          self.assertEqual(0o755, member.mode & 0o7777)
+        else:
+          self.assertIn(member.mode & 0o7777, (0o644, 0o755))
 
   @unittest.skipIf(os.name == 'nt', 'Windows symlink creation is restricted')
   def test_archive_creation_rejects_source_symlink_before_writing(self):

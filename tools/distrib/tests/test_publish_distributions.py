@@ -15,6 +15,17 @@ import tempfile
 import unittest
 
 DISTRIB_ROOT = Path(__file__).resolve().parents[1]
+TEST_ROOT = Path(__file__).resolve().parent
+if str(DISTRIB_ROOT) not in sys.path:
+  sys.path.insert(0, str(DISTRIB_ROOT))
+if str(TEST_ROOT) not in sys.path:
+  sys.path.insert(0, str(TEST_ROOT))
+
+from distribution_archive_test_util import build_tar_gz  # noqa: E402
+from distribution_archive_test_util import build_valid_archive  # noqa: E402
+from distribution_archive_test_util import canonical_members  # noqa: E402
+from distribution_archive_test_util import write_valid_archive  # noqa: E402
+
 PUBLISHER = DISTRIB_ROOT / 'publish_distributions.sh'
 COMMIT_SHA = '0123456789abcdef0123456789abcdef01234567'
 WRONG_SHA = '89abcdef0123456789abcdef0123456789abcdef'
@@ -295,6 +306,25 @@ real_path = os.environ['FAKE_REAL_LOCAL_TOOL']
 os.execv(real_path, [real_path] + sys.argv[1:])
 '''
 
+FAKE_PYTHON = r'''#!PYTHON_EXECUTABLE
+import os
+from pathlib import Path
+import sys
+
+arguments = sys.argv[1:]
+if arguments and arguments[0] == '-I':
+  sensitive = ('GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN', 'GH_HOST', 'ENV_TOKEN_SOURCE', 'ENV_TOKEN_CONTENT')
+  leaked = {name: os.environ.get(name) for name in sensitive if name in os.environ}
+  if leaked:
+    print('publisher leaked credentials to archive verifier: {!r}'.format(leaked), file=sys.stderr)
+    raise SystemExit(97)
+  with Path(os.environ['FAKE_LOCAL_TOOL_LOG']).open('a', encoding='utf-8') as stream:
+    stream.write('python3-isolated\n')
+  if len(arguments) > 1 and arguments[1] == '-c' and os.environ.get('FAKE_PYTHON_TOO_OLD') == '1':
+    raise SystemExit(98)
+os.execv('PYTHON_EXECUTABLE', ['PYTHON_EXECUTABLE'] + arguments)
+'''
+
 
 @unittest.skipUnless(os.name == 'posix' and Path('/bin/bash').is_file(),
                      'publisher integration tests require POSIX /bin/bash')
@@ -320,6 +350,9 @@ class PublishDistributionsTest(unittest.TestCase):
     self.fake_local_tool = self.fake_bin / Path(real_local_tool).name
     self.fake_local_tool.write_text(FAKE_LOCAL_TOOL.replace('PYTHON_EXECUTABLE', sys.executable, 1), encoding='utf-8')
     self.fake_local_tool.chmod(0o755)
+    self.fake_python = self.fake_bin / 'python3'
+    self.fake_python.write_text(FAKE_PYTHON.replace('PYTHON_EXECUTABLE', sys.executable), encoding='utf-8')
+    self.fake_python.chmod(0o755)
     self.create_artifacts()
     self.write_state({'next_id': 1, 'tag_sha': None, 'release': None})
 
@@ -327,11 +360,10 @@ class PublishDistributionsTest(unittest.TestCase):
     self.temporary_directory.cleanup()
 
   def create_artifacts(self):
-    for index, target in enumerate(TARGETS):
+    for target in TARGETS:
       archive_name = '{}.tar.gz'.format(target)
       archive_path = self.artifact_directory / archive_name
-      archive_path.write_bytes(('archive-{}-{}'.format(index,
-                                                       target)).encode('ascii'))
+      write_valid_archive(archive_path, target, COMMIT_SHA)
       digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
       line_ending = b'\r\n' if target.startswith('windows_') else b'\n'
       checksum = '{}  {}'.format(digest, archive_name).encode('ascii')
@@ -478,6 +510,8 @@ class PublishDistributionsTest(unittest.TestCase):
     result = self.run_publisher()
     self.assertEqual(0, result.returncode, result.stderr)
     self.assert_exact_published_release()
+    local_tools = self.local_tool_log.read_text(encoding='utf-8').splitlines()
+    self.assertEqual(7, local_tools.count('python3-isolated'))
     records = self.read_log()
     self.assertTrue(
         all(record['gh_token_matches'] and not record['github_token_present']
@@ -571,6 +605,29 @@ class PublishDistributionsTest(unittest.TestCase):
     result = subprocess.run(['/bin/bash', str(PUBLISHER), COMMIT_SHA, str(self.artifact_directory)], check=False, capture_output=True, text=True, env=self.environment())
     self.assertNotEqual(0, result.returncode)
     self.assertIn('execute publish_distributions.sh directly', result.stderr)
+    self.assertFalse(self.log_path.exists())
+
+  def test_bare_path_invocation_resolves_only_its_sibling_verifier(self):
+    publication_bin = self.root / 'publication-bin'
+    publication_bin.mkdir()
+    publisher_copy = publication_bin / PUBLISHER.name
+    verifier_copy = publication_bin / 'verify_distribution_archive.py'
+    shutil.copy2(PUBLISHER, publisher_copy)
+    shutil.copy2(DISTRIB_ROOT / verifier_copy.name, verifier_copy)
+    publisher_copy.chmod(0o755)
+    environment = self.environment()
+    environment['PATH'] = '{}{}{}'.format(publication_bin, os.pathsep, environment['PATH'])
+    result = subprocess.run([PUBLISHER.name, COMMIT_SHA, str(self.artifact_directory)], check=False, capture_output=True, text=True, env=environment, cwd=self.root)
+    self.assertEqual(0, result.returncode, result.stderr)
+    self.assert_exact_published_release()
+
+  def test_publisher_copy_without_sibling_verifier_fails_before_gh(self):
+    publisher_copy = self.root / PUBLISHER.name
+    shutil.copy2(PUBLISHER, publisher_copy)
+    publisher_copy.chmod(0o755)
+    result = subprocess.run([str(publisher_copy), COMMIT_SHA, str(self.artifact_directory)], check=False, capture_output=True, text=True, env=self.environment())
+    self.assertNotEqual(0, result.returncode)
+    self.assertIn('Required sibling distribution verifier', result.stderr)
     self.assertFalse(self.log_path.exists())
 
   def test_artifact_directory_with_leading_dash_basename_is_option_safe(self):
@@ -963,6 +1020,45 @@ class PublishDistributionsTest(unittest.TestCase):
     self.assertNotEqual(0, result.returncode)
     self.assertEqual([], self.read_log())
 
+  def test_schema_or_commit_invalid_archive_fails_before_any_gh_call(self):
+    target = TARGETS[2]
+    archive_name = '{}.tar.gz'.format(target)
+    archive_path = self.artifact_directory / archive_name
+    archive_path.write_bytes(build_valid_archive(target, WRONG_SHA))
+    digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+    (self.artifact_directory / '{}.sha256'.format(archive_name)).write_bytes('{}  {}\n'.format(digest, archive_name).encode('ascii'))
+    before = self.state_path.read_bytes()
+    result = self.run_publisher()
+    self.assertNotEqual(0, result.returncode)
+    self.assertIn('Distribution archive byte verification failed', result.stderr)
+    self.assertEqual(before, self.state_path.read_bytes())
+    self.assertEqual([], self.read_log())
+
+  def test_incomplete_distribution_tree_fails_before_any_gh_call(self):
+    target = TARGETS[0]
+    archive_name = '{}.tar.gz'.format(target)
+    archive_path = self.artifact_directory / archive_name
+    members = [member for member in canonical_members(target, COMMIT_SHA) if member['name'] != target + '/README.txt']
+    archive_path.write_bytes(build_tar_gz(members))
+    digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+    (self.artifact_directory / '{}.sha256'.format(archive_name)).write_bytes('{}  {}\n'.format(digest, archive_name).encode('ascii'))
+    before = self.state_path.read_bytes()
+
+    result = self.run_publisher()
+
+    self.assertNotEqual(0, result.returncode)
+    self.assertIn('Distribution archive byte verification failed', result.stderr)
+    self.assertEqual(before, self.state_path.read_bytes())
+    self.assertEqual([], self.read_log())
+
+  def test_python_older_than_3_9_fails_before_any_gh_call(self):
+    before = self.state_path.read_bytes()
+    result = self.run_publisher(environment=self.environment(FAKE_PYTHON_TOO_OLD='1'))
+    self.assertNotEqual(0, result.returncode)
+    self.assertIn('Python 3.9 or newer is required', result.stderr)
+    self.assertEqual(before, self.state_path.read_bytes())
+    self.assertEqual([], self.read_log())
+
   def test_whitespace_token_directory_or_gh_is_rejected(self):
     result = self.run_publisher(environment=self.environment(
         GITHUB_TOKEN=' \n\t'))
@@ -982,6 +1078,7 @@ class PublishDistributionsTest(unittest.TestCase):
         destination = no_gh_bin / Path(source).name
         if not destination.exists():
           destination.symlink_to(source)
+    (no_gh_bin / 'python3').symlink_to(sys.executable)
     result = self.run_publisher(environment=self.environment(
         PATH=str(no_gh_bin)))
     self.assertNotEqual(0, result.returncode)

@@ -14,6 +14,14 @@ import tempfile
 import unittest
 
 SOURCE_ROOT = Path(__file__).resolve().parents[3]
+TEST_ROOT = Path(__file__).resolve().parent
+if str(SOURCE_ROOT / 'tools' / 'distrib') not in sys.path:
+  sys.path.insert(0, str(SOURCE_ROOT / 'tools' / 'distrib'))
+if str(TEST_ROOT) not in sys.path:
+  sys.path.insert(0, str(TEST_ROOT))
+
+from distribution_archive_test_util import build_valid_archive  # noqa: E402
+
 SOURCE_WRAPPER = SOURCE_ROOT / 'tools' / 'distrib' / 'publish_workflow_run.sh'
 RUN_ID = '30170658280'
 RUN_SHA = '0123456789abcdef0123456789abcdef01234567'
@@ -25,6 +33,7 @@ JOB_NAMES = ('Linux x86_64', 'Linux arm64', 'macOS x86_64', 'macOS arm64',
              'Windows x86_64', 'Windows arm64')
 TARGETS = ('linux_amd64', 'linux_arm64', 'macos_amd64', 'macos_arm64',
            'windows_amd64', 'windows_arm64')
+FAKE_VERIFIER = 'trusted-verifier-from-head\n'
 
 FAKE_GIT = r'''#!/usr/bin/env python3
 import json
@@ -122,6 +131,10 @@ elif endpoint == 'repos/Keksuccino/jcef-mcef/actions/runs/' + state['run_id']:
     publisher = Path(os.environ['FAKE_ROOT']) / 'tools' / 'distrib' / 'publish_distributions.sh'
     publisher.write_bytes(base64.b64decode(state['replacement_publisher'].encode('ascii')))
     publisher.chmod(0o755)
+  if state['run_call_count'] == state.get('replace_verifier_on_run_call'):
+    verifier = Path(os.environ['FAKE_ROOT']) / 'tools' / 'distrib' / 'verify_distribution_archive.py'
+    verifier.write_bytes(base64.b64decode(state['replacement_verifier'].encode('ascii')))
+    verifier.chmod(0o644)
   Path(os.environ['FAKE_STATE']).write_text(json.dumps(state), encoding='utf-8')
 elif endpoint == 'repos/Keksuccino/jcef-mcef/immutable-releases':
   print(state.get('immutable_output', 'boolean|true'))
@@ -183,6 +196,12 @@ private_root="${artifact_directory%/*}"
 directory_mode="$(mode_of "$artifact_directory")"
 private_root_mode="$(mode_of "$private_root")"
 script_mode="$(mode_of "$0")"
+verifier_path="${0%/*}/verify_distribution_archive.py"
+if [ ! -f "$verifier_path" ] || [ -L "$verifier_path" ] || [ ! -r "$verifier_path" ]; then
+  exit 93
+fi
+verifier_mode="$(mode_of "$verifier_path")"
+verifier_contents="$(< "$verifier_path")"
 shopt -s dotglob nullglob
 artifact_paths=("${artifact_directory}"/*)
 {
@@ -193,6 +212,9 @@ artifact_paths=("${artifact_directory}"/*)
   printf 'mode=%s\n' "$directory_mode"
   printf 'private_root_mode=%s\n' "$private_root_mode"
   printf 'script_mode=%s\n' "$script_mode"
+  printf 'verifier_path=%s\n' "$verifier_path"
+  printf 'verifier_mode=%s\n' "$verifier_mode"
+  printf 'verifier_contents=%s\n' "$verifier_contents"
   printf 'gh_token=%s\n' "$captured_gh_token"
   printf 'github_token=%s\n' "$captured_github_token"
   printf 'gh_host=%s\n' "$captured_gh_host"
@@ -204,7 +226,7 @@ artifact_paths=("${artifact_directory}"/*)
     printf 'file=%s\n' "${artifact_path##*/}"
   done
 } > "$FAKE_PUBLISHER_LOG"
-if [ "$1" != "$FAKE_RUN_SHA" ] || [ "${#artifact_paths[@]}" -ne 12 ]; then
+if [ "$1" != "$FAKE_RUN_SHA" ] || [ "${#artifact_paths[@]}" -ne 12 ] || [ "$verifier_contents" != 'trusted-verifier-from-head' ]; then
   exit 94
 fi
 '''
@@ -278,6 +300,12 @@ class PublishWorkflowRunTest(unittest.TestCase):
     self.head_publisher = self.head_distrib / 'publish_distributions.sh'
     self.head_publisher.write_text(FAKE_PUBLISHER, encoding='utf-8')
     self.head_publisher.chmod(0o755)
+    self.verifier = self.distrib / 'verify_distribution_archive.py'
+    self.verifier.write_text(FAKE_VERIFIER, encoding='utf-8')
+    self.verifier.chmod(0o644)
+    self.head_verifier = self.head_distrib / 'verify_distribution_archive.py'
+    self.head_verifier.write_text(FAKE_VERIFIER, encoding='utf-8')
+    self.head_verifier.chmod(0o644)
     self.git_log = self.root / 'git.log'
     self.git_show_count = self.root / 'git-show-count'
     self.gh_log = self.root / 'gh.log'
@@ -337,9 +365,9 @@ class PublishWorkflowRunTest(unittest.TestCase):
     artifacts = []
     contents = {}
     artifact_id = 2000
-    for index, target in enumerate(TARGETS):
+    for target in TARGETS:
       archive_name = target + '.tar.gz'
-      archive = ('archive-{}-{}'.format(index, target)).encode('ascii')
+      archive = build_valid_archive(target, RUN_SHA)
       archive_digest = hashlib.sha256(archive).hexdigest()
       checksum_name = archive_name + '.sha256'
       checksum = '{}  {}\n'.format(archive_digest, archive_name).encode('ascii')
@@ -485,10 +513,15 @@ class PublishWorkflowRunTest(unittest.TestCase):
     self.assertEqual('700', record['mode'])
     self.assertEqual('700', record['private_root_mode'])
     self.assertEqual('400', record['script_mode'])
+    self.assertEqual('400', record['verifier_mode'])
+    self.assertEqual('trusted-verifier-from-head', record['verifier_contents'])
     self.assertEqual(Path(record['directory']).parent, Path(record['script_path']).parent)
+    self.assertEqual(Path(record['script_path']).parent, Path(record['verifier_path']).parent)
     self.assertNotEqual(Path(record['directory']), Path(record['script_path']).parent)
     self.assertEqual('publish_distributions.sh', Path(record['script_path']).name)
     self.assertFalse(Path(record['script_path']).exists())
+    self.assertEqual('verify_distribution_archive.py', Path(record['verifier_path']).name)
+    self.assertFalse(Path(record['verifier_path']).exists())
     self.assertEqual(
         sorted(artifact['name']
                for artifact in self.state['artifacts']), record['files'])
@@ -637,6 +670,17 @@ class PublishWorkflowRunTest(unittest.TestCase):
     self.assertEqual(
         MALICIOUS_PUBLISHER, self.publisher.read_text(encoding='utf-8'))
 
+  def test_worktree_verifier_replacement_after_final_check_cannot_change_head_copy(self):
+    replacement = b'worktree-verifier-replacement\n'
+    self.state['replace_verifier_on_run_call'] = 2
+    self.state['replacement_verifier'] = base64.b64encode(replacement).decode('ascii')
+    self.write_state()
+    result = self.run_wrapper()
+    self.assertEqual(0, result.returncode, result.stderr)
+    record = self.publisher_record()
+    self.assertEqual('trusted-verifier-from-head', record['verifier_contents'])
+    self.assertEqual(replacement, self.verifier.read_bytes())
+
   def test_invalid_run_id_fails_before_git_or_github(self):
     for run_id in ('', '0', '-1', '1.0', 'abc', ' 1', '1\n2'):
       with self.subTest(run_id=repr(run_id)):
@@ -663,7 +707,12 @@ class PublishWorkflowRunTest(unittest.TestCase):
     }, None), ({
         'FAKE_DIRTY_PATH': 'tools/distrib/publish_distributions.sh'
     }, None), ({
+        'FAKE_DIRTY_PATH': 'tools/distrib/verify_distribution_archive.py'
+    }, None), ({
         'FAKE_HEAD_BLOB_MISMATCH': 'tools/distrib/publish_workflow_run.sh'
+    }, None), ({
+        'FAKE_HEAD_BLOB_MISMATCH':
+            'tools/distrib/verify_distribution_archive.py'
     }, None), ({
         'FAKE_HEAD_SHOW_MISMATCH_CALL': '4'
     }, None), ({}, 'invalid'), ({}, RUN_SHA + '|0'), ({}, '8' * 40 + '|1'),)

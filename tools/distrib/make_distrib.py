@@ -29,6 +29,10 @@ from distribution import sha256_file
 from distribution import validate_archive, validate_build_configuration
 from distribution import validate_host, validate_jar_class_version
 from distribution import validate_matching_jar_classes, validate_runtime
+from verify_distribution_archive import JOGAMP_LICENSE_FILES
+from verify_distribution_archive import MANIFEST_NAME
+from verify_distribution_archive import VerificationError
+from verify_distribution_archive import verify_distribution_archive
 
 JAVA_CHECK_NAMES = {
     'linux': 'java17_check.sh',
@@ -338,26 +342,22 @@ def _capture_runtime_file_paths(destination, runtime_entries):
   return tuple(sorted(captured_paths))
 
 
-def _runtime_file_metadata(destination, relative_path):
+def _file_metadata(destination, relative_path, inventory_name, require_nonempty):
   relative_path = _normalize_runtime_path(relative_path)
   path, initial_status = _runtime_path(destination, relative_path)
   if not stat.S_ISREG(initial_status.st_mode):
-    raise DistributionError('Runtime inventory path is not a regular file: {}'.
-                            format(relative_path))
+    raise DistributionError('{} inventory path is not a regular file: {}'.format(inventory_name, relative_path))
   digest = hashlib.sha256()
   byte_count = 0
   try:
     with path.open('rb') as stream:
       opened_status = os.fstat(stream.fileno())
       if not stat.S_ISREG(opened_status.st_mode):
-        raise DistributionError(
-            'Runtime inventory path is not a regular file: {}'.format(
-                relative_path))
+        raise DistributionError('{} inventory path is not a regular file: {}'.format(inventory_name, relative_path))
       if (initial_status.st_dev,
           initial_status.st_ino) != (opened_status.st_dev,
                                      opened_status.st_ino):
-        raise DistributionError(
-            'Runtime file changed while opening it: {}'.format(relative_path))
+        raise DistributionError('{} file changed while opening it: {}'.format(inventory_name, relative_path))
       while True:
         chunk = stream.read(1024 * 1024)
         if not chunk:
@@ -368,17 +368,14 @@ def _runtime_file_metadata(destination, relative_path):
   except DistributionError:
     raise
   except OSError as exc:
-    raise DistributionError(
-        'Unable to hash runtime file {}: {}'.format(relative_path, exc))
-  if byte_count <= 0:
-    raise DistributionError(
-        'Runtime files must be non-empty: {}'.format(relative_path))
+    raise DistributionError('Unable to hash {} file {}: {}'.format(inventory_name.lower(), relative_path, exc))
+  if require_nonempty and byte_count <= 0:
+    raise DistributionError('{} files must be non-empty: {}'.format(inventory_name, relative_path))
   stable_fields = ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
   if any(
       getattr(opened_status, field) != getattr(final_status, field)
       for field in stable_fields) or byte_count != final_status.st_size:
-    raise DistributionError(
-        'Runtime file changed while hashing it: {}'.format(relative_path))
+    raise DistributionError('{} file changed while hashing it: {}'.format(inventory_name, relative_path))
   return {
       'path': relative_path,
       'sha256': digest.hexdigest(),
@@ -386,8 +383,11 @@ def _runtime_file_metadata(destination, relative_path):
   }
 
 
-def _build_runtime_file_inventory(destination, runtime_entries,
-                                  captured_runtime_paths):
+def _runtime_file_metadata(destination, relative_path):
+  return _file_metadata(destination, relative_path, 'Runtime', True)
+
+
+def _build_runtime_file_inventory(destination, runtime_entries, captured_runtime_paths, distribution_files=None):
   captured = []
   seen = set()
   for relative_path in captured_runtime_paths:
@@ -405,9 +405,80 @@ def _build_runtime_file_inventory(destination, runtime_entries,
     raise DistributionError(
         'Runtime file set changed after staging; missing={}, unexpected={}'.
         format(missing, unexpected))
-  return [
-      _runtime_file_metadata(Path(destination), relative_path)
-      for relative_path in current
+  if distribution_files is None:
+    return [
+        _runtime_file_metadata(Path(destination), relative_path)
+        for relative_path in current
+    ]
+  distribution_by_path = {item['path']: item for item in distribution_files}
+  runtime_files = []
+  for relative_path in current:
+    item = distribution_by_path.get(relative_path)
+    if item is None or item['size'] <= 0:
+      raise DistributionError('Runtime file is absent or empty in the distribution inventory: {}'.format(relative_path))
+    runtime_files.append(dict(item))
+  return runtime_files
+
+
+def _capture_distribution_tree_paths(destination):
+  destination = Path(destination)
+  try:
+    root_status = destination.lstat()
+  except OSError as exc:
+    raise DistributionError('Unable to inspect distribution root {}: {}'.format(destination, exc))
+  if _is_link_like(destination, root_status) or not stat.S_ISDIR(root_status.st_mode):
+    raise DistributionError('Distribution root must be a real directory: {}'.format(destination))
+
+  directories = []
+  files = []
+  # Reserve the self-excluded manifest path so a differently-cased source
+  # entry cannot collide with the manifest that is written after inventory.
+  folded_paths = {MANIFEST_NAME.casefold(): MANIFEST_NAME}
+
+  def capture(path, relative_path):
+    relative_path = _normalize_runtime_path(relative_path)
+    folded_path = relative_path.casefold()
+    if folded_path in folded_paths:
+      raise DistributionError('Distribution tree contains a case-colliding path: {} and {}'.format(folded_paths[folded_path], relative_path))
+    folded_paths[folded_path] = relative_path
+    try:
+      status = path.lstat()
+    except OSError as exc:
+      raise DistributionError('Unable to inspect distribution path {}: {}'.format(relative_path, exc))
+    if _is_link_like(path, status):
+      raise DistributionError('Distribution tree must not contain symbolic links: {}'.format(relative_path))
+    if stat.S_ISREG(status.st_mode):
+      files.append(relative_path)
+      return
+    if not stat.S_ISDIR(status.st_mode):
+      raise DistributionError('Distribution tree must contain only directories and regular files: {}'.format(relative_path))
+    directories.append(relative_path)
+    try:
+      with os.scandir(str(path)) as iterator:
+        children = sorted(iterator, key=lambda child: child.name)
+    except OSError as exc:
+      raise DistributionError('Unable to scan distribution directory {}: {}'.format(relative_path, exc))
+    for child in children:
+      child_relative_path = _normalize_runtime_path('{}/{}'.format(relative_path, child.name))
+      capture(Path(child.path), child_relative_path)
+
+  try:
+    with os.scandir(str(destination)) as iterator:
+      children = sorted(iterator, key=lambda child: child.name)
+  except OSError as exc:
+    raise DistributionError('Unable to scan distribution root {}: {}'.format(destination, exc))
+  for child in children:
+    if child.name == MANIFEST_NAME:
+      continue
+    capture(Path(child.path), child.name)
+  return tuple(sorted(directories)), tuple(sorted(files))
+
+
+def _build_distribution_tree_inventory(destination):
+  directories, files = _capture_distribution_tree_paths(destination)
+  return list(directories), [
+      _file_metadata(Path(destination), relative_path, 'Distribution', False)
+      for relative_path in files
   ]
 
 
@@ -613,8 +684,10 @@ def _copy_documentation_and_licenses(repository_root, destination, cef_root,
       str(cef_root / 'LICENSE.txt'), str(destination / 'CEF-LICENSE.txt'))
   shutil.copy2(str(cef_root / 'CREDITS.html'), str(destination))
   if target.supports_jogl_swing_osr:
-    for source in (
-        repository_root / 'third_party' / 'jogamp').glob('*.LICENSE.txt'):
+    for license_name in JOGAMP_LICENSE_FILES:
+      source = repository_root / 'third_party' / 'jogamp' / license_name
+      if not source.is_file():
+        raise DistributionError('Required JogAmp license is missing: {}'.format(source))
       shutil.copy2(str(source), str(destination))
 
 
@@ -630,12 +703,14 @@ def _write_distribution_manifest(destination, target, runtime_entries,
                                  java_jars, selected_jogamp_jars):
   java_cef_commit = _normalize_java_cef_commit(java_cef_commit)
   runtime_entries = _normalize_runtime_entries(runtime_entries)
-  runtime_files = _build_runtime_file_inventory(destination, runtime_entries,
-                                                captured_runtime_paths)
+  distribution_directories, distribution_files = _build_distribution_tree_inventory(destination)
+  runtime_files = _build_runtime_file_inventory(destination, runtime_entries, captured_runtime_paths, distribution_files)
   data = {
       'archive_root': target.name,
       'cef_api_version': CEF_API_VERSION,
       'cef_version': CEF_VERSION,
+      'distribution_directories': distribution_directories,
+      'distribution_files': distribution_files,
       'java_cef_commit': java_cef_commit,
       'java_release': 17,
       'jogl_swing_osr_supported': target.supports_jogl_swing_osr,
@@ -646,7 +721,7 @@ def _write_distribution_manifest(destination, target, runtime_entries,
       'runtime_files': runtime_files,
       'target': target.name,
   }
-  manifest_path = destination / 'DISTRIBUTION-MANIFEST.json'
+  manifest_path = destination / MANIFEST_NAME
   try:
     with manifest_path.open('x', encoding='utf-8', newline='\n') as stream:
       json.dump(data, stream, indent=2, sort_keys=True)
@@ -739,6 +814,13 @@ def _write_checksum(archive_path, checksum_path):
       '{}  {}\n'.format(digest, archive_path.name), encoding='ascii')
 
 
+def _verify_created_archive(archive_path, target, java_cef_commit):
+  try:
+    verify_distribution_archive(archive_path, target.name, java_cef_commit)
+  except VerificationError as exc:
+    raise DistributionError('Generated distribution archive failed schema-2 byte verification: {}'.format(exc))
+
+
 def create_distribution(repository_root, target):
   validate_host(target)
   java_cef_commit = _resolve_java_cef_commit(repository_root)
@@ -809,12 +891,13 @@ def create_distribution(repository_root, target):
     if target.family != 'macos':
       required_directory_paths.append('locales')
     required_archive_paths = tuple(runtime_requirements) + (
-        'CEF-LICENSE.txt', 'CREDITS.html', 'DISTRIBUTION-MANIFEST.json',
+        'CEF-LICENSE.txt', 'CREDITS.html', MANIFEST_NAME,
         'LICENSE.txt', 'README.txt', 'docs', 'jcef.jar', 'jcef-tests.jar',
         'tests',
         JAVA_CHECK_NAMES[target.family]) + LAUNCHER_NAMES[target.family]
     validate_archive(staging_archive, target, required_archive_paths,
                      tuple(required_directory_paths))
+    _verify_created_archive(staging_archive, target, java_cef_commit)
     _write_checksum(staging_archive, staging_checksum)
     _require_java_cef_commit(repository_root, java_cef_commit)
     _require_clean_source_checkout(repository_root)

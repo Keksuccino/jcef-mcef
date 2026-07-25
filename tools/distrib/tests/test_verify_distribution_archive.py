@@ -42,6 +42,7 @@ from verify_distribution_archive import TARGET_TOP_LEVEL_DIRECTORIES  # noqa: E4
 from verify_distribution_archive import TARGET_TOP_LEVEL_FILES  # noqa: E402
 from verify_distribution_archive import VerificationError  # noqa: E402
 from verify_distribution_archive import VerificationLimits  # noqa: E402
+from verify_distribution_archive import _stable_file_status_fields  # noqa: E402
 from verify_distribution_archive import verify_distribution_archive  # noqa: E402
 
 TARGETS = tuple(TARGET_RUNTIME_ENTRIES)
@@ -127,6 +128,10 @@ class VerifyDistributionArchiveTest(unittest.TestCase):
     for target in TARGETS:
       with self.subTest(target=target):
         self.verify_bytes(build_valid_archive(target), target)
+
+  def test_file_status_comparison_uses_portable_windows_fields(self):
+    self.assertEqual(('st_size', 'st_mtime_ns'), _stable_file_status_fields('nt'))
+    self.assertEqual(('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns'), _stable_file_status_fields('posix'))
 
   def test_independent_six_target_runtime_and_jogamp_contract(self):
     common = {

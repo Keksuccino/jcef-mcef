@@ -418,6 +418,17 @@ def _validate_archive_file(archive_path, target, limits):
   return status
 
 
+def _stable_file_status_fields(platform_name=None):
+  platform_name = os.name if platform_name is None else platform_name
+  if platform_name == 'nt':
+    # Windows path-based stat and handle-based fstat can expose different file
+    # identity and ctime semantics for the same file. Size and last-write time
+    # are the portable fields shared by both APIs; the open handle remains the
+    # source of all archive bytes and is checked again after streaming.
+    return ('st_size', 'st_mtime_ns')
+  return ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
+
+
 def _is_sparse_member(member):
   if member.type == tarfile.GNUTYPE_SPARSE or getattr(member, 'sparse', None):
     return True
@@ -495,8 +506,7 @@ def _stream_archive(archive_path, target, limits, initial_status):
   try:
     with archive_path.open('rb') as compressed_stream:
       opened_status = os.fstat(compressed_stream.fileno())
-      stable_fields = ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns',
-                       'st_ctime_ns')
+      stable_fields = _stable_file_status_fields()
       if not stat.S_ISREG(opened_status.st_mode) or any((getattr(initial_status, field) != getattr(opened_status, field) for field in stable_fields)):
         raise VerificationError('Archive changed while it was being opened: {}'.format(archive_path))
       with gzip.GzipFile(fileobj=compressed_stream, mode='rb') as decoded_stream:

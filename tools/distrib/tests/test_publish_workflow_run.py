@@ -186,7 +186,9 @@ if /usr/bin/env | /usr/bin/grep -E '^(BASH_ENV|ENV|SHELLOPTS|BASHOPTS|CDPATH|GLO
 fi
 
 mode_of() {
-  if ! stat -f '%Lp' "$1" 2>/dev/null; then
+  if mode="$(stat -f '%Lp' "$1" 2>/dev/null)"; then
+    printf '%s\n' "$mode"
+  else
     stat -c '%a' "$1"
   fi
 }

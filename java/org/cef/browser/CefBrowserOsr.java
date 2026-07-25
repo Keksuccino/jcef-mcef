@@ -134,11 +134,20 @@ public class CefBrowserOsr extends CefBrowser_N implements CefRenderHandler {
             Rectangle[] dirtyRects, ByteBuffer buffer, int width, int height) {
         if (onPaintListeners.isEmpty()) return;
 
-        CefPaintEvent paintEvent =
-                new CefPaintEvent(browser, popup, dirtyRects, buffer, width, height);
+        CefPaintEvent paintEvent = new CefPaintEvent(browser, popup, dirtyRects, buffer, width, height);
+        Throwable listenerFailure = null;
         for (Consumer<CefPaintEvent> listener : onPaintListeners) {
-            listener.accept(paintEvent);
+            try {
+                listener.accept(paintEvent);
+            } catch (RuntimeException | Error failure) {
+                if (listenerFailure == null)
+                    listenerFailure = failure;
+                else if (listenerFailure != failure)
+                    listenerFailure.addSuppressed(failure);
+            }
         }
+        if (listenerFailure instanceof RuntimeException runtimeFailure) throw runtimeFailure;
+        if (listenerFailure instanceof Error errorFailure) throw errorFailure;
     }
 
     @Override

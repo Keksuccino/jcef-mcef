@@ -59,6 +59,12 @@ public interface CefRenderHandler {
 
     /**
      * Handle painting.
+     *
+     * <p>This method runs synchronously on CEF's UI thread. {@code buffer} is a direct view of
+     * CEF-owned {@code const} pixel memory and must be treated as read-only. The buffer and dirty
+     * rectangle array are valid only until this callback returns; implementations that retain the
+     * frame must copy all required data during the callback.
+     *
      * @param browser The browser generating the event.
      * @param popup True if painting a popup window.
      * @param dirtyRects Array of dirty regions.
@@ -66,8 +72,7 @@ public interface CefRenderHandler {
      * @param width Width of the buffer.
      * @param height Height of the buffer.
      */
-    public void onPaint(CefBrowser browser, boolean popup, Rectangle[] dirtyRects,
-            ByteBuffer buffer, int width, int height);
+    public void onPaint(CefBrowser browser, boolean popup, Rectangle[] dirtyRects, ByteBuffer buffer, int width, int height);
 
     /**
      * Called synchronously on CEF's UI thread when the IME composition range changes.
@@ -113,12 +118,23 @@ public interface CefRenderHandler {
 
     /**
      * Add provided listener.
+     *
+     * <p>Listeners run synchronously during the paint callback. Each event exposes detached dirty
+     * rectangles and independent read-only views of callback-scoped CEF pixel memory. A listener
+     * must call {@link CefPaintEvent#copyRenderedFrame()} before returning if it needs to retain
+     * the pixels. Every registered listener is invoked even when an earlier listener fails; after
+     * delivery, the first failure is rethrown with later failures suppressed.
+     *
      * @param listener Code that gets executed after a frame was rendered.
      */
     public void addOnPaintListener(Consumer<CefPaintEvent> listener);
 
     /**
      * Remove existing listeners and replace with provided listener.
+     *
+     * <p>The callback ownership and lifetime rules are the same as for
+     * {@link #addOnPaintListener(Consumer)}.
+     *
      * @param listener Code that gets executed after a frame was rendered.
      */
     public void setOnPaintListener(Consumer<CefPaintEvent> listener);

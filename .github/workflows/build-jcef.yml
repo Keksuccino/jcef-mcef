@@ -8,6 +8,12 @@ on:
     branches:
       - master
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the validated master build to S3
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -99,26 +105,13 @@ jobs:
         with:
           path: binary_distrib/${{ matrix.target }}.tar.gz
           archive: false
+          if-no-files-found: error
       - name: Publish SHA-256 workflow artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           path: binary_distrib/${{ matrix.target }}.tar.gz.sha256
           archive: false
-      - name: Install S3 publisher
-        if: github.event_name == 'push'
-        run: sudo apt-get install --yes s3cmd
-      - name: Publish commit build to S3
-        if: github.event_name == 'push'
-        env:
-          S3_CFG: ${{ secrets.S3_CFG }}
-        run: |
-          if [ -z "$S3_CFG" ]; then
-            echo 'S3_CFG is required for master publication' >&2
-            exit 1
-          fi
-          printf '%s' "$S3_CFG" > ~/.s3cfg
-          s3cmd put -P 'binary_distrib/${{ matrix.target }}.tar.gz' 's3://mcef-us-1/java-cef-builds/${{ github.sha }}/${{ matrix.target }}.tar.gz'
-          s3cmd put -P 'binary_distrib/${{ matrix.target }}.tar.gz.sha256' 's3://mcef-us-1/java-cef-builds/${{ github.sha }}/${{ matrix.target }}.tar.gz.sha256'
+          if-no-files-found: error
 
   windows:
     name: Windows ${{ matrix.architecture }}
@@ -267,26 +260,13 @@ jobs:
         with:
           path: binary_distrib/${{ matrix.target }}.tar.gz
           archive: false
+          if-no-files-found: error
       - name: Publish SHA-256 workflow artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           path: binary_distrib/${{ matrix.target }}.tar.gz.sha256
           archive: false
-      - name: Install S3 publisher
-        if: github.event_name == 'push'
-        shell: pwsh
-        run: python -m pip install --disable-pip-version-check s3cmd==2.4.0
-      - name: Publish commit build to S3
-        if: github.event_name == 'push'
-        shell: pwsh
-        env:
-          S3_CFG: ${{ secrets.S3_CFG }}
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:S3_CFG)) { throw 'S3_CFG is required for master publication' }
-          New-Item -ItemType Directory -Force -Path $env:APPDATA | Out-Null
-          $env:S3_CFG | Set-Content -NoNewline (Join-Path $env:APPDATA 's3cmd.ini')
-          s3cmd put -P 'binary_distrib\${{ matrix.target }}.tar.gz' 's3://mcef-us-1/java-cef-builds/${{ github.sha }}/${{ matrix.target }}.tar.gz'
-          s3cmd put -P 'binary_distrib\${{ matrix.target }}.tar.gz.sha256' 's3://mcef-us-1/java-cef-builds/${{ github.sha }}/${{ matrix.target }}.tar.gz.sha256'
+          if-no-files-found: error
 
   macos:
     name: macOS ${{ matrix.architecture }}
@@ -373,23 +353,41 @@ jobs:
         with:
           path: binary_distrib/${{ matrix.target }}.tar.gz
           archive: false
+          if-no-files-found: error
       - name: Publish SHA-256 workflow artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           path: binary_distrib/${{ matrix.target }}.tar.gz.sha256
           archive: false
+          if-no-files-found: error
+
+  publish:
+    name: Publish validated distributions
+    needs: [linux, windows, macos]
+    if: >-
+      success() &&
+      github.ref == 'refs/heads/master' &&
+      (github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    concurrency:
+      group: publish-jcef-${{ github.sha }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Download validated distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: '*_*.tar.gz*'
+          path: release-artifacts
+          merge-multiple: true
       - name: Install S3 publisher
-        if: github.event_name == 'push'
-        run: brew install s3cmd
-      - name: Publish commit build to S3
-        if: github.event_name == 'push'
-        env:
-          S3_CFG: ${{ secrets.S3_CFG }}
         run: |
-          if [ -z "$S3_CFG" ]; then
-            echo 'S3_CFG is required for master publication' >&2
-            exit 1
-          fi
-          printf '%s' "$S3_CFG" > ~/.s3cfg
-          s3cmd put -P 'binary_distrib/${{ matrix.target }}.tar.gz' 's3://mcef-us-1/java-cef-builds/${{ github.sha }}/${{ matrix.target }}.tar.gz'
-          s3cmd put -P 'binary_distrib/${{ matrix.target }}.tar.gz.sha256' 's3://mcef-us-1/java-cef-builds/${{ github.sha }}/${{ matrix.target }}.tar.gz.sha256'
+          sudo apt-get update
+          sudo apt-get install --yes s3cmd
+      - name: Publish commit build to S3
+        env:
+          PUBLICATION_SHA: ${{ github.sha }}
+          S3_CFG: ${{ secrets.S3_CFG }}
+        run: bash tools/distrib/publish_distributions.sh "$PUBLICATION_SHA" release-artifacts

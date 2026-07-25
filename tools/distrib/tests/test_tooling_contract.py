@@ -365,5 +365,58 @@ class PlatformToolingContractTest(unittest.TestCase):
     self.assertEqual(3, len(re.findall(r'python_architecture:\s+arm64\b', workflow)))
 
 
+class PublicationWorkflowContractTest(unittest.TestCase):
+
+  def setUp(self):
+    self.workflow = (REPOSITORY_ROOT / '.github' / 'workflows' / 'build-jcef.yml').read_text(encoding='utf-8')
+
+  def job(self, name):
+    match = re.search(r'^  {}:\n(.*?)(?=^  [a-z][a-z0-9_-]*:\n|\Z)'.format(name), self.workflow, re.DOTALL | re.MULTILINE)
+    self.assertIsNotNone(match, 'missing {} workflow job'.format(name))
+    return match.group(1)
+
+  def test_manual_publication_is_explicit_and_master_only(self):
+    dispatch = re.search(r'^  workflow_dispatch:\n(.*?)(?=^[a-z][a-z0-9_-]*:|\Z)', self.workflow, re.DOTALL | re.MULTILINE)
+    self.assertIsNotNone(dispatch)
+    self.assertRegex(dispatch.group(1), r'inputs:\n\s+publish:\n\s+description: [^\n]+\n\s+required: false\n\s+default: false\n\s+type: boolean')
+    publish_job = self.job('publish')
+    gate = re.search(r'^    if: >-\n((?:      [^\n]*\n)+)', publish_job, re.MULTILINE)
+    self.assertIsNotNone(gate)
+    normalized_gate = ' '.join(line.strip() for line in gate.group(1).splitlines())
+    self.assertEqual("success() && github.ref == 'refs/heads/master' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))", normalized_gate)
+
+  def test_only_central_job_can_publish_after_every_platform_succeeds(self):
+    publish_job = self.job('publish')
+    self.assertIn('needs: [linux, windows, macos]', publish_job)
+    self.assertIn('runs-on: ubuntu-24.04', publish_job)
+    self.assertEqual(1, publish_job.count('S3_CFG: ${{ secrets.S3_CFG }}'))
+    self.assertEqual(1, publish_job.count('bash tools/distrib/publish_distributions.sh "$PUBLICATION_SHA" release-artifacts'))
+    self.assertIn('group: publish-jcef-${{ github.sha }}', publish_job)
+    self.assertIn('cancel-in-progress: false', publish_job)
+    for build_job_name in ('linux', 'windows', 'macos'):
+      build_job = self.job(build_job_name)
+      self.assertNotIn('s3cmd', build_job)
+      self.assertNotIn('S3_CFG', build_job)
+      self.assertNotIn('publish_distributions.sh', build_job)
+    self.assertEqual(1, self.workflow.count('Publish commit build to S3'))
+
+  def test_all_direct_artifacts_are_aggregated_with_pinned_download_action(self):
+    upload_revision = '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'
+    download_revision = '3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c'
+    for build_job_name in ('linux', 'windows', 'macos'):
+      build_job = self.job(build_job_name)
+      self.assertGreaterEqual(build_job.count('uses: actions/upload-artifact@{}'.format(upload_revision)), 2)
+      self.assertEqual(1, build_job.count('path: binary_distrib/${{ matrix.target }}.tar.gz\n'))
+      self.assertEqual(1, build_job.count('path: binary_distrib/${{ matrix.target }}.tar.gz.sha256\n'))
+      self.assertEqual(2, build_job.count('archive: false'))
+      self.assertEqual(2, build_job.count('if-no-files-found: error'))
+    self.assertEqual(1, self.workflow.count('uses: actions/download-artifact@{}'.format(download_revision)))
+    publish_job = self.job('publish')
+    self.assertIn("pattern: '*_*.tar.gz*'", publish_job)
+    self.assertIn('path: release-artifacts', publish_job)
+    self.assertIn('merge-multiple: true', publish_job)
+    self.assertEqual(6, self.workflow.count('target: '))
+    self.assertEqual(6, self.workflow.count('archive: false'))
+
 if __name__ == '__main__':
   unittest.main()

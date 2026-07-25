@@ -149,6 +149,7 @@ class CefURLRequestClientTest {
         String downloadData = section(implementation, "void URLRequestClient::OnDownloadData(", "bool URLRequestClient::GetAuthCredentials(");
         String dispatch = section(dispatcher, "bool Dispatch(CefThreadId thread_id)", "bool created() const");
         String execute = section(dispatcher, "void Execute() override", "private:");
+        String commonCreate = section(dispatcher, "void CreateURLRequest(", "}  // namespace");
         String nativeCreate = section(dispatcher, "Java_org_cef_network_CefURLRequest_1N_N_1Create(", "Java_org_cef_network_CefURLRequest_1N_N_1Dispose(");
         String globalDestructor = section(helperImplementation, "ScopedJNIObjectGlobal::~ScopedJNIObjectGlobal()", "void ScopedJNIObjectGlobal::Clear(");
         String globalClear = section(helperImplementation, "void ScopedJNIObjectGlobal::Clear(", "jobject ScopedJNIObjectGlobal::get(");
@@ -193,7 +194,7 @@ class CefURLRequestClientTest {
         assertTrue(pendingStatus >= 0 && pendingStatus < pendingCancel);
         assertTrue(dispatcher.contains("class URLRequestOperation : public CefTask"));
         assertTrue(dispatcher.contains("const Mode mode_;"));
-        assertEquals(5, occurrences(dispatcher, "new URLRequestOperation(this,"));
+        assertEquals(6, occurrences(dispatcher, "new URLRequestOperation(this,"));
         assertFalse(dispatcher.contains("mode_ = mode"));
         int dispatchLock = dispatch.indexOf("completion_lock_.Lock();");
         int post = dispatch.indexOf("CefPostTask(thread_id, this)");
@@ -206,8 +207,11 @@ class CefURLRequestClientTest {
         assertTrue(execute.contains("owner_->url_request_->GetRequestStatus() == UR_IO_PENDING"));
         assertTrue(execute.contains("owner_->url_request_->Cancel();"));
         int invalidGuard = nativeCreate.indexOf("if (!jrequest || !jRequestClient)");
-        int requestBinding = nativeCreate.indexOf("requestObj.SetHandle(jrequest, false");
-        assertTrue(invalidGuard >= 0 && invalidGuard < requestBinding);
+        int commonCall = nativeCreate.indexOf("CreateURLRequest(env, obj, jrequest, jRequestClient, nullptr);");
+        int requestBinding = commonCreate.indexOf("requestObj.SetHandle(jrequest, false");
+        int clientBinding = commonCreate.indexOf("URLRequestClient::Create(env, jRequestClient, obj)");
+        assertTrue(invalidGuard >= 0 && invalidGuard < commonCall);
+        assertTrue(requestBinding >= 0 && requestBinding < clientBinding);
         assertTrue(globalDestructor.contains("Clear(env);"));
         assertTrue(globalClear.contains("env->DeleteGlobalRef(jhandle_);"));
         assertTrue(globalClear.contains("jhandle_ = nullptr;"));

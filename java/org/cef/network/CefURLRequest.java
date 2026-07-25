@@ -4,6 +4,7 @@
 
 package org.cef.network;
 
+import org.cef.browser.CefRequestContext;
 import org.cef.callback.CefURLRequestClient;
 import org.cef.handler.CefLoadHandler.ErrorCode;
 
@@ -50,6 +51,15 @@ public abstract class CefURLRequest {
     }
 
     /**
+     * Create a new URL request using {@code requestContext}. Passing {@code null}
+     * uses the global request context and is equivalent to {@link #create(CefRequest,
+     * CefURLRequestClient)}.
+     */
+    public static final CefURLRequest create(CefRequest request, CefURLRequestClient client, CefRequestContext requestContext) {
+        return CefURLRequest_N.createNative(request, client, requestContext);
+    }
+
+    /**
      * Removes the native reference from an unused object.
      */
     public abstract void dispose();
@@ -87,6 +97,18 @@ public abstract class CefURLRequest {
      * The returned object is read-only and should not be modified.
      */
     public abstract CefResponse getResponse();
+
+    /**
+     * Returns true if the response body was served from the cache. This includes
+     * responses for which revalidation was required.
+     *
+     * <p>The default preserves compatibility with implementations compiled before
+     * this method was added. Native JCEF URL requests override it with the exact
+     * CEF result.</p>
+     */
+    public boolean responseWasCached() {
+        return false;
+    }
 
     /**
      * Cancel the request.

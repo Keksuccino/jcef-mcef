@@ -17,6 +17,14 @@ JNIEXPORT void JNICALL Java_org_cef_network_CefURLRequest_1N_N_1Create
 
 /*
  * Class:     org_cef_network_CefURLRequest_N
+ * Method:    N_CreateWithContext
+ * Signature: (Lorg/cef/network/CefRequest;Lorg/cef/callback/CefURLRequestClient;Lorg/cef/browser/CefRequestContext;)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_network_CefURLRequest_1N_N_1CreateWithContext
+  (JNIEnv *, jobject, jobject, jobject, jobject);
+
+/*
+ * Class:     org_cef_network_CefURLRequest_N
  * Method:    N_Dispose
  * Signature: (J)V
  */
@@ -45,6 +53,14 @@ JNIEXPORT jint JNICALL Java_org_cef_network_CefURLRequest_1N_N_1GetRequestErrorC
  * Signature: (J)Lorg/cef/network/CefResponse;
  */
 JNIEXPORT jobject JNICALL Java_org_cef_network_CefURLRequest_1N_N_1GetResponse
+  (JNIEnv *, jobject, jlong);
+
+/*
+ * Class:     org_cef_network_CefURLRequest_N
+ * Method:    N_ResponseWasCached
+ * Signature: (J)Z
+ */
+JNIEXPORT jboolean JNICALL Java_org_cef_network_CefURLRequest_1N_N_1ResponseWasCached
   (JNIEnv *, jobject, jlong);
 
 /*

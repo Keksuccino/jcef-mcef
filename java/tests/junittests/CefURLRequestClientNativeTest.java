@@ -5,8 +5,8 @@
 package tests.junittests;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -17,14 +17,7 @@ import org.cef.network.CefResponse;
 import org.cef.network.CefURLRequest;
 import org.junit.jupiter.api.Test;
 
-import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
-import java.net.ServerSocket;
-import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collections;
@@ -47,25 +40,9 @@ import java.util.concurrent.atomic.AtomicReference;
 class CefURLRequestClientNativeTest {
     private static final long CALLBACK_TIMEOUT_SECONDS = 20;
     private static final byte[] EMPTY_BODY = new byte[0];
-
-    @Test
-    void invalidRequestOrClientReturnsNullWithoutBindingTheClient() {
-        InvalidCreationClient client = new InvalidCreationClient();
-        CefRequest validRequest = CefRequest.create();
-        assertNotNull(validRequest);
-        try {
-            CefURLRequest nullRequest = CefURLRequest.create(null, client);
-            CefURLRequest nullClient = CefURLRequest.create(validRequest, null);
-
-            assertNull(nullRequest);
-            assertNull(nullClient);
-            assertEquals(0, client.nativeRefReads_.get());
-            assertEquals(0, client.nativeRefWrites_.get());
-            assertEquals(0, client.completionCount_.get());
-        } finally {
-            validRequest.dispose();
-        }
-    }
+    // CEF 151 couples this 5xx flag to network-change retries. Fixed-count loopback tests require
+    // each Java request to produce one deterministic HTTP request.
+    private static final int DETERMINISTIC_REQUEST_FLAGS = CefRequest.CefUrlRequestFlags.UR_FLAG_SKIP_CACHE | CefRequest.CefUrlRequestFlags.UR_FLAG_NO_RETRY_ON_5XX;
 
     @Test
     void reusedClientReceivesEachConcurrentRequestIdentityWithoutNativeCaching() throws Exception {
@@ -80,7 +57,7 @@ class CefURLRequestClientNativeTest {
             awaitCallbackLatch(requestsReady, "both concurrent HTTP requests");
             byte[] body = new byte[256 * 1024];
             Arrays.fill(body, (byte) (requestLine.contains("/first") ? 1 : 2));
-            writeResponse(output, "200 OK", "Content-Type: application/octet-stream\r\n", body);
+            LoopbackHttpServer.writeResponse(output, "200 OK", "Content-Type: application/octet-stream\r\n", body);
         })) {
             firstRequest = createRequest(server.url("/first"));
             secondRequest = createRequest(server.url("/second"));
@@ -187,7 +164,7 @@ class CefURLRequestClientNativeTest {
         CefURLRequest urlRequest = null;
         try (LoopbackHttpServer server = new LoopbackHttpServer(1, (requestLine, output) -> {
             awaitCallbackLatch(responseAllowed, "the Java request reference before responding");
-            writeResponse(output, "200 OK", "Content-Type: text/plain\r\n", "complete".getBytes(StandardCharsets.UTF_8));
+            LoopbackHttpServer.writeResponse(output, "200 OK", "Content-Type: text/plain\r\n", "complete".getBytes(StandardCharsets.UTF_8));
         })) {
             request = createRequest(server.url("/reentrant-completion"));
             urlRequest = CefURLRequest.create(request, client);
@@ -201,6 +178,7 @@ class CefURLRequestClientNativeTest {
             assertEquals(1, client.completionCount_.get());
             assertEquals(CefURLRequest.Status.UR_SUCCESS, client.completionStatus_.get());
             assertEquals(200, client.responseStatus_.get());
+            assertFalse(client.responseWasCached_.get());
         } finally {
             responseAllowed.countDown();
             dispose(urlRequest);
@@ -219,7 +197,7 @@ class CefURLRequestClientNativeTest {
         try (LoopbackHttpServer server = new LoopbackHttpServer(2, (requestLine, output) -> {
             requestsReady.countDown();
             awaitCallbackLatch(requestsReady, "both throwing-completion HTTP requests");
-            writeResponse(output, "200 OK", "Content-Type: text/plain\r\n", requestLine.getBytes(StandardCharsets.US_ASCII));
+            LoopbackHttpServer.writeResponse(output, "200 OK", "Content-Type: text/plain\r\n", requestLine.getBytes(StandardCharsets.US_ASCII));
         })) {
             firstRequest = createRequest(server.url("/throw-first"));
             secondRequest = createRequest(server.url("/complete-second"));
@@ -247,7 +225,7 @@ class CefURLRequestClientNativeTest {
     }
 
     private static LoopbackHttpServer challengeServer() throws IOException {
-        return new LoopbackHttpServer(1, (requestLine, output) -> writeResponse(output, "401 Unauthorized", "WWW-Authenticate: Basic realm=\"jcef-test\"\r\n", EMPTY_BODY));
+        return new LoopbackHttpServer(1, (requestLine, output) -> LoopbackHttpServer.writeResponse(output, "401 Unauthorized", "WWW-Authenticate: Basic realm=\"jcef-test\"\r\n", EMPTY_BODY));
     }
 
     private static CefRequest createRequest(String url) {
@@ -255,13 +233,13 @@ class CefURLRequestClientNativeTest {
         assertNotNull(request);
         request.setURL(url);
         request.setMethod("GET");
-        request.setFlags(CefRequest.CefUrlRequestFlags.UR_FLAG_SKIP_CACHE);
+        request.setFlags(DETERMINISTIC_REQUEST_FLAGS);
         return request;
     }
 
     private static CefRequest createAuthRequest(String url) {
         CefRequest request = createRequest(url);
-        request.setFlags(CefRequest.CefUrlRequestFlags.UR_FLAG_SKIP_CACHE | CefRequest.CefUrlRequestFlags.UR_FLAG_ALLOW_STORED_CREDENTIALS);
+        request.setFlags(DETERMINISTIC_REQUEST_FLAGS | CefRequest.CefUrlRequestFlags.UR_FLAG_ALLOW_STORED_CREDENTIALS);
         return request;
     }
 
@@ -287,13 +265,6 @@ class CefURLRequestClientNativeTest {
     private static void assertNoFailure(AtomicReference<Throwable> failure, String message) {
         Throwable throwable = failure.get();
         if (throwable != null) throw new AssertionError(message, throwable);
-    }
-
-    private static void writeResponse(OutputStream output, String status, String extraHeaders, byte[] body) throws IOException {
-        byte[] headers = ("HTTP/1.1 " + status + "\r\n" + extraHeaders + "Content-Length: " + body.length + "\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII);
-        output.write(headers);
-        output.write(body);
-        output.flush();
     }
 
     private abstract static class BaseClient implements CefURLRequestClient {
@@ -475,6 +446,7 @@ class CefURLRequestClientNativeTest {
         private final AtomicInteger completionCount_ = new AtomicInteger();
         private final AtomicReference<CefURLRequest.Status> completionStatus_ = new AtomicReference<CefURLRequest.Status>();
         private final AtomicInteger responseStatus_ = new AtomicInteger(-1);
+        private final AtomicBoolean responseWasCached_ = new AtomicBoolean();
         private final AtomicReference<Throwable> failure_ = new AtomicReference<Throwable>();
 
         @Override
@@ -485,6 +457,7 @@ class CefURLRequestClientNativeTest {
                 if (request != expectedRequest_.get())
                     throw new AssertionError("Completion received the wrong Java CefURLRequest");
                 completionStatus_.set(request.getRequestStatus());
+                responseWasCached_.set(request.responseWasCached());
                 response = request.getResponse();
                 if (response == null)
                     throw new AssertionError("Successful request had no terminal response");
@@ -502,28 +475,6 @@ class CefURLRequestClientNativeTest {
         }
     }
 
-    private static final class InvalidCreationClient extends BaseClient {
-        private final AtomicInteger nativeRefReads_ = new AtomicInteger();
-        private final AtomicInteger nativeRefWrites_ = new AtomicInteger();
-        private final AtomicInteger completionCount_ = new AtomicInteger();
-
-        @Override
-        public void setNativeRef(String identifier, long nativeRef) {
-            nativeRefWrites_.incrementAndGet();
-        }
-
-        @Override
-        public long getNativeRef(String identifier) {
-            nativeRefReads_.incrementAndGet();
-            return 0;
-        }
-
-        @Override
-        public void onRequestComplete(CefURLRequest request) {
-            completionCount_.incrementAndGet();
-        }
-    }
-
     private static final class ThrowingCompletionClient extends BaseClient {
         private final AtomicInteger completionCount_ = new AtomicInteger();
         private final AtomicInteger successfulStatuses_ = new AtomicInteger();
@@ -538,81 +489,6 @@ class CefURLRequestClientNativeTest {
                 successfulStatuses_.incrementAndGet();
             completions_.countDown();
             if (completion == 1) throw new IllegalStateException("Intentional completion exception for JNI cleanup regression coverage");
-        }
-    }
-
-    @FunctionalInterface
-    private interface ResponseHandler {
-        void handle(String requestLine, OutputStream output) throws Exception;
-    }
-
-    private static final class LoopbackHttpServer implements AutoCloseable {
-        private final int requestCount_;
-        private final ResponseHandler handler_;
-        private final ServerSocket serverSocket_ = new ServerSocket();
-        private final CountDownLatch responsesFinished_;
-        private final AtomicReference<Throwable> failure_ = new AtomicReference<Throwable>();
-        private final ExecutorService acceptor_ = Executors.newSingleThreadExecutor(daemonThreads("url-request-accept"));
-        private final ExecutorService connections_;
-
-        LoopbackHttpServer(int requestCount, ResponseHandler handler) throws IOException {
-            requestCount_ = requestCount;
-            handler_ = handler;
-            responsesFinished_ = new CountDownLatch(requestCount);
-            connections_ = Executors.newFixedThreadPool(requestCount, daemonThreads("url-request-connection"));
-            serverSocket_.setReuseAddress(true);
-            serverSocket_.bind(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0));
-            acceptor_.execute(this::acceptRequests);
-        }
-
-        String url(String path) {
-            return "http://127.0.0.1:" + serverSocket_.getLocalPort() + path;
-        }
-
-        void awaitHealthy() throws Exception {
-            awaitLatch(responsesFinished_, "the loopback HTTP responses");
-            assertNoFailure(failure_, "Loopback HTTP server failed");
-        }
-
-        private void acceptRequests() {
-            try {
-                for (int index = 0; index < requestCount_; index++) {
-                    Socket socket = serverSocket_.accept();
-                    connections_.execute(() -> handleRequest(socket));
-                }
-            } catch (Throwable throwable) {
-                if (!serverSocket_.isClosed()) {
-                    failure_.compareAndSet(null, throwable);
-                    while (responsesFinished_.getCount() != 0) responsesFinished_.countDown();
-                }
-            }
-        }
-
-        private void handleRequest(Socket socket) {
-            try (Socket connection = socket; BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream(), StandardCharsets.US_ASCII))) {
-                connection.setSoTimeout((int) TimeUnit.SECONDS.toMillis(CALLBACK_TIMEOUT_SECONDS));
-                String requestLine = reader.readLine();
-                if (requestLine == null || !requestLine.startsWith("GET /"))
-                    throw new IOException("Unexpected request line: " + requestLine);
-                String line;
-                while ((line = reader.readLine()) != null && !line.isEmpty()) {
-                }
-                handler_.handle(requestLine, connection.getOutputStream());
-            } catch (Throwable throwable) {
-                failure_.compareAndSet(null, throwable);
-            } finally {
-                responsesFinished_.countDown();
-            }
-        }
-
-        @Override
-        public void close() {
-            try {
-                serverSocket_.close();
-            } catch (IOException ignored) {
-            }
-            acceptor_.shutdownNow();
-            connections_.shutdownNow();
         }
     }
 

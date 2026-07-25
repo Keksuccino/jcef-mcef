@@ -33,10 +33,12 @@ from pathlib import Path
 import sys
 
 arguments = sys.argv[1:]
+SENSITIVE_ENVIRONMENT = ('GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN', 'ENV_TOKEN_SOURCE', 'ENV_TOKEN_CONTENT')
+sensitive_environment = {name: os.environ.get(name) for name in SENSITIVE_ENVIRONMENT}
 with Path(os.environ['FAKE_GIT_LOG']).open('a', encoding='utf-8') as stream:
-  stream.write(json.dumps({'arguments': arguments, 'gh_token': os.environ.get('GH_TOKEN'), 'github_token': os.environ.get('GITHUB_TOKEN'), 'gh_host': os.environ.get('GH_HOST')}, sort_keys=True) + '\n')
+  stream.write(json.dumps({'arguments': arguments, 'gh_token': os.environ.get('GH_TOKEN'), 'github_token': os.environ.get('GITHUB_TOKEN'), 'gh_host': os.environ.get('GH_HOST'), 'sensitive_environment': sensitive_environment}, sort_keys=True) + '\n')
 with Path(os.environ['FAKE_SUBPROCESS_LOG']).open('a', encoding='utf-8') as stream:
-  stream.write(json.dumps({'tool': 'git', 'gh_token': os.environ.get('GH_TOKEN'), 'github_token': os.environ.get('GITHUB_TOKEN'), 'gh_host': os.environ.get('GH_HOST')}, sort_keys=True) + '\n')
+  stream.write(json.dumps({'tool': 'git', 'gh_token': os.environ.get('GH_TOKEN'), 'github_token': os.environ.get('GITHUB_TOKEN'), 'gh_host': os.environ.get('GH_HOST'), 'sensitive_environment': sensitive_environment}, sort_keys=True) + '\n')
 if arguments[:1] == ['-C']:
   if Path(arguments[1]).resolve() != Path(os.environ['FAKE_ROOT']).resolve():
     raise SystemExit(89)
@@ -83,6 +85,21 @@ from pathlib import Path
 import sys
 
 arguments = sys.argv[1:]
+unsafe_shell_environment = [name for name in os.environ if name in ('BASH_ENV', 'ENV', 'SHELLOPTS', 'BASHOPTS', 'CDPATH', 'GLOBIGNORE', 'BASH_XTRACEFD', 'PS4') or name.startswith('BASH_FUNC_')]
+if unsafe_shell_environment:
+  print('unsafe shell environment reached fake gh: {!r}'.format(unsafe_shell_environment), file=sys.stderr)
+  raise SystemExit(94)
+unexpected_credentials = [name for name in ('GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN', 'ENV_TOKEN_SOURCE', 'ENV_TOKEN_CONTENT') if name in os.environ]
+if unexpected_credentials:
+  print('unexpected credentials reached fake gh: {!r}'.format(unexpected_credentials), file=sys.stderr)
+  raise SystemExit(95)
+if os.environ.get('FAKE_DRAIN_PUBLISHER_FD') == '1':
+  try:
+    os.lseek(9, 0, os.SEEK_END)
+  except OSError:
+    pass
+  else:
+    Path(os.environ['FAKE_PUBLISHER_FD_LOG']).write_text('fake gh inherited publisher fd 9\n', encoding='ascii')
 if arguments[:1] != ['api'] or '--hostname' not in arguments or '--method' not in arguments:
   raise SystemExit(91)
 if arguments[arguments.index('--hostname') + 1] != 'github.com' or arguments[arguments.index('--method') + 1] != 'GET':
@@ -94,7 +111,7 @@ with Path(os.environ['FAKE_GH_LOG']).open('a', encoding='utf-8') as stream:
 state = json.loads(Path(os.environ['FAKE_STATE']).read_text(encoding='utf-8'))
 if endpoint == 'repos/Keksuccino/jcef-mcef':
   print(state.get('repository_output', state['repository_id']))
-elif endpoint == 'repos/Keksuccino/jcef-mcef/actions/workflows/.github/workflows/build-jcef.yml':
+elif endpoint == 'repos/Keksuccino/jcef-mcef/actions/workflows/build-jcef.yml':
   print(state.get('workflow_output', state['workflow_id']))
 elif endpoint == 'repos/Keksuccino/jcef-mcef/actions/runs/' + state['run_id']:
   outputs = state.get('run_outputs', [state['run_sha'] + '|' + state['run_attempt']])
@@ -141,21 +158,48 @@ set +x
 captured_gh_token="${GH_TOKEN-}"
 captured_github_token="${GITHUB_TOKEN-}"
 captured_gh_host="${GH_HOST-}"
-unset GH_TOKEN GITHUB_TOKEN GH_HOST
+captured_gh_enterprise_token="${GH_ENTERPRISE_TOKEN-}"
+captured_github_enterprise_token="${GITHUB_ENTERPRISE_TOKEN-}"
+captured_env_token_source="${ENV_TOKEN_SOURCE-}"
+captured_env_token_content="${ENV_TOKEN_CONTENT-}"
+unset GH_TOKEN GITHUB_TOKEN GH_HOST GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN ENV_TOKEN_SOURCE ENV_TOKEN_CONTENT
+
+if [ "${FAKE_INSPECT_PUBLISHER_FDS-}" = 1 ]; then
+  inspect-publisher-fds "$0"
+fi
+
+if /usr/bin/env | /usr/bin/grep -E '^(BASH_ENV|ENV|SHELLOPTS|BASHOPTS|CDPATH|GLOBIGNORE|BASH_XTRACEFD|PS4|BASH_FUNC_[^=]*)=' >/dev/null; then
+  exit 95
+fi
+
+mode_of() {
+  if ! stat -f '%Lp' "$1" 2>/dev/null; then
+    stat -c '%a' "$1"
+  fi
+}
 
 artifact_directory="$2"
-if ! directory_mode="$(stat -f '%Lp' "$artifact_directory" 2>/dev/null)"; then
-  directory_mode="$(stat -c '%a' "$artifact_directory")"
-fi
+private_root="${artifact_directory%/*}"
+directory_mode="$(mode_of "$artifact_directory")"
+private_root_mode="$(mode_of "$private_root")"
+script_mode="$(mode_of "$0")"
+shopt -s dotglob nullglob
 artifact_paths=("${artifact_directory}"/*)
 {
   printf 'implementation=HEAD\n'
   printf 'sha=%s\n' "$1"
+  printf 'script_path=%s\n' "$0"
   printf 'directory=%s\n' "$artifact_directory"
   printf 'mode=%s\n' "$directory_mode"
+  printf 'private_root_mode=%s\n' "$private_root_mode"
+  printf 'script_mode=%s\n' "$script_mode"
   printf 'gh_token=%s\n' "$captured_gh_token"
   printf 'github_token=%s\n' "$captured_github_token"
   printf 'gh_host=%s\n' "$captured_gh_host"
+  printf 'gh_enterprise_token=%s\n' "$captured_gh_enterprise_token"
+  printf 'github_enterprise_token=%s\n' "$captured_github_enterprise_token"
+  printf 'env_token_source=%s\n' "$captured_env_token_source"
+  printf 'env_token_content=%s\n' "$captured_env_token_content"
   for artifact_path in "${artifact_paths[@]}"; do
     printf 'file=%s\n' "${artifact_path##*/}"
   done
@@ -170,6 +214,29 @@ printf 'worktree replacement executed\n' > "$FAKE_MALICIOUS_PUBLISHER_LOG"
 exit 95
 '''
 
+FAKE_FD_INSPECTOR = r'''#!/usr/bin/env python3
+import os
+from pathlib import Path
+import sys
+
+publisher_stat = os.stat(sys.argv[1])
+inherited = []
+for descriptor in range(3, 256):
+  try:
+    descriptor_stat = os.fstat(descriptor)
+  except OSError:
+    continue
+  if (descriptor_stat.st_dev, descriptor_stat.st_ino) != (publisher_stat.st_dev, publisher_stat.st_ino):
+    continue
+  inherited.append(descriptor)
+  try:
+    os.lseek(descriptor, 0, os.SEEK_END)
+  except OSError:
+    pass
+if inherited:
+  Path(os.environ['FAKE_PUBLISHER_FD_LOG']).write_text('publisher descriptor inherited by child: {}\n'.format(inherited), encoding='ascii')
+'''
+
 FAKE_FORWARDER = r'''#!PYTHON_EXECUTABLE
 import json
 import os
@@ -177,7 +244,8 @@ from pathlib import Path
 import sys
 
 tool = Path(sys.argv[0]).name
-record = {'tool': tool, 'gh_token': os.environ.get('GH_TOKEN'), 'github_token': os.environ.get('GITHUB_TOKEN'), 'gh_host': os.environ.get('GH_HOST')}
+SENSITIVE_ENVIRONMENT = ('GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN', 'ENV_TOKEN_SOURCE', 'ENV_TOKEN_CONTENT')
+record = {'tool': tool, 'gh_token': os.environ.get('GH_TOKEN'), 'github_token': os.environ.get('GITHUB_TOKEN'), 'gh_host': os.environ.get('GH_HOST'), 'sensitive_environment': {name: os.environ.get(name) for name in SENSITIVE_ENVIRONMENT}}
 with Path(os.environ['FAKE_SUBPROCESS_LOG']).open('a', encoding='utf-8') as stream:
   stream.write(json.dumps(record, sort_keys=True) + '\n')
 real_path = os.environ['FAKE_REAL_' + tool.upper().replace('-', '_')]
@@ -215,13 +283,16 @@ class PublishWorkflowRunTest(unittest.TestCase):
     self.gh_log = self.root / 'gh.log'
     self.subprocess_log = self.root / 'subprocess.log'
     self.publisher_log = self.root / 'publisher.log'
+    self.publisher_fd_log = self.root / 'publisher-fd.log'
     self.malicious_publisher_log = self.root / 'malicious-publisher.log'
+    self.shell_injection_log = self.root / 'shell-injection.log'
     self.state_path = self.root / 'state.json'
     self.write_executable('git', FAKE_GIT)
     self.write_executable('gh', FAKE_GH)
+    self.write_executable('inspect-publisher-fds', FAKE_FD_INSPECTOR)
     self.real_tools = {}
-    for tool in ('chmod', 'cmp', 'dirname', 'mktemp', 'mv', 'rm', 'stat', 'tr',
-                 'wc'):
+    for tool in ('chmod', 'cmp', 'dirname', 'mkdir', 'mktemp', 'mv', 'rm',
+                 'stat', 'tr', 'wc'):
       self.write_forwarder(tool)
     if shutil.which('sha256sum'):
       self.write_forwarder('sha256sum')
@@ -304,9 +375,12 @@ class PublishWorkflowRunTest(unittest.TestCase):
 
   def environment(self, **updates):
     environment = os.environ.copy()
-    environment.pop('GITHUB_TOKEN', None)
-    environment.pop('GH_TOKEN', None)
-    environment.pop('GH_HOST', None)
+    for name in tuple(environment):
+      if name in ('BASH_ENV', 'ENV', 'GITHUB_TOKEN', 'GH_TOKEN',
+                  'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN', 'GH_HOST',
+                  'ENV_TOKEN_SOURCE',
+                  'ENV_TOKEN_CONTENT') or name.startswith('BASH_FUNC_'):
+        environment.pop(name, None)
     environment.update({
         'FAKE_ROOT':
             str(self.root),
@@ -326,8 +400,12 @@ class PublishWorkflowRunTest(unittest.TestCase):
             str(self.state_path),
         'FAKE_PUBLISHER_LOG':
             str(self.publisher_log),
+        'FAKE_PUBLISHER_FD_LOG':
+            str(self.publisher_fd_log),
         'FAKE_MALICIOUS_PUBLISHER_LOG':
             str(self.malicious_publisher_log),
+        'FAKE_SHELL_INJECTION_LOG':
+            str(self.shell_injection_log),
         'TMPDIR':
             str(self.temp_root),
         'PATH':
@@ -341,7 +419,7 @@ class PublishWorkflowRunTest(unittest.TestCase):
 
   def run_wrapper(self, run_id=RUN_ID, environment=None):
     return subprocess.run(
-        ['/bin/bash', str(self.wrapper), run_id],
+        [str(self.wrapper), run_id],
         check=False,
         capture_output=True,
         text=True,
@@ -388,6 +466,7 @@ class PublishWorkflowRunTest(unittest.TestCase):
       self.assertIsNone(record['gh_token'], record)
       self.assertIsNone(record['github_token'], record)
       self.assertIsNone(record['gh_host'], record)
+      self.assertTrue(all(value is None for value in record['sensitive_environment'].values()), record)
 
   def assert_rejected_before_publisher(self, expected_error=None):
     self.write_state()
@@ -404,6 +483,12 @@ class PublishWorkflowRunTest(unittest.TestCase):
     self.assertEqual('HEAD', record['implementation'])
     self.assertEqual(RUN_SHA, record['sha'])
     self.assertEqual('700', record['mode'])
+    self.assertEqual('700', record['private_root_mode'])
+    self.assertEqual('400', record['script_mode'])
+    self.assertEqual(Path(record['directory']).parent, Path(record['script_path']).parent)
+    self.assertNotEqual(Path(record['directory']), Path(record['script_path']).parent)
+    self.assertEqual('publish_distributions.sh', Path(record['script_path']).name)
+    self.assertFalse(Path(record['script_path']).exists())
     self.assertEqual(
         sorted(artifact['name']
                for artifact in self.state['artifacts']), record['files'])
@@ -411,10 +496,15 @@ class PublishWorkflowRunTest(unittest.TestCase):
     self.assertEqual('', record['gh_token'])
     self.assertEqual('', record['github_token'])
     self.assertEqual('github.com', record['gh_host'])
+    self.assertEqual('', record['gh_enterprise_token'])
+    self.assertEqual('', record['github_enterprise_token'])
+    self.assertEqual('', record['env_token_source'])
+    self.assertEqual('', record['env_token_content'])
     gh_records = self.gh_records()
     self.assertTrue(
         all(record['github_token'] is None and record['gh_token'] is None and
             record['gh_host'] == 'github.com' for record in gh_records))
+    self.assertEqual(['repos/Keksuccino/jcef-mcef/actions/workflows/build-jcef.yml'], [record['endpoint'] for record in gh_records if '/actions/workflows/' in record['endpoint']])
     self.assert_no_credentials_in_non_gh_subprocesses()
     download_endpoints = [
         record['endpoint'] for record in gh_records
@@ -442,14 +532,14 @@ class PublishWorkflowRunTest(unittest.TestCase):
     self.assertEqual(expected_token, publisher['gh_token'])
     self.assertEqual('', publisher['github_token'])
     self.assertEqual('github.com', publisher['gh_host'])
+    self.assertEqual('', publisher['gh_enterprise_token'])
+    self.assertEqual('', publisher['github_enterprise_token'])
+    self.assertEqual('', publisher['env_token_source'])
+    self.assertEqual('', publisher['env_token_content'])
     self.assert_no_credentials_in_non_gh_subprocesses()
 
   def test_gh_token_precedes_github_token_without_non_gh_leakage(self):
-    self.assert_explicit_credential_flow(
-        self.environment(
-            GH_TOKEN=GH_TOKEN,
-            GITHUB_TOKEN=GITHUB_TOKEN,
-            GH_HOST='untrusted.example'), GH_TOKEN)
+    self.assert_explicit_credential_flow(self.environment(GH_TOKEN=GH_TOKEN, GITHUB_TOKEN=GITHUB_TOKEN, GH_ENTERPRISE_TOKEN='must-not-leak', GITHUB_ENTERPRISE_TOKEN='must-not-leak', ENV_TOKEN_SOURCE='must-not-remain-exported', ENV_TOKEN_CONTENT='must-not-remain-exported', GH_HOST='untrusted.example'), GH_TOKEN)
 
   def test_github_token_is_normalized_without_non_gh_leakage(self):
     self.assert_explicit_credential_flow(
@@ -462,6 +552,26 @@ class PublishWorkflowRunTest(unittest.TestCase):
         GH_TOKEN=' \n\t', GITHUB_TOKEN=GITHUB_TOKEN))
     self.assertNotEqual(0, result.returncode)
     self.assertIn('GH_TOKEN must contain a non-whitespace token', result.stderr)
+    self.assertFalse(self.git_log.exists())
+    self.assertFalse(self.gh_log.exists())
+    self.assertFalse(self.subprocess_log.exists())
+    self.assertFalse(self.publisher_log.exists())
+
+  def test_privileged_startup_blocks_bash_env_and_exported_gh_function(self):
+    bash_environment = self.root / 'malicious-bash-env'
+    bash_environment.write_text("printf 'BASH_ENV executed\\n' >> \"$FAKE_SHELL_INJECTION_LOG\"\ngh() { printf 'BASH_ENV gh function executed\\n' >> \"$FAKE_SHELL_INJECTION_LOG\"; return 97; }\nexport -f gh\n", encoding='utf-8')
+    environment = self.environment(BASH_ENV=str(bash_environment))
+    environment[
+        'BASH_FUNC_gh%%'] = '() { printf \'exported gh function executed\\n\' >> "$FAKE_SHELL_INJECTION_LOG"; return 98; }'
+    result = self.run_wrapper(environment=environment)
+    self.assertEqual(0, result.returncode, result.stderr)
+    self.assertFalse(self.shell_injection_log.exists())
+    self.assertTrue(self.publisher_log.exists())
+
+  def test_non_privileged_bash_invocation_is_rejected_before_children(self):
+    result = subprocess.run(['/bin/bash', str(self.wrapper), RUN_ID], check=False, capture_output=True, text=True, env=self.environment(), cwd=self.root)
+    self.assertNotEqual(0, result.returncode)
+    self.assertIn('execute publish_workflow_run.sh directly', result.stderr)
     self.assertFalse(self.git_log.exists())
     self.assertFalse(self.gh_log.exists())
     self.assertFalse(self.subprocess_log.exists())
@@ -502,6 +612,18 @@ class PublishWorkflowRunTest(unittest.TestCase):
       prior_artifacts.append(prior_artifact)
     self.state['artifacts'] = prior_artifacts + self.state['artifacts']
     self.assert_rejected_before_publisher()
+
+  def test_gh_children_cannot_access_trusted_publisher_descriptor(self):
+    result = self.run_wrapper(environment=self.environment(FAKE_DRAIN_PUBLISHER_FD='1'))
+    self.assertEqual(0, result.returncode, result.stderr)
+    self.assertFalse(self.publisher_fd_log.exists())
+    self.assertEqual('HEAD', self.publisher_record()['implementation'])
+
+  def test_publisher_children_cannot_inherit_publisher_script_descriptor(self):
+    result = self.run_wrapper(environment=self.environment(FAKE_INSPECT_PUBLISHER_FDS='1'))
+    self.assertEqual(0, result.returncode, result.stderr)
+    self.assertFalse(self.publisher_fd_log.exists())
+    self.assertEqual('HEAD', self.publisher_record()['implementation'])
 
   def test_worktree_replacement_after_final_check_cannot_change_publisher(self):
     self.state['replace_publisher_on_run_call'] = 2

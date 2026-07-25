@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash -p
 # Copyright (c) 2026 The Chromium Embedded Framework Authors. All rights
 # reserved. Use of this source code is governed by a BSD-style license
 # that can be found in the LICENSE file.
@@ -7,11 +7,21 @@ set -euo pipefail
 set +x
 umask 077
 
+if [[ $- != *p* ]]; then
+  echo 'ERROR: execute publish_workflow_run.sh directly so its privileged Bash startup is preserved' >&2
+  exit 1
+fi
+# Privileged startup prevents Bash from evaluating BASH_ENV and importing
+# exported functions before line 1. Remove named startup/search variables now;
+# credential-bearing children also receive no raw BASH_FUNC_* entries.
+unset BASH_ENV ENV CDPATH GLOBIGNORE
+
 # Capture an optional explicit credential using the same precedence as gh,
 # then remove every GitHub credential/host variable before the first child
 # process can inherit it. The captured value remains an unexported shell
 # variable and is attached only to individual gh calls and the final trusted
 # publisher process.
+unset ENV_TOKEN_SOURCE ENV_TOKEN_CONTENT
 ENV_TOKEN_SOURCE=''
 ENV_TOKEN_CONTENT=''
 if [ "${GH_TOKEN+x}" = x ]; then
@@ -21,12 +31,14 @@ elif [ "${GITHUB_TOKEN+x}" = x ]; then
   ENV_TOKEN_SOURCE='GITHUB_TOKEN'
   ENV_TOKEN_CONTENT="$GITHUB_TOKEN"
 fi
-unset GITHUB_TOKEN GH_TOKEN GH_HOST
+unset GITHUB_TOKEN GH_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN GH_HOST GH_DEBUG GH_FORCE_TTY GH_PAGER PAGER GH_REPO
 
 readonly REPOSITORY='Keksuccino/jcef-mcef'
 readonly REPOSITORY_URL='https://github.com/Keksuccino/jcef-mcef.git'
 readonly WORKFLOW_NAME='Build JCEF'
+readonly WORKFLOW_FILE='build-jcef.yml'
 readonly WORKFLOW_PATH='.github/workflows/build-jcef.yml'
+readonly SYSTEM_ENV_PATH='/usr/bin/env'
 readonly WRAPPER_PATH='tools/distrib/publish_workflow_run.sh'
 readonly PUBLISHER_PATH='tools/distrib/publish_distributions.sh'
 readonly -a EXPECTED_JOBS=(
@@ -53,6 +65,7 @@ HASH_KIND=''
 WC_PATH=''
 TR_PATH=''
 CMP_PATH=''
+MKDIR_PATH=''
 REPOSITORY_ROOT=''
 REPOSITORY_ID=''
 WORKFLOW_ID=''
@@ -61,8 +74,9 @@ RUN_SHA=''
 RUN_ATTEMPT=''
 VALIDATED_HEAD_SHA=''
 AUTHENTICATED_LOGIN=''
-TEMP_DIRECTORY=''
-PUBLISHER_FD_READY=false
+PRIVATE_ROOT=''
+ARTIFACT_DIRECTORY=''
+PUBLISHER_COPY=''
 
 JOB_NAMES=()
 JOB_IDS=()
@@ -70,27 +84,51 @@ ARTIFACT_IDS=()
 ARTIFACT_NAMES=()
 ARTIFACT_SIZES=()
 ARTIFACT_DIGESTS=()
+SANITIZED_ENV_ARGS=(-u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS -u CDPATH -u GLOBIGNORE -u BASH_XTRACEFD -u PS4 -u ENV_TOKEN_SOURCE -u ENV_TOKEN_CONTENT -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN -u GH_DEBUG -u GH_FORCE_TTY -u GH_PAGER -u PAGER -u GH_REPO)
 
 die() {
   echo "ERROR: $*" >&2
   exit 1
 }
 
+resolve_executable() {
+  local executable
+  executable="$(builtin type -P "$1" || true)"
+  if [[ "$executable" != /* ]] || [ ! -f "$executable" ] || [ ! -x "$executable" ]; then
+    return 1
+  fi
+  printf '%s\n' "$executable"
+}
+
+prepare_sanitized_environment() {
+  local environment_output
+  local entry
+  local variable_name
+  if [ ! -f "$SYSTEM_ENV_PATH" ] || [ ! -x "$SYSTEM_ENV_PATH" ]; then
+    die "Required system environment tool is unavailable: ${SYSTEM_ENV_PATH}"
+  fi
+  environment_output="$("$SYSTEM_ENV_PATH")" || die 'Unable to inspect the caller environment safely'
+  while IFS= read -r entry; do
+    case "$entry" in
+      BASH_FUNC_*%%=*)
+        variable_name="${entry%%=*}"
+        SANITIZED_ENV_ARGS+=(-u "$variable_name")
+        ;;
+    esac
+  done <<< "$environment_output"
+}
+
 gh_api() {
   if [ -n "$ENV_TOKEN_SOURCE" ]; then
-    GH_TOKEN="$ENV_TOKEN_CONTENT" GH_HOST=github.com GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 "$GH_PATH" api --hostname github.com --method GET "$@"
+    GH_TOKEN="$ENV_TOKEN_CONTENT" GH_HOST=github.com GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 "$SYSTEM_ENV_PATH" "${SANITIZED_ENV_ARGS[@]}" "$GH_PATH" api --hostname github.com --method GET "$@"
   else
-    GH_HOST=github.com GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 "$GH_PATH" api --hostname github.com --method GET "$@"
+    GH_HOST=github.com GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 "$SYSTEM_ENV_PATH" "${SANITIZED_ENV_ARGS[@]}" "$GH_PATH" api --hostname github.com --method GET "$@"
   fi
 }
 
 cleanup() {
-  if [ "$PUBLISHER_FD_READY" = true ]; then
-    exec 9<&-
-    PUBLISHER_FD_READY=false
-  fi
-  if [ -n "$TEMP_DIRECTORY" ] && [ -d "$TEMP_DIRECTORY" ]; then
-    rm -rf -- "$TEMP_DIRECTORY"
+  if [ -n "$PRIVATE_ROOT" ] && [ -d "$PRIVATE_ROOT" ]; then
+    rm -rf -- "$PRIVATE_ROOT"
   fi
 }
 
@@ -174,41 +212,51 @@ require_pristine_publication_scripts() {
   done
 }
 
-prepare_trusted_publisher() {
-  local publisher_copy
-  TEMP_DIRECTORY="$(mktemp -d "${TMPDIR:-/tmp}/jcef-publish.XXXXXX")" || die 'Unable to create a private publication directory'
-  chmod 700 "$TEMP_DIRECTORY"
-  publisher_copy="${TEMP_DIRECTORY}/.publish_distributions.sh"
-  if [[ ! "$VALIDATED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-    die 'Validated HEAD is unavailable for the trusted publisher copy'
-  fi
-  if ! "$GIT_PATH" -C "$REPOSITORY_ROOT" show "${VALIDATED_HEAD_SHA}:${PUBLISHER_PATH}" > "$publisher_copy"; then
-    die 'Unable to copy the publisher from HEAD'
-  fi
-  if [ ! -f "$publisher_copy" ] || [ -L "$publisher_copy" ]; then
-    die 'The trusted publisher copy is not a regular file'
-  fi
-  if ! "$GIT_PATH" -C "$REPOSITORY_ROOT" show "${VALIDATED_HEAD_SHA}:${PUBLISHER_PATH}" | "$CMP_PATH" -s - "$publisher_copy"; then
-    die 'The trusted publisher copy does not byte-match HEAD'
-  fi
-  chmod 400 "$publisher_copy"
-  if ! exec 9< "$publisher_copy"; then
-    die 'Unable to open the trusted publisher copy'
-  fi
-  PUBLISHER_FD_READY=true
-  if ! rm -f -- "$publisher_copy"; then
-    die 'Unable to detach the trusted publisher copy from the filesystem'
+prepare_private_directory() {
+  PRIVATE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/jcef-publish.XXXXXX")" || die 'Unable to create a private publication directory'
+  chmod 700 "$PRIVATE_ROOT"
+  # Keep the trusted publisher outside this child directory. The publisher
+  # enables dotglob and intentionally rejects anything beyond 12 artifacts.
+  ARTIFACT_DIRECTORY="${PRIVATE_ROOT}/artifacts"
+  if ! "$MKDIR_PATH" -m 700 -- "$ARTIFACT_DIRECTORY"; then
+    die 'Unable to create the private artifact directory'
   fi
 }
 
-invoke_trusted_publisher() {
-  if [ "$PUBLISHER_FD_READY" != true ] || [ ! -r /dev/fd/9 ]; then
-    die 'Trusted publisher descriptor is unavailable'
+prepare_trusted_publisher() {
+  if [ -z "$PRIVATE_ROOT" ] || [ ! -d "$PRIVATE_ROOT" ]; then
+    die 'Private publication directory is unavailable for the trusted publisher copy'
   fi
+  if [ -z "$ARTIFACT_DIRECTORY" ] || [ ! -d "$ARTIFACT_DIRECTORY" ]; then
+    die 'Private artifact directory is unavailable for the trusted publisher copy'
+  fi
+  PUBLISHER_COPY="${PRIVATE_ROOT}/publish_distributions.sh"
+  if [[ ! "$VALIDATED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+    die 'Validated HEAD is unavailable for the trusted publisher copy'
+  fi
+  if ! "$GIT_PATH" -C "$REPOSITORY_ROOT" show "${VALIDATED_HEAD_SHA}:${PUBLISHER_PATH}" > "$PUBLISHER_COPY"; then
+    die 'Unable to copy the publisher from HEAD'
+  fi
+  if [ ! -f "$PUBLISHER_COPY" ] || [ -L "$PUBLISHER_COPY" ]; then
+    die 'The trusted publisher copy is not a regular file'
+  fi
+  if ! "$GIT_PATH" -C "$REPOSITORY_ROOT" show "${VALIDATED_HEAD_SHA}:${PUBLISHER_PATH}" | "$CMP_PATH" -s - "$PUBLISHER_COPY"; then
+    die 'The trusted publisher copy does not byte-match HEAD'
+  fi
+  chmod 400 "$PUBLISHER_COPY"
+}
+
+invoke_trusted_publisher() {
+  if [ -z "$PUBLISHER_COPY" ] || [ ! -f "$PUBLISHER_COPY" ] || [ -L "$PUBLISHER_COPY" ] || [ ! -r "$PUBLISHER_COPY" ]; then
+    die 'Trusted publisher copy is unavailable'
+  fi
+  # Give Bash the private path so it owns and protects its parser input. An
+  # inherited descriptor would remain shared with publisher descendants, which
+  # could advance the shared open-file offset while Bash is still parsing.
   if [ -n "$ENV_TOKEN_SOURCE" ]; then
-    GH_TOKEN="$ENV_TOKEN_CONTENT" GH_HOST=github.com GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 /bin/bash /dev/fd/9 "$RUN_SHA" "$TEMP_DIRECTORY"
+    GH_TOKEN="$ENV_TOKEN_CONTENT" GH_HOST=github.com GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 "$SYSTEM_ENV_PATH" "${SANITIZED_ENV_ARGS[@]}" /bin/bash -p "$PUBLISHER_COPY" "$RUN_SHA" "$ARTIFACT_DIRECTORY"
   else
-    GH_HOST=github.com GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 /bin/bash /dev/fd/9 "$RUN_SHA" "$TEMP_DIRECTORY"
+    GH_HOST=github.com GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 "$SYSTEM_ENV_PATH" "${SANITIZED_ENV_ARGS[@]}" /bin/bash -p "$PUBLISHER_COPY" "$RUN_SHA" "$ARTIFACT_DIRECTORY"
   fi
 }
 
@@ -245,7 +293,7 @@ load_repository_identity() {
 }
 
 load_workflow_identity() {
-  if ! WORKFLOW_ID="$(gh_api "repos/${REPOSITORY}/actions/workflows/${WORKFLOW_PATH}" --jq 'if ((.id | type) == "number" and .id > 0 and .name == "Build JCEF" and .path == ".github/workflows/build-jcef.yml" and .state == "active") then (.id | tostring) else "invalid" end')"; then
+  if ! WORKFLOW_ID="$(gh_api "repos/${REPOSITORY}/actions/workflows/${WORKFLOW_FILE}" --jq 'if ((.id | type) == "number" and .id > 0 and .name == "Build JCEF" and .path == ".github/workflows/build-jcef.yml" and .state == "active") then (.id | tostring) else "invalid" end')"; then
     die "Unable to inspect workflow ${WORKFLOW_PATH}"
   fi
   case "$WORKFLOW_ID" in
@@ -406,16 +454,16 @@ download_and_validate_artifacts() {
   local final_path
   local actual_size
   local actual_digest
-  if [ -z "$TEMP_DIRECTORY" ] || [ ! -d "$TEMP_DIRECTORY" ] || [ "$PUBLISHER_FD_READY" != true ]; then
-    die 'Private publication directory is unavailable'
+  if [ -z "$ARTIFACT_DIRECTORY" ] || [ ! -d "$ARTIFACT_DIRECTORY" ]; then
+    die 'Private artifact directory is unavailable'
   fi
   for ((index = 0; index < ${#ARTIFACT_IDS[@]}; index++)); do
     artifact_id="${ARTIFACT_IDS[$index]}"
     artifact_name="${ARTIFACT_NAMES[$index]}"
     expected_size="${ARTIFACT_SIZES[$index]}"
     expected_digest="${ARTIFACT_DIGESTS[$index]}"
-    partial_path="${TEMP_DIRECTORY}/.${artifact_id}.partial"
-    final_path="${TEMP_DIRECTORY}/${artifact_name}"
+    partial_path="${ARTIFACT_DIRECTORY}/.${artifact_id}.partial"
+    final_path="${ARTIFACT_DIRECTORY}/${artifact_name}"
     if ! gh_api "repos/${REPOSITORY}/actions/artifacts/${artifact_id}/zip" > "$partial_path"; then
       die "Unable to download artifact ${artifact_name} by ID ${artifact_id}"
     fi
@@ -445,19 +493,19 @@ if [ -n "$ENV_TOKEN_SOURCE" ] && { [ -z "$ENV_TOKEN_CONTENT" ] || [[ ! "$ENV_TOK
   die "${ENV_TOKEN_SOURCE} must contain a non-whitespace token when set"
 fi
 
-GIT_PATH="$(command -v git || true)"
-GH_PATH="$(command -v gh || true)"
-WC_PATH="$(command -v wc || true)"
-TR_PATH="$(command -v tr || true)"
-CMP_PATH="$(command -v cmp || true)"
-if [ -z "$GIT_PATH" ] || [ -z "$GH_PATH" ] || [ -z "$WC_PATH" ] || [ -z "$TR_PATH" ] || [ -z "$CMP_PATH" ]; then
-  die 'git, gh, cmp, wc and tr are required for workflow-run publication'
+prepare_sanitized_environment
+GIT_PATH="$(resolve_executable git || true)"
+GH_PATH="$(resolve_executable gh || true)"
+WC_PATH="$(resolve_executable wc || true)"
+TR_PATH="$(resolve_executable tr || true)"
+CMP_PATH="$(resolve_executable cmp || true)"
+MKDIR_PATH="$(resolve_executable mkdir || true)"
+if [ -z "$GIT_PATH" ] || [ -z "$GH_PATH" ] || [ -z "$WC_PATH" ] || [ -z "$TR_PATH" ] || [ -z "$CMP_PATH" ] || [ -z "$MKDIR_PATH" ]; then
+  die 'git, gh, cmp, mkdir, wc and tr are required for workflow-run publication'
 fi
-if command -v sha256sum >/dev/null 2>&1; then
-  HASH_PATH="$(command -v sha256sum)"
+if HASH_PATH="$(resolve_executable sha256sum)"; then
   HASH_KIND=sha256sum
-elif command -v shasum >/dev/null 2>&1; then
-  HASH_PATH="$(command -v shasum)"
+elif HASH_PATH="$(resolve_executable shasum)"; then
   HASH_KIND=shasum
 else
   die 'sha256sum or shasum is required for artifact validation'
@@ -473,11 +521,11 @@ fi
 # Trust boundary: the local caller chooses the wrapper bytes that /bin/bash
 # begins interpreting, so a running script cannot retroactively authenticate
 # its own startup. Before exposing credentials we verify the checked-out
-# wrapper and publisher against HEAD, then detach a read-only HEAD-derived
-# publisher inode behind file descriptor 9. Later worktree replacement cannot
-# change the publisher bytes executed through that descriptor.
+# wrapper and publisher against HEAD and create a private artifact directory.
+# The publisher is copied from HEAD only at the final delegation boundary so
+# no intermediary child can replace it before validation.
 refresh_and_validate_master
-prepare_trusted_publisher
+prepare_private_directory
 load_repository_identity
 load_workflow_identity
 load_run_identity
@@ -487,9 +535,10 @@ load_and_validate_artifacts
 download_and_validate_artifacts
 
 # Artifact downloads may be long-running. Repeat the fetch and source checks
-# before delegation; the detached publisher descriptor remains authoritative
-# if the worktree path is replaced after this final check.
+# before delegation, then copy the HEAD-derived publisher immediately before
+# invocation. Later worktree replacement cannot change the private copy.
 refresh_and_validate_master
 revalidate_run_identity
+prepare_trusted_publisher
 echo "Publishing validated workflow run ${RUN_ID} for ${RUN_SHA} as the authenticated GitHub user"
 invoke_trusted_publisher

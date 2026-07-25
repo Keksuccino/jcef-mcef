@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -85,6 +86,12 @@ def asset_bytes(encoded):
 arguments = sys.argv[1:]
 if not arguments:
   fail('missing gh command')
+unsafe_shell_environment = [name for name in os.environ if name in ('BASH_ENV', 'ENV', 'SHELLOPTS', 'BASHOPTS', 'CDPATH', 'GLOBIGNORE', 'BASH_XTRACEFD', 'PS4') or name.startswith('BASH_FUNC_')]
+if unsafe_shell_environment:
+  fail('unsafe shell environment reached fake gh: {!r}'.format(unsafe_shell_environment))
+unexpected_credentials = [name for name in ('GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN', 'ENV_TOKEN_SOURCE', 'ENV_TOKEN_CONTENT') if name in os.environ]
+if unexpected_credentials:
+  fail('unexpected credentials reached fake gh: {!r}'.format(unexpected_credentials))
 expected_token = os.environ.get('FAKE_EXPECTED_TOKEN', '')
 if 'GITHUB_TOKEN' in os.environ:
   fail('publisher leaked GITHUB_TOKEN')
@@ -239,6 +246,21 @@ elif operation == 'upload-release':
       raise SystemExit(0)
     if should_fail:
       fail('injected upload failure after write', 73)
+  mutation = os.environ.get('FAKE_MUTATE_AFTER_UPLOAD')
+  if mutation == 'metadata':
+    release['title'] = 'tampered during upload'
+    state['release'] = release
+    save_state(state)
+  elif mutation == 'immutability':
+    state['immutable_status'] = 'boolean|false'
+    save_state(state)
+  elif mutation == 'identity':
+    release['id'] = 999
+    state['release'] = release
+    save_state(state)
+  elif mutation == 'author':
+    state['authenticated_login'] = 'different-user'
+    save_state(state)
 elif operation == 'publish-release':
   if release is None or not release['draft'] or arguments[2] != release['tag']:
     fail('only the exact draft can be published')
@@ -247,12 +269,30 @@ elif operation == 'publish-release':
     fail('publish safety flag missing')
   if flag_value(arguments, '--target') != release['target']:
     fail('publish target mismatch')
+  if flag_value(arguments, '--title') != release['title'] or flag_value(arguments, '--notes') != release['body'] or '--prerelease=false' not in arguments:
+    fail('publish metadata mismatch')
   release['draft'] = False
   release['immutable'] = state.get('immutable_after_publish', True)
   if state.get('latest_after_publish'):
     state['latest_status'] = 'tag|' + release['tag']
   state['release'] = release
   save_state(state)
+'''
+
+FAKE_LOCAL_TOOL = r'''#!PYTHON_EXECUTABLE
+import os
+from pathlib import Path
+import sys
+
+SENSITIVE_ENVIRONMENT = ('GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN', 'GH_HOST', 'ENV_TOKEN_SOURCE', 'ENV_TOKEN_CONTENT')
+leaked = {name: os.environ.get(name) for name in SENSITIVE_ENVIRONMENT if name in os.environ}
+if leaked:
+  print('publisher leaked credentials to local tool: {!r}'.format(leaked), file=sys.stderr)
+  raise SystemExit(96)
+with Path(os.environ['FAKE_LOCAL_TOOL_LOG']).open('a', encoding='utf-8') as stream:
+  stream.write(Path(sys.argv[0]).name + '\n')
+real_path = os.environ['FAKE_REAL_LOCAL_TOOL']
+os.execv(real_path, [real_path] + sys.argv[1:])
 '''
 
 
@@ -266,12 +306,20 @@ class PublishDistributionsTest(unittest.TestCase):
     self.artifact_directory = self.root / 'artifacts'
     self.fake_bin = self.root / 'bin'
     self.log_path = self.root / 'gh.log'
+    self.local_tool_log = self.root / 'local-tool.log'
+    self.shell_injection_log = self.root / 'shell-injection.log'
     self.state_path = self.root / 'state.json'
     self.artifact_directory.mkdir()
     self.fake_bin.mkdir()
     self.fake_gh = self.fake_bin / 'gh'
     self.fake_gh.write_text(FAKE_GH, encoding='utf-8')
     self.fake_gh.chmod(0o755)
+    real_local_tool = shutil.which('sha256sum') or shutil.which('shasum')
+    self.assertIsNotNone(real_local_tool)
+    self.real_local_tool = real_local_tool
+    self.fake_local_tool = self.fake_bin / Path(real_local_tool).name
+    self.fake_local_tool.write_text(FAKE_LOCAL_TOOL.replace('PYTHON_EXECUTABLE', sys.executable, 1), encoding='utf-8')
+    self.fake_local_tool.chmod(0o755)
     self.create_artifacts()
     self.write_state({'next_id': 1, 'tag_sha': None, 'release': None})
 
@@ -299,6 +347,12 @@ class PublishDistributionsTest(unittest.TestCase):
 
   def environment(self, **updates):
     environment = os.environ.copy()
+    for name in tuple(environment):
+      if name in ('BASH_ENV', 'ENV', 'GITHUB_TOKEN', 'GH_TOKEN',
+                  'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN', 'GH_HOST',
+                  'ENV_TOKEN_SOURCE',
+                  'ENV_TOKEN_CONTENT') or name.startswith('BASH_FUNC_'):
+        environment.pop(name, None)
     environment.update({
         'FAKE_EXPECTED_REPOSITORY':
             REPOSITORY,
@@ -310,6 +364,12 @@ class PublishDistributionsTest(unittest.TestCase):
             str(self.log_path),
         'FAKE_GH_STATE':
             str(self.state_path),
+        'FAKE_LOCAL_TOOL_LOG':
+            str(self.local_tool_log),
+        'FAKE_REAL_LOCAL_TOOL':
+            self.real_local_tool,
+        'FAKE_SHELL_INJECTION_LOG':
+            str(self.shell_injection_log),
         'GITHUB_TOKEN':
             TOKEN,
         'PATH':
@@ -333,7 +393,6 @@ class PublishDistributionsTest(unittest.TestCase):
                     cwd=None):
     return subprocess.run(
         [
-            '/bin/bash',
             str(PUBLISHER), commit_sha,
             str(artifact_directory or self.artifact_directory)
         ],
@@ -489,13 +548,30 @@ class PublishDistributionsTest(unittest.TestCase):
             for record in self.read_log()))
 
   def test_gh_token_precedence_matches_the_gh_cli(self):
-    result = self.run_publisher(environment=self.environment(
-        GITHUB_TOKEN='must-not-be-used', GH_TOKEN=TOKEN))
+    result = self.run_publisher(environment=self.environment(GITHUB_TOKEN='must-not-be-used', GH_TOKEN=TOKEN, GH_ENTERPRISE_TOKEN='must-not-leak', GITHUB_ENTERPRISE_TOKEN='must-not-leak', ENV_TOKEN_SOURCE='must-not-remain-exported', ENV_TOKEN_CONTENT='must-not-remain-exported'))
     self.assertEqual(0, result.returncode, result.stderr)
     self.assert_exact_published_release()
+    self.assertTrue(self.local_tool_log.exists())
     self.assertTrue(
         all(record['gh_token_matches'] and not record['github_token_present']
             for record in self.read_log()))
+
+  def test_privileged_startup_blocks_bash_env_and_exported_gh_function(self):
+    bash_environment = self.root / 'malicious-bash-env'
+    bash_environment.write_text("printf 'BASH_ENV executed\\n' >> \"$FAKE_SHELL_INJECTION_LOG\"\ngh() { printf 'BASH_ENV gh function executed\\n' >> \"$FAKE_SHELL_INJECTION_LOG\"; return 97; }\nexport -f gh\n", encoding='utf-8')
+    environment = self.environment(BASH_ENV=str(bash_environment))
+    environment[
+        'BASH_FUNC_gh%%'] = '() { printf \'exported gh function executed\\n\' >> "$FAKE_SHELL_INJECTION_LOG"; return 98; }'
+    result = self.run_publisher(environment=environment)
+    self.assertEqual(0, result.returncode, result.stderr)
+    self.assertFalse(self.shell_injection_log.exists())
+    self.assert_exact_published_release()
+
+  def test_non_privileged_bash_invocation_is_rejected_before_gh(self):
+    result = subprocess.run(['/bin/bash', str(PUBLISHER), COMMIT_SHA, str(self.artifact_directory)], check=False, capture_output=True, text=True, env=self.environment())
+    self.assertNotEqual(0, result.returncode)
+    self.assertIn('execute publish_distributions.sh directly', result.stderr)
+    self.assertFalse(self.log_path.exists())
 
   def test_artifact_directory_with_leading_dash_basename_is_option_safe(self):
     leading_dash_directory = self.root / '-artifacts'
@@ -772,6 +848,23 @@ class PublishDistributionsTest(unittest.TestCase):
     self.assert_exact_published_release()
     self.assertNotIn('upload-release', self.operations())
     self.assertNotIn('delete-release', self.operations())
+
+  def test_final_preflight_rejects_repository_or_draft_changes_during_upload(self):
+    cases = (('metadata', 'Release ownership marker mismatch'),
+             ('immutability', 'Immutable releases must be enabled'),
+             ('identity',
+              'Draft release identity changed'), ('author',
+                                                  'Release author mismatch'))
+    for mutation, expected_error in cases:
+      with self.subTest(mutation=mutation):
+        self.write_state({'next_id': 1, 'tag_sha': None, 'release': None})
+        if self.log_path.exists():
+          self.log_path.unlink()
+        result = self.run_publisher(environment=self.environment(FAKE_MUTATE_AFTER_UPLOAD=mutation))
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn(expected_error, result.stderr)
+        self.assertTrue(self.read_state()['release']['draft'])
+        self.assertNotIn('publish-release', self.operations())
 
   def test_post_publish_nonimmutable_state_is_detected(self):
     state = self.read_state()

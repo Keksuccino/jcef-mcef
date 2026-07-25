@@ -224,6 +224,10 @@ has completed successfully, publish it from macOS or Linux with:
 tools/distrib/publish_workflow_run.sh <workflow-run-id>
 ```
 
+Execute the script directly as shown; do not prefix the command with `bash`.
+Its privileged Bash startup prevents caller-controlled startup files and
+exported shell functions from crossing the publication credential boundary.
+
 The publisher accepts only the exact six successful platform jobs and twelve
 canonical, non-expired raw artifacts. It downloads every artifact by ID,
 verifies its GitHub-reported size and SHA-256 digest, checks each archive

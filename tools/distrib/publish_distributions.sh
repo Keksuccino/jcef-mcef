@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash -p
 # Copyright (c) 2026 The Chromium Embedded Framework Authors. All rights
 # reserved. Use of this source code is governed by a BSD-style license
 # that can be found in the LICENSE file.
@@ -6,10 +6,20 @@
 set -euo pipefail
 set +x
 
+if [[ $- != *p* ]]; then
+  echo 'ERROR: execute publish_distributions.sh directly so its privileged Bash startup is preserved' >&2
+  exit 1
+fi
+# Privileged startup ignores caller-controlled startup files and imported
+# functions. Named startup/search variables are removed now, and raw exported
+# function entries are stripped from every credential-bearing child.
+unset BASH_ENV ENV CDPATH GLOBIGNORE
+
 readonly REPOSITORY_OWNER='Keksuccino'
 readonly REPOSITORY_NAME='jcef-mcef'
 readonly REPOSITORY="${REPOSITORY_OWNER}/${REPOSITORY_NAME}"
 readonly RELEASE_MARKER='managed-by=tools/distrib/publish_distributions.sh;schema=1'
+readonly SYSTEM_ENV_PATH='/usr/bin/env'
 readonly LATEST_RELEASE_QUERY="query(\$owner:String!,\$name:String!){repository(owner:\$owner,name:\$name){latestRelease{tagName}}}"
 readonly -a TARGETS=(
   linux_amd64
@@ -24,6 +34,7 @@ readonly -a TARGETS=(
 # supplied token is captured and exposed only to the resolved gh executable
 # after all local artifacts validate. With no token environment variable, gh
 # uses the maintainer's authenticated credential store instead.
+unset ENV_TOKEN_SOURCE ENV_TOKEN_CONTENT
 ENV_TOKEN_SOURCE=''
 ENV_TOKEN_CONTENT=''
 if [ "${GH_TOKEN+x}" = x ]; then
@@ -33,17 +44,21 @@ elif [ "${GITHUB_TOKEN+x}" = x ]; then
   ENV_TOKEN_SOURCE='GITHUB_TOKEN'
   ENV_TOKEN_CONTENT="$GITHUB_TOKEN"
 fi
-unset GITHUB_TOKEN GH_TOKEN GH_HOST
+unset GITHUB_TOKEN GH_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN GH_HOST GH_DEBUG GH_FORCE_TTY GH_PAGER PAGER GH_REPO
 
 GH_PATH=''
+HASH_PATH=''
 HASH_COMMAND=''
 CMP_PATH=''
+WC_PATH=''
+TR_PATH=''
 COMMIT_SHA=''
 ARTIFACT_DIRECTORY=''
 TAG_NAME=''
 RELEASE_TITLE=''
 RELEASE_BODY=''
 RELEASE_IDS=''
+DRAFT_RELEASE_ID=''
 TAG_REFS=''
 RELEASE_ASSETS=''
 METADATA_TAG=''
@@ -61,17 +76,45 @@ ASSET_SIZES=()
 ASSET_DIGESTS=()
 ARCHIVE_PATHS=()
 CHECKSUM_PATHS=()
+SANITIZED_ENV_ARGS=(-u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS -u CDPATH -u GLOBIGNORE -u BASH_XTRACEFD -u PS4 -u ENV_TOKEN_SOURCE -u ENV_TOKEN_CONTENT -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN -u GH_DEBUG -u GH_FORCE_TTY -u GH_PAGER -u PAGER -u GH_REPO)
 
 die() {
   echo "ERROR: $*" >&2
   exit 1
 }
 
+resolve_executable() {
+  local executable
+  executable="$(builtin type -P "$1" || true)"
+  if [[ "$executable" != /* ]] || [ ! -f "$executable" ] || [ ! -x "$executable" ]; then
+    return 1
+  fi
+  printf '%s\n' "$executable"
+}
+
+prepare_sanitized_environment() {
+  local environment_output
+  local entry
+  local variable_name
+  if [ ! -f "$SYSTEM_ENV_PATH" ] || [ ! -x "$SYSTEM_ENV_PATH" ]; then
+    die "Required system environment tool is unavailable: ${SYSTEM_ENV_PATH}"
+  fi
+  environment_output="$("$SYSTEM_ENV_PATH")" || die 'Unable to inspect the caller environment safely'
+  while IFS= read -r entry; do
+    case "$entry" in
+      BASH_FUNC_*%%=*)
+        variable_name="${entry%%=*}"
+        SANITIZED_ENV_ARGS+=(-u "$variable_name")
+        ;;
+    esac
+  done <<< "$environment_output"
+}
+
 gh_command() {
   if [ -n "$ENV_TOKEN_SOURCE" ]; then
-    GH_TOKEN="$ENV_TOKEN_CONTENT" GH_HOST=github.com GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 "$GH_PATH" "$@"
+    GH_TOKEN="$ENV_TOKEN_CONTENT" GH_HOST=github.com GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 "$SYSTEM_ENV_PATH" "${SANITIZED_ENV_ARGS[@]}" "$GH_PATH" "$@"
   else
-    GH_HOST=github.com GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 "$GH_PATH" "$@"
+    GH_HOST=github.com GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 "$SYSTEM_ENV_PATH" "${SANITIZED_ENV_ARGS[@]}" "$GH_PATH" "$@"
   fi
 }
 
@@ -80,9 +123,9 @@ hash_file() {
   local output
   local digest
   if [ "$HASH_COMMAND" = 'sha256sum' ]; then
-    output="$(sha256sum -- "$path")" || return 1
+    output="$("$HASH_PATH" -- "$path")" || return 1
   else
-    output="$(shasum -a 256 "$path")" || return 1
+    output="$("$HASH_PATH" -a 256 "$path")" || return 1
   fi
   digest="${output%%[[:space:]]*}"
   if [[ ! "$digest" =~ ^[0-9a-f]{64}$ ]]; then
@@ -94,7 +137,7 @@ hash_file() {
 file_size() {
   local path="$1"
   local size
-  size="$(wc -c < "$path" | tr -d '[:space:]')" || return 1
+  size="$("$WC_PATH" -c < "$path" | "$TR_PATH" -d '[:space:]')" || return 1
   case "$size" in
     ''|*[!0-9]*) return 1 ;;
   esac
@@ -339,6 +382,7 @@ create_empty_draft() {
   refresh_release_metadata
   validate_release_identity
   require_mutable_draft
+  DRAFT_RELEASE_ID="$RELEASE_IDS"
   ensure_exact_tag false
   refresh_release_assets
   if [ -n "$RELEASE_ASSETS" ]; then
@@ -347,12 +391,26 @@ create_empty_draft() {
 }
 
 publish_verified_draft() {
+  # Uploads can take long enough for repository settings or draft ownership to
+  # change. Repeat every mutable trust check at the final publication boundary.
+  require_immutable_releases
+  resolve_release_author
+  query_release_ids
+  if [ -z "$RELEASE_IDS" ]; then
+    die "Draft release disappeared before publication: ${TAG_NAME}"
+  fi
+  if [ -z "$DRAFT_RELEASE_ID" ] || [ "$RELEASE_IDS" != "$DRAFT_RELEASE_ID" ]; then
+    die "Draft release identity changed before publication: ${TAG_NAME}"
+  fi
+  refresh_release_metadata
+  validate_release_identity
+  require_mutable_draft
   ensure_exact_tag false
   refresh_release_assets
   if ! release_assets_match; then
     die "Draft release asset validation failed for ${TAG_NAME}"
   fi
-  if ! gh_command release edit "$TAG_NAME" --repo "$REPOSITORY" --draft=false --verify-tag --target "$COMMIT_SHA" --latest=false; then
+  if ! gh_command release edit "$TAG_NAME" --repo "$REPOSITORY" --draft=false --prerelease=false --verify-tag --target "$COMMIT_SHA" --title "$RELEASE_TITLE" --notes "$RELEASE_BODY" --latest=false; then
     die "Unable to publish verified draft release ${TAG_NAME}"
   fi
   query_release_ids
@@ -398,16 +456,19 @@ if [ "${#ARTIFACT_ENTRIES[@]}" -ne 12 ]; then
     "checksum files; found ${#ARTIFACT_ENTRIES[@]}"
 fi
 
-if command -v sha256sum >/dev/null 2>&1; then
+prepare_sanitized_environment
+if HASH_PATH="$(resolve_executable sha256sum)"; then
   HASH_COMMAND='sha256sum'
-elif command -v shasum >/dev/null 2>&1; then
+elif HASH_PATH="$(resolve_executable shasum)"; then
   HASH_COMMAND='shasum'
 else
   die 'sha256sum or shasum is required to validate distribution archives'
 fi
-CMP_PATH="$(command -v cmp || true)"
-if [ -z "$CMP_PATH" ]; then
-  die 'cmp is required to validate distribution checksums byte-for-byte'
+CMP_PATH="$(resolve_executable cmp || true)"
+WC_PATH="$(resolve_executable wc || true)"
+TR_PATH="$(resolve_executable tr || true)"
+if [ -z "$CMP_PATH" ] || [ -z "$WC_PATH" ] || [ -z "$TR_PATH" ]; then
+  die 'cmp, wc and tr are required to validate distribution artifacts'
 fi
 
 for target in "${TARGETS[@]}"; do
@@ -438,7 +499,7 @@ for target in "${TARGETS[@]}"; do
   CHECKSUM_PATHS+=("$checksum_path")
 done
 
-GH_PATH="$(command -v gh || true)"
+GH_PATH="$(resolve_executable gh || true)"
 if [ -z "$GH_PATH" ]; then
   die 'gh is required for distribution publication'
 fi
@@ -466,6 +527,7 @@ if [ -n "$RELEASE_IDS" ]; then
     exit 0
   fi
   require_mutable_draft
+  DRAFT_RELEASE_ID="$RELEASE_IDS"
 
   # Validate ownership and the canonical asset-name subset before mutating
   # even the tag. Only this script's exact bot-authored draft is recoverable.

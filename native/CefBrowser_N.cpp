@@ -23,6 +23,7 @@
 #include "client_handler.h"
 #include "devtools_message_observer.h"
 #include "double_callback.h"
+#include "ime_composition.h"
 #include "int_callback.h"
 #include "jni_util.h"
 #include "key_event_platform_util.h"
@@ -3480,6 +3481,15 @@ CefRefPtr<CefBrowser> GetLifecycleSafeJNIBrowser(JNIEnv* env, jobject jbrowser, 
   return env->ExceptionCheck() ? nullptr : browser;
 }
 
+CefRefPtr<CefBrowserHost> GetWindowlessImeHost(const CefRefPtr<CefBrowser>& browser) {
+  if (!browser.get() || !browser->IsValid())
+    return nullptr;
+  CefRefPtr<CefBrowserHost> host = browser->GetHost();
+  if (!host.get() || !host->IsWindowRenderingDisabled())
+    return nullptr;
+  return host;
+}
+
 // CEF zoom queries are UI-thread-only. Every posted task retains the browser
 // instead of only the host so it can recheck validity after OnBeforeClose.
 void queryCanZoom(CefRefPtr<CefBrowser> browser, cef_zoom_command_t command, CefRefPtr<IntCallback> callback) {
@@ -3765,6 +3775,10 @@ JNIEXPORT jobject JNICALL Java_org_cef_browser_CefBrowser_1N_N_1ConvertBrowserSe
       env->ThrowNew(exception_class, "Failed to create CefBrowserSettings test snapshot");
   }
   return snapshot;
+}
+
+JNIEXPORT jobjectArray JNICALL Java_org_cef_browser_CefBrowser_1N_N_1ConvertImeCompositionForTesting(JNIEnv* env, jclass, jstring text, jobjectArray underlines, jobject replacement_range, jobject selection_range) {
+  return ime_composition::NewSnapshot(env, text, underlines, replacement_range, selection_range);
 }
 
 JNIEXPORT jboolean JNICALL Java_org_cef_browser_CefBrowser_1N_N_1IsOnCefUiThreadForTesting(JNIEnv*, jclass) {
@@ -4172,6 +4186,48 @@ Java_org_cef_browser_CefBrowser_1N_N_1SetFocus(JNIEnv* env,
                                                jboolean enable) {
   CefRefPtr<CefBrowser> browser = JNI_GET_BROWSER_OR_RETURN(env, obj);
   browser->GetHost()->SetFocus(enable != JNI_FALSE);
+}
+
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1ImeSetComposition(JNIEnv* env, jobject obj, jstring text, jobjectArray underlines, jobject replacement_range, jobject selection_range) {
+  CefRefPtr<CefBrowser> browser = GetLifecycleSafeJNIBrowser(env, obj);
+  if (!browser.get() || !browser->IsValid())
+    return;
+
+  ime_composition::SetComposition composition;
+  if (!ime_composition::ConvertSetComposition(env, text, underlines, replacement_range, selection_range, &composition))
+    return;
+
+  CefRefPtr<CefBrowserHost> host = GetWindowlessImeHost(browser);
+  if (host.get())
+    host->ImeSetComposition(composition.text, composition.underlines, composition.replacement_range, composition.selection_range);
+}
+
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1ImeCommitText(JNIEnv* env, jobject obj, jstring text, jobject replacement_range, jint relative_cursor_position) {
+  CefRefPtr<CefBrowser> browser = GetLifecycleSafeJNIBrowser(env, obj);
+  if (!browser.get() || !browser->IsValid())
+    return;
+
+  ime_composition::CommitText commit;
+  if (!ime_composition::ConvertCommitText(env, text, replacement_range, &commit))
+    return;
+
+  CefRefPtr<CefBrowserHost> host = GetWindowlessImeHost(browser);
+  if (host.get())
+    host->ImeCommitText(commit.text, commit.replacement_range, relative_cursor_position);
+}
+
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1ImeFinishComposingText(JNIEnv* env, jobject obj, jboolean keep_selection) {
+  CefRefPtr<CefBrowser> browser = GetLifecycleSafeJNIBrowser(env, obj);
+  CefRefPtr<CefBrowserHost> host = GetWindowlessImeHost(browser);
+  if (host.get())
+    host->ImeFinishComposingText(keep_selection != JNI_FALSE);
+}
+
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1ImeCancelComposition(JNIEnv* env, jobject obj) {
+  CefRefPtr<CefBrowser> browser = GetLifecycleSafeJNIBrowser(env, obj);
+  CefRefPtr<CefBrowserHost> host = GetWindowlessImeHost(browser);
+  if (host.get())
+    host->ImeCancelComposition();
 }
 
 JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1SetWindowVisibility(JNIEnv* env, jobject obj, jboolean visible) {

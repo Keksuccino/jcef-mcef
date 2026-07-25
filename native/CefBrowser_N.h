@@ -23,6 +23,14 @@ JNIEXPORT jobject JNICALL Java_org_cef_browser_CefBrowser_1N_N_1ConvertBrowserSe
 
 /*
  * Class:     org_cef_browser_CefBrowser_N
+ * Method:    N_ConvertImeCompositionForTesting
+ * Signature: (Ljava/lang/String;[Lorg/cef/input/CefCompositionUnderline;Lorg/cef/misc/CefRange;Lorg/cef/misc/CefRange;)[Ljava/lang/Object;
+ */
+JNIEXPORT jobjectArray JNICALL Java_org_cef_browser_CefBrowser_1N_N_1ConvertImeCompositionForTesting
+  (JNIEnv *, jclass, jstring, jobjectArray, jobject, jobject);
+
+/*
+ * Class:     org_cef_browser_CefBrowser_N
  * Method:    N_IsOnCefUiThreadForTesting
  * Signature: ()Z
  */
@@ -324,6 +332,38 @@ JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1Close
  */
 JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1SetFocus
   (JNIEnv *, jobject, jboolean);
+
+/*
+ * Class:     org_cef_browser_CefBrowser_N
+ * Method:    N_ImeSetComposition
+ * Signature: (Ljava/lang/String;[Lorg/cef/input/CefCompositionUnderline;Lorg/cef/misc/CefRange;Lorg/cef/misc/CefRange;)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1ImeSetComposition
+  (JNIEnv *, jobject, jstring, jobjectArray, jobject, jobject);
+
+/*
+ * Class:     org_cef_browser_CefBrowser_N
+ * Method:    N_ImeCommitText
+ * Signature: (Ljava/lang/String;Lorg/cef/misc/CefRange;I)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1ImeCommitText
+  (JNIEnv *, jobject, jstring, jobject, jint);
+
+/*
+ * Class:     org_cef_browser_CefBrowser_N
+ * Method:    N_ImeFinishComposingText
+ * Signature: (Z)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1ImeFinishComposingText
+  (JNIEnv *, jobject, jboolean);
+
+/*
+ * Class:     org_cef_browser_CefBrowser_N
+ * Method:    N_ImeCancelComposition
+ * Signature: ()V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1ImeCancelComposition
+  (JNIEnv *, jobject);
 
 /*
  * Class:     org_cef_browser_CefBrowser_N

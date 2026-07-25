@@ -11,12 +11,15 @@ import org.cef.callback.CefStringVisitor;
 import org.cef.handler.CefDialogHandler.FileDialogMode;
 import org.cef.handler.CefRenderHandler;
 import org.cef.handler.CefWindowHandler;
+import org.cef.input.CefCompositionUnderline;
 import org.cef.misc.CefPdfPrintSettings;
+import org.cef.misc.CefRange;
 import org.cef.network.CefRequest;
 
 import java.awt.Component;
 import java.awt.Point;
 import java.awt.image.BufferedImage;
+import java.util.List;
 import java.util.Objects;
 import java.util.Vector;
 import java.util.concurrent.CompletableFuture;
@@ -298,6 +301,85 @@ public interface CefBrowser {
      * @param enable set to true to give the focus to the browser
      **/
     public void setFocus(boolean enable);
+
+    /**
+     * Begins or updates an IME composition in a windowless browser. Call this method repeatedly as
+     * composition text changes, then terminate the composition with {@link #imeCommitText}, {@link
+     * #imeFinishComposingText}, or {@link #imeCancelComposition}. For native JCEF browsers,
+     * otherwise-valid calls made before native browser creation or while the browser is closing or
+     * closed have no effect. This method may be called from any Java thread.
+     *
+     * <p>All ranges use UTF-16 code-unit offsets. Underline ranges must be valid forward ranges
+     * within {@code text}. The selection and replacement ranges preserve CEF's full unsigned range
+     * domain and direction; {@link CefRange#INVALID} represents an omitted range. The replacement
+     * range is currently used only on macOS. Empty text and underline lists are supported.
+     *
+     * @param text the current composition text
+     * @param underlines an ordered snapshot of composition underline data
+     * @param replacementRange the existing document range to replace, or {@code CefRange.INVALID}
+     * @param selectionRange the selection after setting composition, or {@code CefRange.INVALID}
+     * @throws NullPointerException if any argument is {@code null}
+     * @throws IllegalArgumentException if an underline range is invalid, reversed, or outside
+     *         {@code text}'s UTF-16 code-unit length
+     * @throws UnsupportedOperationException if this browser implementation does not support CEF
+     *         OSR IME composition
+     */
+    public default void imeSetComposition(String text, List<CefCompositionUnderline> underlines, CefRange replacementRange, CefRange selectionRange) {
+        Objects.requireNonNull(text, "text");
+        Objects.requireNonNull(underlines, "underlines");
+        Objects.requireNonNull(replacementRange, "replacementRange");
+        Objects.requireNonNull(selectionRange, "selectionRange");
+        throw new UnsupportedOperationException("imeSetComposition is not supported by this browser");
+    }
+
+    /**
+     * Commits text to the currently focused editable element in a windowless browser and
+     * terminates any active IME composition. For native JCEF browsers, otherwise-valid calls made
+     * before native browser creation or while the browser is closing or closed have no effect.
+     * This method may be called from any Java thread.
+     *
+     * <p>The replacement range and relative cursor position are currently used only on macOS.
+     * {@link CefRange#INVALID} replaces the current selection. The cursor offset is relative to
+     * the current cursor position, and every {@code int} value is forwarded unchanged.
+     *
+     * @param text the text to commit, which may be empty
+     * @param replacementRange the existing document range to replace, or {@code CefRange.INVALID}
+     * @param relativeCursorPosition the cursor offset relative to the current cursor position
+     * @throws NullPointerException if {@code text} or {@code replacementRange} is {@code null}
+     * @throws UnsupportedOperationException if this browser implementation does not support CEF
+     *         OSR IME composition
+     */
+    public default void imeCommitText(String text, CefRange replacementRange, int relativeCursorPosition) {
+        Objects.requireNonNull(text, "text");
+        Objects.requireNonNull(replacementRange, "replacementRange");
+        throw new UnsupportedOperationException("imeCommitText is not supported by this browser");
+    }
+
+    /**
+     * Applies the current composition and terminates IME composition in a windowless browser. For
+     * native JCEF browsers, calls made before native browser creation or while the browser is
+     * closing or closed have no effect. This method may be called from any Java thread.
+     *
+     * @param keepSelection {@code true} to retain the composition selection, or {@code false} to
+     *        discard it
+     * @throws UnsupportedOperationException if this browser implementation does not support CEF
+     *         OSR IME composition
+     */
+    public default void imeFinishComposingText(boolean keepSelection) {
+        throw new UnsupportedOperationException("imeFinishComposingText is not supported by this browser");
+    }
+
+    /**
+     * Discards the current composition and terminates IME composition in a windowless browser. For
+     * native JCEF browsers, calls made before native browser creation or while the browser is
+     * closing or closed have no effect. This method may be called from any Java thread.
+     *
+     * @throws UnsupportedOperationException if this browser implementation does not support CEF
+     *         OSR IME composition
+     */
+    public default void imeCancelComposition() {
+        throw new UnsupportedOperationException("imeCancelComposition is not supported by this browser");
+    }
 
     /**
      * Notify a windowless browser that its host lost mouse capture so Chromium can release captured

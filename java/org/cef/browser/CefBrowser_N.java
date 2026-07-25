@@ -19,7 +19,9 @@ import org.cef.handler.CefClientHandler;
 import org.cef.handler.CefDialogHandler.FileDialogMode;
 import org.cef.handler.CefRenderHandler;
 import org.cef.handler.CefWindowHandler;
+import org.cef.input.CefCompositionUnderline;
 import org.cef.misc.CefPdfPrintSettings;
+import org.cef.misc.CefRange;
 import org.cef.misc.EventFlags;
 import org.cef.network.CefRequest;
 
@@ -29,6 +31,7 @@ import java.awt.Rectangle;
 import java.awt.Window;
 import java.awt.event.WindowEvent;
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Vector;
@@ -765,6 +768,66 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     }
 
     @Override
+    public void imeSetComposition(String text, List<CefCompositionUnderline> underlines, CefRange replacementRange, CefRange selectionRange) {
+        Objects.requireNonNull(text, "text");
+        Objects.requireNonNull(underlines, "underlines");
+        Objects.requireNonNull(replacementRange, "replacementRange");
+        Objects.requireNonNull(selectionRange, "selectionRange");
+        CefCompositionUnderline[] underlineSnapshot = copyAndValidateImeUnderlines(text, underlines);
+        if (!isNativeInputEligible()) return;
+        try {
+            N_ImeSetComposition(text, underlineSnapshot, replacementRange, selectionRange);
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+    }
+
+    @Override
+    public void imeCommitText(String text, CefRange replacementRange, int relativeCursorPosition) {
+        Objects.requireNonNull(text, "text");
+        Objects.requireNonNull(replacementRange, "replacementRange");
+        if (!isNativeInputEligible()) return;
+        try {
+            N_ImeCommitText(text, replacementRange, relativeCursorPosition);
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+    }
+
+    @Override
+    public void imeFinishComposingText(boolean keepSelection) {
+        if (!isNativeInputEligible()) return;
+        try {
+            N_ImeFinishComposingText(keepSelection);
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+    }
+
+    @Override
+    public void imeCancelComposition() {
+        if (!isNativeInputEligible()) return;
+        try {
+            N_ImeCancelComposition();
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+    }
+
+    private static CefCompositionUnderline[] copyAndValidateImeUnderlines(String text, List<CefCompositionUnderline> underlines) {
+        CefCompositionUnderline[] snapshot = underlines.toArray(new CefCompositionUnderline[0]);
+        long textLength = text.length();
+        for (int index = 0; index < snapshot.length; index++) {
+            CefCompositionUnderline underline = Objects.requireNonNull(snapshot[index], "underlines[" + index + "]");
+            CefRange range = Objects.requireNonNull(underline.getRange(), "underlines[" + index + "].range");
+            if (!range.isValid()) throw new IllegalArgumentException("underlines[" + index + "].range must be valid");
+            if (range.isReversed()) throw new IllegalArgumentException("underlines[" + index + "].range must be forward");
+            if (range.getFrom() > textLength || range.getTo() > textLength) throw new IllegalArgumentException("underlines[" + index + "].range exceeds the composition text's UTF-16 length " + textLength);
+        }
+        return snapshot;
+    }
+
+    @Override
     public void sendCaptureLostEvent() {
         if (!isNativeInputEligible()) return;
         try {
@@ -1430,6 +1493,7 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     }
 
     private static native Map<String, Object> N_ConvertBrowserSettingsForTesting(CefBrowserSettings settings, boolean osr, boolean transparent);
+    private static native Object[] N_ConvertImeCompositionForTesting(String text, CefCompositionUnderline[] underlines, CefRange replacementRange, CefRange selectionRange);
     private static native boolean N_IsOnCefUiThreadForTesting();
     private static native int N_ResolveLinuxNativeKeyCodeForTesting(long suppliedNativeKeyCode, int keyCode, int keyLocation, boolean typed, boolean awt);
     private static native int N_ResolveWindowsNativeKeyCodeForTesting(long suppliedScanCode, int mappedScanCode, boolean extended);
@@ -1473,6 +1537,10 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     private final native boolean N_IsWindowRenderingDisabled();
     private final native void N_Close(boolean force);
     private final native void N_SetFocus(boolean enable);
+    private final native void N_ImeSetComposition(String text, CefCompositionUnderline[] underlines, CefRange replacementRange, CefRange selectionRange);
+    private final native void N_ImeCommitText(String text, CefRange replacementRange, int relativeCursorPosition);
+    private final native void N_ImeFinishComposingText(boolean keepSelection);
+    private final native void N_ImeCancelComposition();
     private final native void N_SetWindowVisibility(boolean visible);
     private final native void N_NotifyScreenInfoChanged();
     private final native void N_CanZoom(int command, IntCallback callback);

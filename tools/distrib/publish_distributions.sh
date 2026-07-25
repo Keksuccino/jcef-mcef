@@ -5,7 +5,12 @@
 
 set -euo pipefail
 
-readonly REMOTE_ROOT='s3://mcef-us-1/java-cef-builds'
+readonly REPOSITORY_OWNER='Keksuccino'
+readonly REPOSITORY_NAME='jcef-mcef'
+readonly REPOSITORY="${REPOSITORY_OWNER}/${REPOSITORY_NAME}"
+readonly RELEASE_AUTHOR='github-actions[bot]'
+readonly RELEASE_MARKER='managed-by=tools/distrib/publish_distributions.sh;schema=1'
+readonly LATEST_RELEASE_QUERY="query(\$owner:String!,\$name:String!){repository(owner:\$owner,name:\$name){latestRelease{tagName}}}"
 readonly -a TARGETS=(
   linux_amd64
   linux_arm64
@@ -15,81 +20,326 @@ readonly -a TARGETS=(
   windows_arm64
 )
 
-TEMP_DIRECTORY=''
-S3_CONFIG_PATH=''
-S3CMD_PATH=''
-REMOTE_PREFIX=''
-CHECKSUM_PHASE_STARTED=false
-HOME_DIRECTORY=''
-S3_CONFIG_CONTENT="${S3_CFG:-}"
-unset S3_CFG
+# Keep credentials out of every local validation subprocess. Only the resolved
+# gh executable receives the captured built-in token later through GH_TOKEN.
+GITHUB_TOKEN_CONTENT="${GITHUB_TOKEN:-}"
+unset GITHUB_TOKEN GH_TOKEN
+
+GH_PATH=''
+HASH_COMMAND=''
+CMP_PATH=''
+COMMIT_SHA=''
+ARTIFACT_DIRECTORY=''
+TAG_NAME=''
+RELEASE_TITLE=''
+RELEASE_BODY=''
+RELEASE_IDS=''
+TAG_REFS=''
+RELEASE_ASSETS=''
+METADATA_TAG=''
+METADATA_TARGET=''
+METADATA_DRAFT=''
+METADATA_IMMUTABLE=''
+METADATA_PRERELEASE=''
+METADATA_TITLE=''
+METADATA_BODY=''
+METADATA_AUTHOR=''
+
+ASSET_NAMES=()
+ASSET_SIZES=()
+ASSET_DIGESTS=()
+ARCHIVE_PATHS=()
+CHECKSUM_PATHS=()
 
 die() {
   echo "ERROR: $*" >&2
   exit 1
 }
 
-remote_object_exists() {
-  local expected_uri="$1"
-  local line
-  local listed_uri
-  while IFS= read -r line; do
-    listed_uri="${line##*[[:space:]]}"
-    if [ "$listed_uri" = "$expected_uri" ]; then
-      return 0
-    fi
-  done <<< "$REMOTE_LISTING"
-  return 1
+hash_file() {
+  local path="$1"
+  local output
+  local digest
+  if [ "$HASH_COMMAND" = 'sha256sum' ]; then
+    output="$(sha256sum -- "$path")" || return 1
+  else
+    output="$(shasum -a 256 "$path")" || return 1
+  fi
+  digest="${output%%[[:space:]]*}"
+  if [[ ! "$digest" =~ ^[0-9a-f]{64}$ ]]; then
+    return 1
+  fi
+  printf '%s\n' "$digest"
 }
 
-is_canonical_remote_object() {
-  local uri="$1"
-  local target
-  for target in "${TARGETS[@]}"; do
-    if [ "$uri" = "${REMOTE_PREFIX}/${target}.tar.gz" ] ||
-       [ "$uri" = "${REMOTE_PREFIX}/${target}.tar.gz.sha256" ]; then
+file_size() {
+  local path="$1"
+  local size
+  size="$(wc -c < "$path" | tr -d '[:space:]')" || return 1
+  case "$size" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  printf '%s\n' "$size"
+}
+
+append_asset() {
+  ASSET_NAMES+=("$1")
+  ASSET_SIZES+=("$2")
+  ASSET_DIGESTS+=("$3")
+}
+
+asset_name_is_expected() {
+  local actual_name="$1"
+  local expected_name
+  for expected_name in "${ASSET_NAMES[@]}"; do
+    if [ "$actual_name" = "$expected_name" ]; then
       return 0
     fi
   done
   return 1
 }
 
-validate_remote_listing() {
-  local line
-  local listed_uri
-  while IFS= read -r line; do
-    if [ -z "$line" ]; then
+require_immutable_releases() {
+  local immutable_status
+  if ! immutable_status="$("$GH_PATH" api "repos/${REPOSITORY}/immutable-releases" --jq '[(.enabled | type), (.enabled | tostring)] | join("|")')"; then
+    die "Unable to inspect immutable-release configuration for ${REPOSITORY}"
+  fi
+  if [ "$immutable_status" != 'boolean|true' ]; then
+    die "Immutable releases must be enabled for ${REPOSITORY}; received ${immutable_status:-no valid status}"
+  fi
+}
+
+ensure_release_is_not_latest() {
+  local latest_status
+  local latest_tag
+  if ! latest_status="$("$GH_PATH" api graphql -f "query=${LATEST_RELEASE_QUERY}" -F "owner=${REPOSITORY_OWNER}" -F "name=${REPOSITORY_NAME}" --jq 'if (.errors != null or (.data.repository | type) != "object" or (.data.repository | has("latestRelease") | not)) then "invalid" elif .data.repository.latestRelease == null then "null" elif ((.data.repository.latestRelease | type) == "object" and (.data.repository.latestRelease.tagName | type) == "string") then "tag|" + .data.repository.latestRelease.tagName else "invalid" end')"; then
+    die "Unable to inspect the latest release for ${REPOSITORY}"
+  fi
+  if [ "$latest_status" = null ]; then
+    return 0
+  fi
+  case "$latest_status" in
+    tag\|?*) latest_tag="${latest_status#tag|}" ;;
+    *) die "Latest-release query returned malformed state for ${REPOSITORY}: ${latest_status:-no valid state}" ;;
+  esac
+  if [ "$latest_tag" = "$TAG_NAME" ]; then
+    die "Release ${TAG_NAME} is unexpectedly marked as latest"
+  fi
+}
+
+query_release_ids() {
+  # A successful, paginated list query is required to prove absence. A failed
+  # tag lookup must never be mistaken for permission or network-safe absence.
+  if ! RELEASE_IDS="$("$GH_PATH" api --paginate "repos/${REPOSITORY}/releases?per_page=100" --jq ".[] | select(.tag_name == \"${TAG_NAME}\") | .id")"; then
+    die "Unable to inspect releases for ${TAG_NAME}"
+  fi
+  if [[ "$RELEASE_IDS" == *$'\n'* ]]; then
+    die "Multiple releases unexpectedly use tag ${TAG_NAME}"
+  fi
+  if [ -n "$RELEASE_IDS" ]; then
+    case "$RELEASE_IDS" in
+      *[!0-9]*) die "Release query returned an invalid identifier for ${TAG_NAME}" ;;
+    esac
+  fi
+}
+
+refresh_release_metadata() {
+  local metadata
+  if ! metadata="$("$GH_PATH" release view "$TAG_NAME" --repo "$REPOSITORY" --json tagName,targetCommitish,isDraft,isImmutable,isPrerelease,name,body,author --jq '[.tagName, .targetCommitish, (.isDraft | tostring), (.isImmutable | tostring), (.isPrerelease | tostring), .name, .body, .author.login] | join("|")')"; then
+    die "Unable to inspect release metadata for ${TAG_NAME}"
+  fi
+  IFS='|' read -r METADATA_TAG METADATA_TARGET METADATA_DRAFT METADATA_IMMUTABLE METADATA_PRERELEASE METADATA_TITLE METADATA_BODY METADATA_AUTHOR <<< "$metadata"
+}
+
+validate_release_identity() {
+  if [ "$METADATA_TAG" != "$TAG_NAME" ]; then
+    die "Release tag mismatch for ${TAG_NAME}"
+  fi
+  if [ "$METADATA_TARGET" != "$COMMIT_SHA" ]; then
+    die "Release target mismatch for ${TAG_NAME}"
+  fi
+  if [ "$METADATA_PRERELEASE" != false ]; then
+    die "Release prerelease state mismatch for ${TAG_NAME}"
+  fi
+  if [ "$METADATA_TITLE" != "$RELEASE_TITLE" ] || [ "$METADATA_BODY" != "$RELEASE_BODY" ]; then
+    die "Release ownership marker mismatch for ${TAG_NAME}"
+  fi
+  if [ "$METADATA_AUTHOR" != "$RELEASE_AUTHOR" ]; then
+    die "Release author mismatch for ${TAG_NAME}"
+  fi
+  if [ "$METADATA_DRAFT" != true ] && [ "$METADATA_DRAFT" != false ]; then
+    die "Release draft state is invalid for ${TAG_NAME}"
+  fi
+  if [ "$METADATA_IMMUTABLE" != true ] && [ "$METADATA_IMMUTABLE" != false ]; then
+    die "Release immutable state is invalid for ${TAG_NAME}"
+  fi
+}
+
+require_mutable_draft() {
+  if [ "$METADATA_DRAFT" != true ]; then
+    die "Release is not a recoverable draft: ${TAG_NAME}"
+  fi
+  if [ "$METADATA_IMMUTABLE" != false ]; then
+    die "Draft release is unexpectedly immutable: ${TAG_NAME}"
+  fi
+}
+
+require_immutable_published_release() {
+  if [ "$METADATA_DRAFT" != false ]; then
+    die "Release remained a draft after publication: ${TAG_NAME}"
+  fi
+  if [ "$METADATA_IMMUTABLE" != true ]; then
+    die "Published release is not immutable: ${TAG_NAME}"
+  fi
+}
+
+query_tag_refs() {
+  if ! TAG_REFS="$("$GH_PATH" api --paginate "repos/${REPOSITORY}/git/matching-refs/tags/${TAG_NAME}" --jq ".[] | select(.ref == \"refs/tags/${TAG_NAME}\") | .ref")"; then
+    die "Unable to inspect tag ${TAG_NAME}"
+  fi
+  if [[ "$TAG_REFS" == *$'\n'* ]]; then
+    die "Multiple exact refs unexpectedly match tag ${TAG_NAME}"
+  fi
+}
+
+ensure_exact_tag() {
+  local allow_create="$1"
+  local resolved_sha
+  query_tag_refs
+  if [ -z "$TAG_REFS" ]; then
+    if [ "$allow_create" != true ]; then
+      die "Required tag does not exist: ${TAG_NAME}"
+    fi
+    # Create a lightweight tag explicitly so gh can never infer the default
+    # branch tip. Existing refs are only validated and are never retargeted.
+    if ! "$GH_PATH" api --method POST "repos/${REPOSITORY}/git/refs" -f "ref=refs/tags/${TAG_NAME}" -f "sha=${COMMIT_SHA}" >/dev/null; then
+      die "Unable to create exact tag ${TAG_NAME}"
+    fi
+    query_tag_refs
+  fi
+  if [ "$TAG_REFS" != "refs/tags/${TAG_NAME}" ]; then
+    die "Exact tag lookup failed for ${TAG_NAME}"
+  fi
+  if ! resolved_sha="$("$GH_PATH" api "repos/${REPOSITORY}/commits/${TAG_NAME}" --jq '.sha')"; then
+    die "Unable to resolve tag ${TAG_NAME}"
+  fi
+  if [ "$resolved_sha" != "$COMMIT_SHA" ]; then
+    die "Tag ${TAG_NAME} resolves to ${resolved_sha:-unknown}, not ${COMMIT_SHA}"
+  fi
+}
+
+refresh_release_assets() {
+  if ! RELEASE_ASSETS="$("$GH_PATH" release view "$TAG_NAME" --repo "$REPOSITORY" --json assets --jq '.assets[] | [.name, (.size | tostring), .state, (.digest // "")] | join("|")')"; then
+    die "Unable to inspect release assets for ${TAG_NAME}"
+  fi
+}
+
+release_assets_are_canonical_subset() {
+  local name
+  local size
+  local state
+  local digest
+  local extra
+  while IFS='|' read -r name size state digest extra; do
+    if [ -z "$name" ] && [ -z "$size" ] && [ -z "$state" ] && [ -z "$digest" ] && [ -z "$extra" ]; then
       continue
     fi
-    listed_uri="${line##*[[:space:]]}"
-    if ! is_canonical_remote_object "$listed_uri"; then
-      die "Remote publication contains an unexpected object: ${listed_uri}"
+    if [ -n "$extra" ] || ! asset_name_is_expected "$name"; then
+      return 1
     fi
-  done <<< "$REMOTE_LISTING"
+  done <<< "$RELEASE_ASSETS"
+  return 0
 }
 
-cleanup() {
-  local exit_status=$?
-  local target
-  trap - EXIT HUP INT TERM
-  set +e
-  if [ "$CHECKSUM_PHASE_STARTED" = true ] && [ "$exit_status" -ne 0 ] &&
-     [ -n "$S3CMD_PATH" ] && [ -n "$S3_CONFIG_PATH" ]; then
-    for target in "${TARGETS[@]}"; do
-      if ! "$S3CMD_PATH" --config="$S3_CONFIG_PATH" del \
-          "${REMOTE_PREFIX}/${target}.tar.gz.sha256" >/dev/null 2>&1; then
-        echo "WARNING: Failed to remove remote checksum for ${target}" \
-          'during publication cleanup' >&2
+release_assets_match() {
+  local -a seen=()
+  local name
+  local size
+  local state
+  local digest
+  local extra
+  local row_count=0
+  local match_index
+  local index
+  for ((index = 0; index < ${#ASSET_NAMES[@]}; index++)); do
+    seen[index]=0
+  done
+  while IFS='|' read -r name size state digest extra; do
+    if [ -z "$name" ] && [ -z "$size" ] && [ -z "$state" ] && [ -z "$digest" ] && [ -z "$extra" ]; then
+      continue
+    fi
+    if [ -n "$extra" ]; then
+      return 1
+    fi
+    match_index=-1
+    for ((index = 0; index < ${#ASSET_NAMES[@]}; index++)); do
+      if [ "$name" = "${ASSET_NAMES[$index]}" ]; then
+        match_index=$index
+        break
       fi
     done
+    if [ "$match_index" -lt 0 ] || [ "${seen[$match_index]}" -ne 0 ]; then
+      return 1
+    fi
+    if [ "$state" != uploaded ] || [ "$size" != "${ASSET_SIZES[$match_index]}" ] || [ "$digest" != "sha256:${ASSET_DIGESTS[$match_index]}" ]; then
+      return 1
+    fi
+    seen[match_index]=1
+    row_count=$((row_count + 1))
+  done <<< "$RELEASE_ASSETS"
+  if [ "$row_count" -ne "${#ASSET_NAMES[@]}" ]; then
+    return 1
   fi
-  if [ -n "$TEMP_DIRECTORY" ]; then
-    rm -rf -- "$TEMP_DIRECTORY"
-  fi
-  exit "$exit_status"
+  for ((index = 0; index < ${#ASSET_NAMES[@]}; index++)); do
+    if [ "${seen[$index]}" -ne 1 ]; then
+      return 1
+    fi
+  done
+  return 0
 }
 
-trap cleanup EXIT
+create_empty_draft() {
+  if ! "$GH_PATH" release create "$TAG_NAME" --repo "$REPOSITORY" --draft --verify-tag --target "$COMMIT_SHA" --title "$RELEASE_TITLE" --notes "$RELEASE_BODY" --latest=false; then
+    die "Unable to create draft release ${TAG_NAME}"
+  fi
+  query_release_ids
+  if [ -z "$RELEASE_IDS" ]; then
+    die "Draft release was not visible after creation: ${TAG_NAME}"
+  fi
+  refresh_release_metadata
+  validate_release_identity
+  require_mutable_draft
+  ensure_exact_tag false
+  refresh_release_assets
+  if [ -n "$RELEASE_ASSETS" ]; then
+    die "New draft release unexpectedly contains assets: ${TAG_NAME}"
+  fi
+}
+
+publish_verified_draft() {
+  ensure_exact_tag false
+  refresh_release_assets
+  if ! release_assets_match; then
+    die "Draft release asset validation failed for ${TAG_NAME}"
+  fi
+  if ! "$GH_PATH" release edit "$TAG_NAME" --repo "$REPOSITORY" --draft=false --verify-tag --target "$COMMIT_SHA" --latest=false; then
+    die "Unable to publish verified draft release ${TAG_NAME}"
+  fi
+  query_release_ids
+  if [ -z "$RELEASE_IDS" ]; then
+    die "Published release was not visible after publication: ${TAG_NAME}"
+  fi
+  refresh_release_metadata
+  validate_release_identity
+  require_immutable_published_release
+  ensure_exact_tag false
+  refresh_release_assets
+  if ! release_assets_match; then
+    die "Published release asset validation failed for ${TAG_NAME}"
+  fi
+  ensure_release_is_not_latest
+}
+
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -107,9 +357,10 @@ if [ ! -d "$2" ]; then
   die "Artifact directory does not exist: $2"
 fi
 ARTIFACT_DIRECTORY="$(cd -- "$2" && pwd -P)"
-REMOTE_PREFIX="${REMOTE_ROOT}/${COMMIT_SHA}"
+TAG_NAME="java-cef-${COMMIT_SHA}"
+RELEASE_TITLE="JCEF distributions ${COMMIT_SHA}"
+RELEASE_BODY="Automated JCEF distributions for commit ${COMMIT_SHA};${RELEASE_MARKER}"
 
-# dotglob makes unexpected hidden entries part of the exact-set validation.
 shopt -s dotglob nullglob
 ARTIFACT_ENTRIES=("${ARTIFACT_DIRECTORY}"/*)
 if [ "${#ARTIFACT_ENTRIES[@]}" -ne 12 ]; then
@@ -124,162 +375,103 @@ elif command -v shasum >/dev/null 2>&1; then
 else
   die 'sha256sum or shasum is required to validate distribution archives'
 fi
+CMP_PATH="$(command -v cmp || true)"
+if [ -z "$CMP_PATH" ]; then
+  die 'cmp is required to validate distribution checksums byte-for-byte'
+fi
 
 for target in "${TARGETS[@]}"; do
   archive_name="${target}.tar.gz"
   archive_path="${ARTIFACT_DIRECTORY}/${archive_name}"
-  checksum_path="${archive_path}.sha256"
+  checksum_name="${archive_name}.sha256"
+  checksum_path="${ARTIFACT_DIRECTORY}/${checksum_name}"
   if [ ! -f "$archive_path" ] || [ -L "$archive_path" ]; then
     die "Missing canonical regular archive: ${archive_name}"
   fi
   if [ ! -f "$checksum_path" ] || [ -L "$checksum_path" ]; then
-    die "Missing canonical regular checksum: ${archive_name}.sha256"
+    die "Missing canonical regular checksum: ${checksum_name}"
   fi
-
-  if [ "$HASH_COMMAND" = 'sha256sum' ]; then
-    hash_output="$(sha256sum -- "$archive_path")" || die "Unable to hash ${archive_name}"
-  else
-    hash_output="$(shasum -a 256 "$archive_path")" || die "Unable to hash ${archive_name}"
+  if ! archive_digest="$(hash_file "$archive_path")"; then
+    die "Unable to calculate a valid SHA-256 for ${archive_name}"
   fi
-  actual_hash="${hash_output%%[[:space:]]*}"
-  if [[ ! "$actual_hash" =~ ^[0-9a-f]{64}$ ]]; then
-    die "Hash tool returned an invalid SHA-256 for ${archive_name}"
+  # Bash variables cannot preserve NUL bytes, so compare the complete file to
+  # generated LF and CRLF byte streams instead of parsing checksum text.
+  if ! "$CMP_PATH" -s "$checksum_path" <(printf '%s  %s\n' "$archive_digest" "$archive_name") && ! "$CMP_PATH" -s "$checksum_path" <(printf '%s  %s\r\n' "$archive_digest" "$archive_name"); then
+    die "Checksum must byte-match the canonical LF or CRLF form: ${checksum_name}"
   fi
-
-  checksum_line=''
-  extra_checksum_line=''
-  exec 3< "$checksum_path"
-  if ! IFS= read -r checksum_line <&3; then
-    exec 3<&-
-    die "Checksum must be one newline-terminated line: ${archive_name}.sha256"
+  if ! archive_size="$(file_size "$archive_path")" || ! checksum_size="$(file_size "$checksum_path")" || ! checksum_digest="$(hash_file "$checksum_path")"; then
+    die "Unable to calculate asset metadata for ${target}"
   fi
-  if IFS= read -r extra_checksum_line <&3 || [ -n "$extra_checksum_line" ]; then
-    exec 3<&-
-    die "Checksum must contain exactly one line: ${archive_name}.sha256"
-  fi
-  exec 3<&-
-  # Python text output on Windows uses CRLF, which direct artifacts preserve.
-  # Strip exactly the CR that precedes the LF already consumed by read; bare CR
-  # and missing LF failed the first read above, and any other embedded/trailing
-  # CR still fails equality.
-  if [[ "$checksum_line" == *$'\r' ]]; then
-    checksum_line="${checksum_line%$'\r'}"
-  fi
-  if [ "$checksum_line" != "${actual_hash}  ${archive_name}" ]; then
-    die "SHA-256 validation failed for ${archive_name}"
-  fi
+  append_asset "$archive_name" "$archive_size" "$archive_digest"
+  append_asset "$checksum_name" "$checksum_size" "$checksum_digest"
+  ARCHIVE_PATHS+=("$archive_path")
+  CHECKSUM_PATHS+=("$checksum_path")
 done
 
-if [ -z "$S3_CONFIG_CONTENT" ] ||
-   [[ ! "$S3_CONFIG_CONTENT" =~ [^[:space:]] ]]; then
-  die 'S3_CFG is required for distribution publication'
+if [ -z "$GITHUB_TOKEN_CONTENT" ] || [[ ! "$GITHUB_TOKEN_CONTENT" =~ [^[:space:]] ]]; then
+  die 'GITHUB_TOKEN is required for distribution publication'
 fi
-S3CMD_PATH="$(command -v s3cmd || true)"
-if [ -z "$S3CMD_PATH" ]; then
-  die 's3cmd is required for distribution publication'
+GH_PATH="$(command -v gh || true)"
+if [ -z "$GH_PATH" ]; then
+  die 'gh is required for distribution publication'
 fi
+export GH_TOKEN="$GITHUB_TOKEN_CONTENT"
+GITHUB_TOKEN_CONTENT=''
+export GH_PROMPT_DISABLED=1
+export GH_NO_UPDATE_NOTIFIER=1
 
-# Credentials must never be written below HOME. Use an explicitly restrictive
-# system temporary directory and remove it from the EXIT/signal cleanup path.
-umask 077
-if [ -n "${HOME:-}" ] && [ -d "$HOME" ]; then
-  HOME_DIRECTORY="$(cd -- "$HOME" && pwd -P)"
-fi
-for temporary_root in /tmp /var/tmp; do
-  if [ ! -d "$temporary_root" ] || [ ! -w "$temporary_root" ]; then
-    continue
-  fi
-  candidate="$(mktemp -d "${temporary_root}/jcef-publisher.XXXXXX")" || continue
-  candidate="$(cd -- "$candidate" && pwd -P)"
-  if [ -n "$HOME_DIRECTORY" ] &&
-     [[ "${candidate}/" == "${HOME_DIRECTORY%/}/"* ]]; then
-    rm -rf -- "$candidate"
-    continue
-  fi
-  TEMP_DIRECTORY="$candidate"
-  break
-done
-if [ -z "$TEMP_DIRECTORY" ]; then
-  die 'Unable to create a credential directory outside HOME'
-fi
-chmod 700 "$TEMP_DIRECTORY"
-S3_CONFIG_PATH="${TEMP_DIRECTORY}/s3cfg"
-printf '%s' "$S3_CONFIG_CONTENT" > "$S3_CONFIG_PATH"
-chmod 600 "$S3_CONFIG_PATH"
-S3_CONFIG_CONTENT=''
-
-if ! REMOTE_LISTING="$("$S3CMD_PATH" --config="$S3_CONFIG_PATH" ls "${REMOTE_PREFIX}/")"; then
-  die "Unable to inspect existing publication state for ${COMMIT_SHA}"
-fi
-validate_remote_listing
-
-remote_checksum_count=0
-for target in "${TARGETS[@]}"; do
-  if remote_object_exists "${REMOTE_PREFIX}/${target}.tar.gz.sha256"; then
-    remote_checksum_count=$((remote_checksum_count + 1))
-  fi
-done
-
-if [ "$remote_checksum_count" -ne 0 ] && [ "$remote_checksum_count" -ne "${#TARGETS[@]}" ]; then
-  die "Remote publication contains only ${remote_checksum_count} of" \
-    "${#TARGETS[@]} checksums; refusing to modify it"
-fi
-
-if [ "$remote_checksum_count" -eq "${#TARGETS[@]}" ]; then
-  for target in "${TARGETS[@]}"; do
-    if ! remote_object_exists "${REMOTE_PREFIX}/${target}.tar.gz"; then
-      die "Remote checksum exists without its archive: ${target}.tar.gz"
+require_immutable_releases
+query_release_ids
+if [ -n "$RELEASE_IDS" ]; then
+  refresh_release_metadata
+  validate_release_identity
+  if [ "$METADATA_DRAFT" = false ]; then
+    require_immutable_published_release
+    ensure_exact_tag false
+    refresh_release_assets
+    if ! release_assets_match; then
+      die "Published release does not exactly match local assets: ${TAG_NAME}"
     fi
-  done
-  remote_object_directory="${TEMP_DIRECTORY}/remote-objects"
-  mkdir "$remote_object_directory"
-  for target in "${TARGETS[@]}"; do
-    checksum_name="${target}.tar.gz.sha256"
-    remote_checksum_path="${remote_object_directory}/${checksum_name}"
-    if ! "$S3CMD_PATH" --config="$S3_CONFIG_PATH" get \
-        "${REMOTE_PREFIX}/${checksum_name}" "$remote_checksum_path"; then
-      die "Unable to read existing remote checksum: ${checksum_name}"
-    fi
-    if ! cmp -s "${ARTIFACT_DIRECTORY}/${checksum_name}" "$remote_checksum_path"; then
-      die "Remote checksum does not match the local checksum: ${checksum_name}"
-    fi
-    archive_name="${target}.tar.gz"
-    remote_archive_path="${remote_object_directory}/${archive_name}"
-    if ! "$S3CMD_PATH" --config="$S3_CONFIG_PATH" get \
-        "${REMOTE_PREFIX}/${archive_name}" "$remote_archive_path"; then
-      die "Unable to read existing remote archive: ${archive_name}"
-    fi
-    if ! cmp -s "${ARTIFACT_DIRECTORY}/${archive_name}" "$remote_archive_path"; then
-      die "Remote archive does not match the local archive: ${archive_name}"
-    fi
-    rm -f -- "$remote_checksum_path" "$remote_archive_path"
-  done
-  echo "Distribution set for ${COMMIT_SHA} is already published and matches exactly"
-  exit 0
+    ensure_release_is_not_latest
+    echo "GitHub Release ${TAG_NAME} is already published and matches exactly"
+    exit 0
+  fi
+  require_mutable_draft
+
+  # Validate ownership and the canonical asset-name subset before mutating
+  # even the tag. Only this script's exact bot-authored draft is recoverable.
+  refresh_release_assets
+  if ! release_assets_are_canonical_subset; then
+    die "Draft release contains an unexpected asset; refusing recovery: ${TAG_NAME}"
+  fi
+  ensure_exact_tag true
+  if release_assets_match; then
+    publish_verified_draft
+    echo "Published recovered GitHub Release ${TAG_NAME}"
+    exit 0
+  fi
+  if ! "$GH_PATH" release delete "$TAG_NAME" --repo "$REPOSITORY" --yes; then
+    die "Unable to remove incomplete owned draft ${TAG_NAME}"
+  fi
+  query_release_ids
+  if [ -n "$RELEASE_IDS" ]; then
+    die "Incomplete draft still exists after deletion: ${TAG_NAME}"
+  fi
+  ensure_exact_tag false
+else
+  ensure_exact_tag true
 fi
 
-# Checksums are the completion markers. Publish every archive first so no
-# checksum can advertise a distribution set whose archives were not uploaded.
-for target in "${TARGETS[@]}"; do
-  archive_name="${target}.tar.gz"
-  if ! "$S3CMD_PATH" --config="$S3_CONFIG_PATH" put -P \
-      "${ARTIFACT_DIRECTORY}/${archive_name}" \
-      "${REMOTE_PREFIX}/${archive_name}"; then
-    die "Archive upload failed: ${archive_name}"
-  fi
-done
+create_empty_draft
 
-# From this point through successful exit, any failure or handled interruption
-# removes all completion markers. Archives are intentionally retained so a
-# clean retry can overwrite the incomplete publication.
-CHECKSUM_PHASE_STARTED=true
-for target in "${TARGETS[@]}"; do
-  checksum_name="${target}.tar.gz.sha256"
-  if ! "$S3CMD_PATH" --config="$S3_CONFIG_PATH" put -P \
-      "${ARTIFACT_DIRECTORY}/${checksum_name}" \
-      "${REMOTE_PREFIX}/${checksum_name}"; then
-    die "Checksum upload failed: ${checksum_name}"
-  fi
-done
+# Checksums are uploaded only after the complete archive upload succeeds. The
+# release remains an invisible, recoverable draft until all 12 assets verify.
+if ! "$GH_PATH" release upload "$TAG_NAME" "${ARCHIVE_PATHS[@]}" --repo "$REPOSITORY"; then
+  die "Archive upload failed for draft ${TAG_NAME}"
+fi
+if ! "$GH_PATH" release upload "$TAG_NAME" "${CHECKSUM_PATHS[@]}" --repo "$REPOSITORY"; then
+  die "Checksum upload failed for draft ${TAG_NAME}"
+fi
 
-echo "Published all six JCEF distributions for ${COMMIT_SHA}"
+publish_verified_draft
+echo "Published all six JCEF distributions in GitHub Release ${TAG_NAME}"

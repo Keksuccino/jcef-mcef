@@ -383,13 +383,21 @@ class PublicationWorkflowContractTest(unittest.TestCase):
     gate = re.search(r'^    if: >-\n((?:      [^\n]*\n)+)', publish_job, re.MULTILINE)
     self.assertIsNotNone(gate)
     normalized_gate = ' '.join(line.strip() for line in gate.group(1).splitlines())
-    self.assertEqual("success() && github.ref == 'refs/heads/master' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))", normalized_gate)
+    self.assertEqual("success() && github.repository == 'Keksuccino/jcef-mcef' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))", normalized_gate)
 
   def test_only_central_job_can_publish_after_every_platform_succeeds(self):
     publish_job = self.job('publish')
     self.assertIn('needs: [linux, windows, macos]', publish_job)
     self.assertIn('runs-on: ubuntu-24.04', publish_job)
-    self.assertEqual(1, publish_job.count('S3_CFG: ${{ secrets.S3_CFG }}'))
+    global_permissions = re.search(r'^permissions:\n((?:  [^\n]+\n)+)', self.workflow, re.MULTILINE)
+    job_permissions = re.search(r'^    permissions:\n((?:      [^\n]+\n)+)', publish_job, re.MULTILINE)
+    self.assertIsNotNone(global_permissions)
+    self.assertIsNotNone(job_permissions)
+    self.assertEqual(['contents: read'], [line.strip() for line in global_permissions.group(1).splitlines()])
+    self.assertEqual(['contents: write'], [line.strip() for line in job_permissions.group(1).splitlines()])
+    self.assertEqual(1, self.workflow.count('contents: write'))
+    self.assertIn('persist-credentials: false', publish_job)
+    self.assertEqual(1, publish_job.count('GITHUB_TOKEN: ${{ github.token }}'))
     self.assertEqual(1, publish_job.count('bash tools/distrib/publish_distributions.sh "$PUBLICATION_SHA" release-artifacts'))
     self.assertIn('group: publish-jcef-${{ github.sha }}', publish_job)
     self.assertIn('cancel-in-progress: false', publish_job)
@@ -397,8 +405,12 @@ class PublicationWorkflowContractTest(unittest.TestCase):
       build_job = self.job(build_job_name)
       self.assertNotIn('s3cmd', build_job)
       self.assertNotIn('S3_CFG', build_job)
+      self.assertNotIn('GITHUB_TOKEN', build_job)
       self.assertNotIn('publish_distributions.sh', build_job)
-    self.assertEqual(1, self.workflow.count('Publish commit build to S3'))
+    self.assertNotIn('secrets.', publish_job)
+    self.assertNotIn('s3cmd', self.workflow)
+    self.assertNotIn('S3_CFG', self.workflow)
+    self.assertEqual(1, self.workflow.count('Publish commit build as a GitHub Release'))
 
   def test_all_direct_artifacts_are_aggregated_with_pinned_download_action(self):
     upload_revision = '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'

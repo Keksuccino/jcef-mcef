@@ -3,6 +3,7 @@
 # reserved. Use of this source code is governed by a BSD-style license
 # that can be found in the LICENSE file.
 
+import base64
 import hashlib
 import json
 import os
@@ -15,20 +16,25 @@ import unittest
 DISTRIB_ROOT = Path(__file__).resolve().parents[1]
 PUBLISHER = DISTRIB_ROOT / 'publish_distributions.sh'
 COMMIT_SHA = '0123456789abcdef0123456789abcdef01234567'
-TARGETS = ('linux_amd64', 'linux_arm64', 'macos_amd64', 'macos_arm64',
-           'windows_amd64', 'windows_arm64')
-S3_CONFIG = '[default]\naccess_key = unit-test\nsecret_key = unit-test\n'
+WRONG_SHA = '89abcdef0123456789abcdef0123456789abcdef'
+REPOSITORY = 'Keksuccino/jcef-mcef'
+TAG_NAME = 'java-cef-{}'.format(COMMIT_SHA)
+RELEASE_TITLE = 'JCEF distributions {}'.format(COMMIT_SHA)
+RELEASE_BODY = 'Automated JCEF distributions for commit {};managed-by=tools/distrib/publish_distributions.sh;schema=1'.format(COMMIT_SHA)
+TARGETS = ('linux_amd64', 'linux_arm64', 'macos_amd64', 'macos_arm64', 'windows_amd64', 'windows_arm64')
+ARCHIVE_NAMES = tuple('{}.tar.gz'.format(target) for target in TARGETS)
+CHECKSUM_NAMES = tuple('{}.tar.gz.sha256'.format(target) for target in TARGETS)
+ASSET_NAMES = tuple(name for pair in zip(ARCHIVE_NAMES, CHECKSUM_NAMES) for name in pair)
+TOKEN = 'github-actions-test-token'
+MODIFYING_OPERATIONS = frozenset(('create-ref', 'create-release', 'delete-release', 'upload-release', 'publish-release'))
 
-
-BASH = shutil.which('bash')
-
-FAKE_S3CMD = r'''#!/usr/bin/env python3
+FAKE_GH = r'''#!/usr/bin/env python3
+import base64
+import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
 import signal
-import stat
 import sys
 
 
@@ -37,104 +43,217 @@ def fail(message, status=90):
   raise SystemExit(status)
 
 
+def load_state():
+  return json.loads(Path(os.environ['FAKE_GH_STATE']).read_text(encoding='utf-8'))
+
+
+def save_state(state):
+  Path(os.environ['FAKE_GH_STATE']).write_text(json.dumps(state, sort_keys=True), encoding='utf-8')
+
+
+def flag_value(arguments, flag):
+  if flag not in arguments:
+    fail('missing flag: ' + flag)
+  index = arguments.index(flag)
+  if index + 1 >= len(arguments):
+    fail('missing value for flag: ' + flag)
+  return arguments[index + 1]
+
+
+def field_value(arguments, field):
+  prefix = field + '='
+  for index, argument in enumerate(arguments):
+    if argument in ('-f', '-F') and index + 1 < len(arguments) and arguments[index + 1].startswith(prefix):
+      return arguments[index + 1][len(prefix):]
+  fail('missing field: ' + field)
+
+
+def require_repository(arguments):
+  if flag_value(arguments, '--repo') != os.environ['FAKE_EXPECTED_REPOSITORY']:
+    fail('unexpected repository')
+
+
+def asset_bytes(encoded):
+  return base64.b64decode(encoded.encode('ascii'))
+
+
 arguments = sys.argv[1:]
-if not arguments or not arguments[0].startswith('--config='):
-  fail('missing --config')
-config_path = Path(arguments.pop(0).split('=', 1)[1]).resolve()
 if not arguments:
-  fail('missing command')
-command = arguments.pop(0)
-home_path = Path(os.environ['HOME']).resolve()
-try:
-  config_path.relative_to(home_path)
-  config_outside_home = False
-except ValueError:
-  config_outside_home = True
-config_mode = stat.S_IMODE(config_path.stat().st_mode) if config_path.exists() else None
-config_matches = (config_path.exists() and config_path.read_text(encoding='utf-8') ==
-                  os.environ['FAKE_EXPECTED_CONFIG'])
-record = {
-    'arguments': arguments,
-    'command': command,
-    'config': str(config_path),
-    'config_matches': config_matches,
-    'config_mode': config_mode,
-    'config_outside_home': config_outside_home,
-    's3_cfg_in_environment': 'S3_CFG' in os.environ,
-}
-with Path(os.environ['FAKE_S3_LOG']).open('a', encoding='utf-8') as stream:
-  stream.write(json.dumps(record, sort_keys=True) + '\n')
-if not config_matches or config_mode != 0o600 or not config_outside_home:
-  fail('invalid temporary credential configuration')
-if command == os.environ.get('FAKE_S3_FAIL_COMMAND'):
-  fail('injected command failure', 72)
+  fail('missing gh command')
+if os.environ.get('GH_TOKEN') != os.environ['FAKE_EXPECTED_TOKEN'] or 'GITHUB_TOKEN' in os.environ:
+  fail('publisher did not isolate the built-in token')
 
-remote_root = Path(os.environ['FAKE_S3_ROOT'])
-
-
-def object_path(uri):
-  if not uri.startswith('s3://'):
-    fail('invalid URI: ' + uri)
-  return remote_root / uri[len('s3://'):]
-
-
-if command == 'ls':
-  prefix_uri = arguments[-1]
-  prefix_path = object_path(prefix_uri)
-  if prefix_path.is_dir():
-    for path in sorted(path for path in prefix_path.rglob('*') if path.is_file()):
-      uri = 's3://' + path.relative_to(remote_root).as_posix()
-      print('2026-01-01 00:00 {:>10} {}'.format(path.stat().st_size, uri))
-elif command == 'get':
-  source_path = object_path(arguments[-2])
-  if not source_path.is_file():
-    fail('missing remote object', 12)
-  destination_path = Path(arguments[-1])
-  destination_path.parent.mkdir(parents=True, exist_ok=True)
-  shutil.copyfile(source_path, destination_path)
-elif command == 'put':
-  source_path = Path(arguments[-2])
-  destination_uri = arguments[-1]
-  destination_path = object_path(destination_uri)
-  fail_name = os.environ.get('FAKE_S3_FAIL_PUT')
-  should_fail = bool(fail_name and destination_uri.endswith('/' + fail_name))
-  if should_fail and os.environ.get('FAKE_S3_FAIL_AFTER_WRITE') != '1':
-    fail('injected put failure', 71)
-  destination_path.parent.mkdir(parents=True, exist_ok=True)
-  shutil.copyfile(source_path, destination_path)
-  signal_name = os.environ.get('FAKE_S3_SIGNAL_PUT')
-  if signal_name and destination_uri.endswith('/' + signal_name):
-    os.kill(os.getppid(), signal.SIGTERM)
-  if should_fail:
-    fail('injected put failure after write', 71)
-elif command == 'del':
-  path = object_path(arguments[-1])
-  if path.exists():
-    path.unlink()
+state = load_state()
+operation = ''
+endpoint = ''
+if arguments[0] == 'api':
+  if len(arguments) > 1 and arguments[1] == 'graphql':
+    operation = 'inspect-latest'
+    if field_value(arguments, 'owner') + '/' + field_value(arguments, 'name') != os.environ['FAKE_EXPECTED_REPOSITORY']:
+      fail('unexpected GraphQL repository')
+    if 'latestRelease{tagName}' not in field_value(arguments, 'query') or '--jq' not in arguments:
+      fail('malformed latest-release query')
+  else:
+    endpoint = next((argument for argument in arguments if argument.startswith('repos/')), '')
+    if not endpoint.startswith('repos/' + os.environ['FAKE_EXPECTED_REPOSITORY'] + '/'):
+      fail('unexpected API repository')
+    if endpoint.endswith('/immutable-releases'):
+      operation = 'inspect-immutability'
+      jq_filter = flag_value(arguments, '--jq')
+      if '.enabled | type' not in jq_filter or '.enabled | tostring' not in jq_filter:
+        fail('immutable-release inspection must preserve JSON type')
+    elif '/releases?' in endpoint:
+      operation = 'list-releases'
+    elif '/git/matching-refs/tags/' in endpoint:
+      operation = 'list-tag-refs'
+    elif '/commits/' in endpoint:
+      operation = 'resolve-tag'
+    elif endpoint.endswith('/git/refs') and '--method' in arguments and flag_value(arguments, '--method') == 'POST':
+      operation = 'create-ref'
+elif arguments[:2] == ['release', 'view']:
+  require_repository(arguments)
+  json_fields = flag_value(arguments, '--json')
+  if json_fields == 'assets':
+    operation = 'view-assets'
+  elif 'isImmutable' in json_fields.split(','):
+    operation = 'view-metadata'
+  else:
+    fail('release metadata must include isImmutable')
+elif arguments[:2] == ['release', 'create']:
+  require_repository(arguments)
+  operation = 'create-release'
+elif arguments[:2] == ['release', 'delete']:
+  require_repository(arguments)
+  operation = 'delete-release'
+elif arguments[:2] == ['release', 'upload']:
+  require_repository(arguments)
+  operation = 'upload-release'
+elif arguments[:2] == ['release', 'edit']:
+  require_repository(arguments)
+  operation = 'publish-release'
 else:
-  fail('unsupported command: ' + command)
+  fail('unsupported gh arguments: ' + repr(arguments))
+if not operation:
+  fail('unsupported gh arguments: ' + repr(arguments))
+if operation in ('list-releases', 'list-tag-refs') and '--paginate' not in arguments:
+  fail('inspection query must be paginated')
+
+record = {'arguments': arguments, 'operation': operation, 'github_token_present': 'GITHUB_TOKEN' in os.environ, 'gh_token_matches': os.environ.get('GH_TOKEN') == os.environ['FAKE_EXPECTED_TOKEN']}
+with Path(os.environ['FAKE_GH_LOG']).open('a', encoding='utf-8') as stream:
+  stream.write(json.dumps(record, sort_keys=True) + '\n')
+if operation == os.environ.get('FAKE_GH_FAIL_OPERATION'):
+  fail('injected operation failure', 72)
+
+release = state.get('release')
+if operation == 'inspect-immutability':
+  print(state.get('immutable_status', 'boolean|true'))
+elif operation == 'inspect-latest':
+  print(state.get('latest_status', 'null'))
+elif operation == 'list-releases':
+  if release is not None and release['tag'] == os.environ['FAKE_EXPECTED_TAG']:
+    print(release['id'])
+elif operation == 'list-tag-refs':
+  if state.get('tag_sha') is not None:
+    print('refs/tags/' + os.environ['FAKE_EXPECTED_TAG'])
+elif operation == 'resolve-tag':
+  if state.get('tag_sha') is None:
+    fail('tag does not exist', 1)
+  print(state['tag_sha'])
+elif operation == 'create-ref':
+  if state.get('tag_sha') is not None:
+    fail('tag already exists', 1)
+  if field_value(arguments, 'ref') != 'refs/tags/' + os.environ['FAKE_EXPECTED_TAG']:
+    fail('unexpected tag ref')
+  state['tag_sha'] = field_value(arguments, 'sha')
+  save_state(state)
+  print('{}')
+elif operation == 'view-metadata':
+  if release is None:
+    fail('release does not exist', 1)
+  values = (release['tag'], release['target'], str(release['draft']).lower(), str(release['immutable']).lower(), str(release['prerelease']).lower(), release['title'], release['body'], release['author'])
+  print('|'.join(values))
+elif operation == 'view-assets':
+  if release is None:
+    fail('release does not exist', 1)
+  for name in sorted(release['assets']):
+    contents = asset_bytes(release['assets'][name])
+    print('{}|{}|uploaded|sha256:{}'.format(name, len(contents), hashlib.sha256(contents).hexdigest()))
+elif operation == 'create-release':
+  if release is not None:
+    fail('release already exists', 1)
+  if arguments[2] != os.environ['FAKE_EXPECTED_TAG'] or state.get('tag_sha') is None:
+    fail('draft requires the exact existing tag')
+  required_flags = ('--draft', '--verify-tag', '--latest=false')
+  if not all(flag in arguments for flag in required_flags):
+    fail('draft safety flag missing')
+  target = flag_value(arguments, '--target')
+  title = flag_value(arguments, '--title')
+  body = flag_value(arguments, '--notes')
+  release = {'id': state['next_id'], 'tag': arguments[2], 'target': target, 'draft': True, 'immutable': False, 'prerelease': False, 'title': title, 'body': body, 'author': 'github-actions[bot]', 'assets': {}}
+  state['next_id'] += 1
+  state['release'] = release
+  save_state(state)
+elif operation == 'delete-release':
+  if release is None or not release['draft'] or '--yes' not in arguments or '--cleanup-tag' in arguments:
+    fail('unsafe draft deletion')
+  state['release'] = None
+  save_state(state)
+elif operation == 'upload-release':
+  if release is None or not release['draft'] or arguments[2] != release['tag']:
+    fail('assets can only be uploaded to the exact draft')
+  repository_index = arguments.index('--repo')
+  upload_paths = arguments[3:repository_index]
+  if not upload_paths:
+    fail('no upload paths')
+  for path_text in upload_paths:
+    path = Path(path_text)
+    name = path.name
+    should_fail = name == os.environ.get('FAKE_GH_FAIL_UPLOAD')
+    if should_fail and os.environ.get('FAKE_GH_FAIL_AFTER_WRITE') != '1':
+      fail('injected upload failure', 73)
+    if name in release['assets']:
+      fail('asset already exists', 1)
+    release['assets'][name] = base64.b64encode(path.read_bytes()).decode('ascii')
+    state['release'] = release
+    save_state(state)
+    if name == os.environ.get('FAKE_GH_SIGNAL_UPLOAD'):
+      os.kill(os.getppid(), signal.SIGTERM)
+      raise SystemExit(0)
+    if should_fail:
+      fail('injected upload failure after write', 73)
+elif operation == 'publish-release':
+  if release is None or not release['draft'] or arguments[2] != release['tag']:
+    fail('only the exact draft can be published')
+  required_flags = ('--draft=false', '--verify-tag', '--latest=false')
+  if not all(flag in arguments for flag in required_flags):
+    fail('publish safety flag missing')
+  if flag_value(arguments, '--target') != release['target']:
+    fail('publish target mismatch')
+  release['draft'] = False
+  release['immutable'] = state.get('immutable_after_publish', True)
+  if state.get('latest_after_publish'):
+    state['latest_status'] = 'tag|' + release['tag']
+  state['release'] = release
+  save_state(state)
 '''
 
 
-@unittest.skipUnless(os.name == 'posix', 'the production publisher runs only on Ubuntu')
 class PublishDistributionsTest(unittest.TestCase):
 
   def setUp(self):
     self.temporary_directory = tempfile.TemporaryDirectory()
     self.root = Path(self.temporary_directory.name)
     self.artifact_directory = self.root / 'artifacts'
-    self.remote_directory = self.root / 'remote'
     self.fake_bin = self.root / 'bin'
-    self.home_directory = self.root / 'home'
-    self.log_path = self.root / 's3cmd.log'
+    self.log_path = self.root / 'gh.log'
+    self.state_path = self.root / 'state.json'
     self.artifact_directory.mkdir()
-    self.remote_directory.mkdir()
     self.fake_bin.mkdir()
-    self.home_directory.mkdir()
-    self.fake_s3cmd = self.fake_bin / 's3cmd'
-    self.fake_s3cmd.write_text(FAKE_S3CMD, encoding='utf-8')
-    self.fake_s3cmd.chmod(0o755)
+    self.fake_gh = self.fake_bin / 'gh'
+    self.fake_gh.write_text(FAKE_GH, encoding='utf-8')
+    self.fake_gh.chmod(0o755)
     self.create_artifacts()
+    self.write_state({'next_id': 1, 'tag_sha': None, 'release': None})
 
   def tearDown(self):
     self.temporary_directory.cleanup()
@@ -149,320 +268,393 @@ class PublishDistributionsTest(unittest.TestCase):
       checksum = '{}  {}'.format(digest, archive_name).encode('ascii')
       (self.artifact_directory / '{}.sha256'.format(archive_name)).write_bytes(checksum + line_ending)
 
+  def write_state(self, state):
+    self.state_path.write_text(json.dumps(state, sort_keys=True), encoding='utf-8')
+
+  def read_state(self):
+    return json.loads(self.state_path.read_text(encoding='utf-8'))
+
   def environment(self, **updates):
     environment = os.environ.copy()
-    defaults = {
-        'FAKE_EXPECTED_CONFIG':
-            S3_CONFIG,
-        'FAKE_S3_LOG':
-            str(self.log_path),
-        'FAKE_S3_ROOT':
-            str(self.remote_directory),
-        'HOME':
-            str(self.home_directory),
-        'PATH':
-            '{}{}{}'.format(self.fake_bin, os.pathsep, environment.get('PATH', '')),
-        'S3_CFG':
-            S3_CONFIG,
-    }
-    environment.update(defaults)
+    environment.update({'FAKE_EXPECTED_REPOSITORY': REPOSITORY, 'FAKE_EXPECTED_TAG': TAG_NAME, 'FAKE_EXPECTED_TOKEN': TOKEN, 'FAKE_GH_LOG': str(self.log_path), 'FAKE_GH_STATE': str(self.state_path), 'GITHUB_TOKEN': TOKEN, 'GH_TOKEN': 'must-be-replaced', 'PATH': '{}{}{}'.format(self.fake_bin, os.pathsep, environment.get('PATH', ''))})
     environment.update(updates)
     return environment
 
   def run_publisher(self, commit_sha=COMMIT_SHA, environment=None, artifact_directory=None, cwd=None):
-    if BASH is None:
-      raise RuntimeError('bash is required to test the distribution publisher')
-    command = [BASH, str(PUBLISHER), commit_sha, str(artifact_directory or self.artifact_directory)]
-    return subprocess.run(command, check=False, capture_output=True, text=True, env=environment or self.environment(), cwd=cwd)
+    return subprocess.run(['/bin/bash', str(PUBLISHER), commit_sha, str(artifact_directory or self.artifact_directory)], check=False, capture_output=True, text=True, env=environment or self.environment(), cwd=cwd)
 
   def read_log(self):
     if not self.log_path.exists():
       return []
-    return [
-        json.loads(line)
-        for line in self.log_path.read_text(encoding='utf-8').splitlines()
-    ]
+    return [json.loads(line) for line in self.log_path.read_text(encoding='utf-8').splitlines()]
 
-  def remote_path(self, name):
-    return (self.remote_directory / 'mcef-us-1' / 'java-cef-builds' / COMMIT_SHA
-            / name)
+  def operations(self):
+    return [record['operation'] for record in self.read_log()]
 
-  def copy_to_remote(self, name, contents=None):
-    destination = self.remote_path(name)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if contents is None:
-      shutil.copyfile(self.artifact_directory / name, destination)
-    else:
-      destination.write_bytes(contents)
+  def canonical_assets(self):
+    return {name: base64.b64encode((self.artifact_directory / name).read_bytes()).decode('ascii') for name in ASSET_NAMES}
 
-  def remote_snapshot(self):
-    publication_root = self.remote_path('unused').parent
-    if not publication_root.exists():
-      return {}
-    return {
-        path.relative_to(publication_root).as_posix(): path.read_bytes()
-        for path in sorted(publication_root.iterdir()) if path.is_file()
-    }
+  def set_release(self, draft, asset_names=(), tag_sha=COMMIT_SHA, target=COMMIT_SHA, title=RELEASE_TITLE, body=RELEASE_BODY, author='github-actions[bot]', immutable=None, immutable_status='boolean|true', latest_status='null', overrides=None):
+    assets = {name: self.canonical_assets()[name] for name in asset_names}
+    for name, contents in (overrides or {}).items():
+      assets[name] = base64.b64encode(contents).decode('ascii')
+    immutable = not draft if immutable is None else immutable
+    release = {'id': 1, 'tag': TAG_NAME, 'target': target, 'draft': draft, 'immutable': immutable, 'prerelease': False, 'title': title, 'body': body, 'author': author, 'assets': assets}
+    self.write_state({'next_id': 2, 'tag_sha': tag_sha, 'release': release, 'immutable_status': immutable_status, 'latest_status': latest_status})
 
   def assert_no_modifying_calls(self):
-    self.assertFalse(any(record['command'] in ('put', 'del') for record in self.read_log()))
+    self.assertFalse(any(operation in MODIFYING_OPERATIONS for operation in self.operations()))
 
-  def test_fresh_publication_overwrites_partial_archives_and_orders_completion_markers_last(self):
-    self.copy_to_remote('linux_amd64.tar.gz', b'old-archive')
-    self.copy_to_remote('macos_arm64.tar.gz', b'another-old-archive')
+  def assert_exact_published_release(self):
+    state = self.read_state()
+    self.assertEqual(COMMIT_SHA, state['tag_sha'])
+    self.assertIsNotNone(state['release'])
+    self.assertFalse(state['release']['draft'])
+    self.assertTrue(state['release']['immutable'])
+    self.assertEqual(TAG_NAME, state['release']['tag'])
+    self.assertEqual(COMMIT_SHA, state['release']['target'])
+    self.assertEqual(RELEASE_TITLE, state['release']['title'])
+    self.assertEqual(RELEASE_BODY, state['release']['body'])
+    self.assertEqual('github-actions[bot]', state['release']['author'])
+    self.assertEqual(self.canonical_assets(), state['release']['assets'])
 
+  def test_fresh_publication_creates_exact_tag_and_atomic_release(self):
     result = self.run_publisher()
-
     self.assertEqual(0, result.returncode, result.stderr)
+    self.assert_exact_published_release()
     records = self.read_log()
-    self.assertEqual('ls', records[0]['command'])
-    put_names = [
-        record['arguments'][-1].rsplit('/', 1)[-1] for record in records
-        if record['command'] == 'put'
-    ]
-    expected_archives = ['{}.tar.gz'.format(target) for target in TARGETS]
-    expected_checksums = [
-        '{}.tar.gz.sha256'.format(target) for target in TARGETS
-    ]
-    self.assertEqual(expected_archives + expected_checksums, put_names)
-    for name in expected_archives + expected_checksums:
-      self.assertEqual((self.artifact_directory / name).read_bytes(), self.remote_path(name).read_bytes())
+    self.assertTrue(all(record['gh_token_matches'] and not record['github_token_present'] for record in records))
+    upload_records = [record for record in records if record['operation'] == 'upload-release']
+    self.assertEqual(2, len(upload_records))
+    self.assertEqual(list(ARCHIVE_NAMES), [Path(path).name for path in upload_records[0]['arguments'][3:upload_records[0]['arguments'].index('--repo')]])
+    self.assertEqual(list(CHECKSUM_NAMES), [Path(path).name for path in upload_records[1]['arguments'][3:upload_records[1]['arguments'].index('--repo')]])
+    create_arguments = next(record['arguments'] for record in records if record['operation'] == 'create-release')
+    publish_arguments = next(record['arguments'] for record in records if record['operation'] == 'publish-release')
+    self.assertIn('--latest=false', create_arguments)
+    self.assertIn('--draft', create_arguments)
+    self.assertIn('--verify-tag', create_arguments)
+    self.assertIn('--latest=false', publish_arguments)
+    self.assertIn('--draft=false', publish_arguments)
+    operations = self.operations()
+    self.assertEqual('inspect-immutability', operations[0])
+    self.assertLess(operations.index('inspect-immutability'), operations.index('create-ref'))
+    self.assertLess(operations.index('create-ref'), operations.index('create-release'))
+    self.assertLess(operations.index('upload-release'), operations.index('publish-release'))
+    self.assertLess(operations.index('publish-release'), operations.index('inspect-latest'))
 
-    config_paths = {record['config'] for record in records}
-    self.assertEqual(1, len(config_paths))
-    config_path = Path(next(iter(config_paths)))
-    self.assertFalse(config_path.exists())
-    self.assertFalse(config_path.is_relative_to(self.home_directory))
-    self.assertTrue(all(record['config_mode'] == 0o600 for record in records))
-    self.assertTrue(all(record['config_matches'] for record in records))
-    self.assertTrue(all(record['config_outside_home'] for record in records))
-    self.assertFalse(any(record['s3_cfg_in_environment'] for record in records))
+  def test_artifact_directory_with_leading_dash_basename_is_option_safe(self):
+    leading_dash_directory = self.root / '-artifacts'
+    self.artifact_directory.rename(leading_dash_directory)
+    self.artifact_directory = leading_dash_directory
+    result = self.run_publisher(artifact_directory=Path('-artifacts'), cwd=self.root)
+    self.assertEqual(0, result.returncode, result.stderr)
+    self.assert_exact_published_release()
 
-  def test_exact_matching_remote_publication_is_idempotent(self):
-    for target in ('windows_amd64', 'windows_arm64'):
-      checksum_path = self.artifact_directory / '{}.tar.gz.sha256'.format(target)
-      self.assertTrue(checksum_path.read_bytes().endswith(b'\r\n'))
-    for target in TARGETS:
-      self.copy_to_remote('{}.tar.gz'.format(target))
-      self.copy_to_remote('{}.tar.gz.sha256'.format(target))
-    before = self.remote_snapshot()
-
+  def test_exact_published_release_is_idempotent(self):
+    self.set_release(False, ASSET_NAMES)
+    before = self.state_path.read_bytes()
     result = self.run_publisher()
-
     self.assertEqual(0, result.returncode, result.stderr)
     self.assertIn('already published', result.stdout)
-    self.assertEqual(before, self.remote_snapshot())
-    self.assertEqual(['ls'] + ['get'] * len(TARGETS) * 2, [record['command'] for record in self.read_log()])
+    self.assertEqual(before, self.state_path.read_bytes())
     self.assert_no_modifying_calls()
+    self.assertEqual('inspect-immutability', self.operations()[0])
+    self.assertIn('inspect-latest', self.operations())
 
-  def test_corrupt_remote_archive_fails_exact_idempotency_check(self):
-    for target in TARGETS:
-      self.copy_to_remote('{}.tar.gz'.format(target))
-      self.copy_to_remote('{}.tar.gz.sha256'.format(target))
-    self.copy_to_remote('macos_amd64.tar.gz', b'corrupt')
-    before = self.remote_snapshot()
-
-    result = self.run_publisher()
-
-    self.assertNotEqual(0, result.returncode)
-    self.assertIn('Remote archive does not match', result.stderr)
-    self.assertEqual(before, self.remote_snapshot())
-    self.assert_no_modifying_calls()
-
-  def test_unexpected_remote_object_fails_without_modification(self):
-    self.copy_to_remote('unexpected.txt', b'unexpected')
-    before = self.remote_snapshot()
-
-    result = self.run_publisher()
-
-    self.assertNotEqual(0, result.returncode)
-    self.assertIn('unexpected object', result.stderr)
-    self.assertEqual(before, self.remote_snapshot())
-    self.assert_no_modifying_calls()
-
-  def test_partial_remote_checksums_fail_without_modification(self):
-    for target in TARGETS[:2]:
-      self.copy_to_remote('{}.tar.gz'.format(target), b'old-archive')
-      self.copy_to_remote('{}.tar.gz.sha256'.format(target))
-    before = self.remote_snapshot()
-
-    result = self.run_publisher()
-
-    self.assertNotEqual(0, result.returncode)
-    self.assertIn('only 2 of 6 checksums', result.stderr)
-    self.assertEqual(before, self.remote_snapshot())
-    self.assert_no_modifying_calls()
-
-  def test_remote_listing_failure_is_not_treated_as_remote_absence(self):
-    self.copy_to_remote('linux_amd64.tar.gz', b'old-archive')
-    before = self.remote_snapshot()
-
-    result = self.run_publisher(environment=self.environment(FAKE_S3_FAIL_COMMAND='ls'))
-
-    self.assertNotEqual(0, result.returncode)
-    self.assertIn('Unable to inspect existing publication state', result.stderr)
-    self.assertEqual(before, self.remote_snapshot())
-    self.assertEqual(['ls'], [record['command'] for record in self.read_log()])
-    self.assert_no_modifying_calls()
-
-  def test_mismatched_remote_checksum_fails_without_modification(self):
-    for target in TARGETS:
-      self.copy_to_remote('{}.tar.gz'.format(target))
-      self.copy_to_remote('{}.tar.gz.sha256'.format(target))
-    self.copy_to_remote('macos_amd64.tar.gz.sha256', b'not-the-local-checksum\n')
-    before = self.remote_snapshot()
-
-    result = self.run_publisher()
-
-    self.assertNotEqual(0, result.returncode)
-    self.assertIn('does not match', result.stderr)
-    self.assertEqual(before, self.remote_snapshot())
-    self.assert_no_modifying_calls()
-
-  def test_complete_remote_checksums_with_missing_archive_fail_without_modification(self):
-    for target in TARGETS:
-      self.copy_to_remote('{}.tar.gz.sha256'.format(target))
-    for target in TARGETS[1:]:
-      self.copy_to_remote('{}.tar.gz'.format(target))
-    before = self.remote_snapshot()
-
-    result = self.run_publisher()
-
-    self.assertNotEqual(0, result.returncode)
-    self.assertIn('without its archive', result.stderr)
-    self.assertEqual(before, self.remote_snapshot())
-    self.assert_no_modifying_calls()
-
-  def test_archive_failure_never_starts_checksum_publication(self):
-    failed_name = 'macos_amd64.tar.gz'
-    result = self.run_publisher(environment=self.environment(FAKE_S3_FAIL_PUT=failed_name))
-
-    self.assertNotEqual(0, result.returncode)
-    records = self.read_log()
-    put_names = [
-        record['arguments'][-1].rsplit('/', 1)[-1] for record in records
-        if record['command'] == 'put'
-    ]
-    self.assertEqual(['linux_amd64.tar.gz', 'linux_arm64.tar.gz', failed_name], put_names)
-    self.assertFalse(any(name.endswith('.sha256') for name in put_names))
-    self.assertFalse(any(record['command'] == 'del' for record in records))
-    self.assertFalse(any(name.endswith('.sha256') for name in self.remote_snapshot()))
-
-  def test_checksum_failure_deletes_every_checksum_but_retains_archives(self):
-    failed_name = 'macos_arm64.tar.gz.sha256'
-    result = self.run_publisher(environment=self.environment(FAKE_S3_FAIL_AFTER_WRITE='1', FAKE_S3_FAIL_PUT=failed_name))
-
-    self.assertNotEqual(0, result.returncode)
-    records = self.read_log()
-    put_names = [
-        record['arguments'][-1].rsplit('/', 1)[-1] for record in records
-        if record['command'] == 'put'
-    ]
-    expected_puts = ['{}.tar.gz'.format(target) for target in TARGETS] + ['{}.tar.gz.sha256'.format(target) for target in TARGETS[:4]]
-    self.assertEqual(expected_puts, put_names)
-    delete_names = [
-        record['arguments'][-1].rsplit('/', 1)[-1] for record in records
-        if record['command'] == 'del'
-    ]
-    self.assertEqual(['{}.tar.gz.sha256'.format(target) for target in TARGETS], delete_names)
-    remote = self.remote_snapshot()
-    self.assertEqual({'{}.tar.gz'.format(target) for target in TARGETS}, set(remote))
-
-  def test_interruption_during_checksum_upload_uses_the_same_cleanup(self):
-    interrupted_name = 'linux_amd64.tar.gz.sha256'
-
-    result = self.run_publisher(environment=self.environment(FAKE_S3_SIGNAL_PUT=interrupted_name))
-
-    self.assertEqual(143, result.returncode)
-    records = self.read_log()
-    delete_names = [
-        record['arguments'][-1].rsplit('/', 1)[-1] for record in records
-        if record['command'] == 'del'
-    ]
-    self.assertEqual(['{}.tar.gz.sha256'.format(target) for target in TARGETS], delete_names)
-    self.assertEqual({'{}.tar.gz'.format(target) for target in TARGETS}, set(self.remote_snapshot()))
-
-  def test_invalid_commit_sha_is_rejected_before_s3(self):
-    for invalid_sha in ('a' * 39, 'a' * 41, 'A' * 40, 'g' * 40, '{}\n'.format('a' * 40)):
-      with self.subTest(commit_sha=repr(invalid_sha)):
+  def test_immutable_release_preflight_rejects_disabled_or_malformed_state_without_modification(self):
+    for immutable_status in ('boolean|false', 'string|true', 'invalid', ''):
+      with self.subTest(immutable_status=repr(immutable_status)):
+        self.write_state({'next_id': 1, 'tag_sha': None, 'release': None, 'immutable_status': immutable_status})
+        before = self.state_path.read_bytes()
         if self.log_path.exists():
           self.log_path.unlink()
-        result = self.run_publisher(commit_sha=invalid_sha)
+        result = self.run_publisher()
         self.assertNotEqual(0, result.returncode)
-        self.assertIn('40 lowercase hexadecimal', result.stderr)
-        self.assertEqual([], self.read_log())
+        self.assertIn('Immutable releases must be enabled', result.stderr)
+        self.assertEqual(before, self.state_path.read_bytes())
+        self.assertEqual(['inspect-immutability'], self.operations())
+        self.assert_no_modifying_calls()
 
-  def test_missing_or_extra_canonical_file_is_rejected_before_s3(self):
-    missing_path = self.artifact_directory / 'windows_arm64.tar.gz.sha256'
-    missing_path.unlink()
+  def test_immutable_release_preflight_inspection_failure_is_non_mutating(self):
+    before = self.state_path.read_bytes()
+    result = self.run_publisher(environment=self.environment(FAKE_GH_FAIL_OPERATION='inspect-immutability'))
+    self.assertNotEqual(0, result.returncode)
+    self.assertIn('Unable to inspect immutable-release configuration', result.stderr)
+    self.assertEqual(before, self.state_path.read_bytes())
+    self.assertEqual(['inspect-immutability'], self.operations())
+    self.assert_no_modifying_calls()
+
+  def test_nonimmutable_published_release_is_rejected_without_modification(self):
+    self.set_release(False, ASSET_NAMES, immutable=False)
+    before = self.state_path.read_bytes()
     result = self.run_publisher()
     self.assertNotEqual(0, result.returncode)
-    self.assertIn('exactly the 12 canonical', result.stderr)
-    self.assertEqual([], self.read_log())
+    self.assertIn('Published release is not immutable', result.stderr)
+    self.assertEqual(before, self.state_path.read_bytes())
+    self.assert_no_modifying_calls()
 
-    self.create_artifacts()
-    (self.artifact_directory / 'unexpected.txt').write_text('unexpected', encoding='ascii')
+  def test_published_release_marked_latest_is_rejected_without_modification(self):
+    self.set_release(False, ASSET_NAMES, latest_status='tag|{}'.format(TAG_NAME))
+    before = self.state_path.read_bytes()
     result = self.run_publisher()
     self.assertNotEqual(0, result.returncode)
-    self.assertIn('exactly the 12 canonical', result.stderr)
-    self.assertEqual([], self.read_log())
+    self.assertIn('unexpectedly marked as latest', result.stderr)
+    self.assertEqual(before, self.state_path.read_bytes())
+    self.assert_no_modifying_calls()
 
-  def test_wrong_target_name_with_exact_file_count_is_rejected_before_s3(self):
-    checksum = self.artifact_directory / 'linux_arm64.tar.gz.sha256'
-    checksum.rename(self.artifact_directory / 'linux_aarch64.tar.gz.sha256')
+  def test_latest_release_inspection_failure_is_non_mutating(self):
+    self.set_release(False, ASSET_NAMES)
+    before = self.state_path.read_bytes()
+    result = self.run_publisher(environment=self.environment(FAKE_GH_FAIL_OPERATION='inspect-latest'))
+    self.assertNotEqual(0, result.returncode)
+    self.assertIn('Unable to inspect the latest release', result.stderr)
+    self.assertEqual(before, self.state_path.read_bytes())
+    self.assert_no_modifying_calls()
 
+  def test_malformed_latest_release_state_is_non_mutating(self):
+    for latest_status in ('invalid', 'tag|', ''):
+      with self.subTest(latest_status=repr(latest_status)):
+        self.set_release(False, ASSET_NAMES, latest_status=latest_status)
+        before = self.state_path.read_bytes()
+        if self.log_path.exists():
+          self.log_path.unlink()
+        result = self.run_publisher()
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn('Latest-release query returned malformed state', result.stderr)
+        self.assertEqual(before, self.state_path.read_bytes())
+        self.assert_no_modifying_calls()
+
+  def test_partial_or_mismatched_published_release_fails_without_modification(self):
+    cases = ((ASSET_NAMES[:-1], None), (ASSET_NAMES, {ARCHIVE_NAMES[2]: b'wrong archive'}))
+    for asset_names, overrides in cases:
+      with self.subTest(asset_names=len(asset_names), mismatch=overrides is not None):
+        self.set_release(False, asset_names, overrides=overrides)
+        before = self.state_path.read_bytes()
+        if self.log_path.exists():
+          self.log_path.unlink()
+        result = self.run_publisher()
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn('does not exactly match', result.stderr)
+        self.assertEqual(before, self.state_path.read_bytes())
+        self.assert_no_modifying_calls()
+
+  def test_published_metadata_or_tag_mismatch_is_strictly_non_mutating(self):
+    cases = ({'target': WRONG_SHA}, {'author': 'someone-else'}, {'body': 'wrong marker'}, {'tag_sha': WRONG_SHA})
+    for updates in cases:
+      with self.subTest(updates=updates):
+        self.set_release(False, ASSET_NAMES, **updates)
+        before = self.state_path.read_bytes()
+        if self.log_path.exists():
+          self.log_path.unlink()
+        result = self.run_publisher()
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual(before, self.state_path.read_bytes())
+        self.assert_no_modifying_calls()
+
+  def test_incomplete_owned_draft_is_replaced_without_retargeting_tag(self):
+    self.set_release(True, ARCHIVE_NAMES[:2])
     result = self.run_publisher()
+    self.assertEqual(0, result.returncode, result.stderr)
+    self.assert_exact_published_release()
+    self.assertIn('delete-release', self.operations())
+    self.assertNotIn('create-ref', self.operations())
+    self.assertLess(self.operations().index('delete-release'), self.operations().index('create-release'))
 
+  def test_complete_owned_draft_publishes_without_reupload(self):
+    self.set_release(True, ASSET_NAMES)
+    result = self.run_publisher()
+    self.assertEqual(0, result.returncode, result.stderr)
+    self.assert_exact_published_release()
+    self.assertIn('publish-release', self.operations())
+    self.assertNotIn('delete-release', self.operations())
+    self.assertNotIn('upload-release', self.operations())
+
+  def test_owned_draft_without_tag_recreates_exact_ref_before_recovery(self):
+    self.set_release(True, ARCHIVE_NAMES[:1], tag_sha=None)
+    result = self.run_publisher()
+    self.assertEqual(0, result.returncode, result.stderr)
+    self.assert_exact_published_release()
+    self.assertIn('create-ref', self.operations())
+
+  def test_exact_existing_tag_without_release_is_reused(self):
+    self.write_state({'next_id': 1, 'tag_sha': COMMIT_SHA, 'release': None})
+    result = self.run_publisher()
+    self.assertEqual(0, result.returncode, result.stderr)
+    self.assert_exact_published_release()
+    self.assertNotIn('create-ref', self.operations())
+
+  def test_unowned_or_unexpected_draft_fails_without_modification(self):
+    cases = ({'author': 'someone-else'}, {'body': 'wrong marker'}, {'immutable': True}, {'overrides': {'unexpected.txt': b'unexpected'}}, {'overrides': {'unexpected.txt': b'unexpected'}, 'tag_sha': None})
+    for updates in cases:
+      with self.subTest(updates=updates):
+        asset_names = ARCHIVE_NAMES[:1]
+        self.set_release(True, asset_names, **updates)
+        before = self.state_path.read_bytes()
+        if self.log_path.exists():
+          self.log_path.unlink()
+        result = self.run_publisher()
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual(before, self.state_path.read_bytes())
+        self.assert_no_modifying_calls()
+
+  def test_wrong_existing_tag_without_release_fails_without_mutation(self):
+    self.write_state({'next_id': 1, 'tag_sha': WRONG_SHA, 'release': None})
+    before = self.state_path.read_bytes()
+    result = self.run_publisher()
     self.assertNotEqual(0, result.returncode)
-    self.assertIn('Missing canonical regular checksum', result.stderr)
-    self.assertEqual([], self.read_log())
+    self.assertIn('resolves to', result.stderr)
+    self.assertEqual(before, self.state_path.read_bytes())
+    self.assert_no_modifying_calls()
 
-  def test_invalid_checksum_is_rejected_before_credentials_or_s3(self):
-    checksum_path = self.artifact_directory / 'windows_arm64.tar.gz.sha256'
-    checksum_path.write_text('{}  windows_arm64.tar.gz\n'.format('0' * 64), encoding='ascii')
-
-    result = self.run_publisher(environment=self.environment(S3_CFG=''))
-
+  def test_inspection_failure_is_not_treated_as_absence(self):
+    before = self.state_path.read_bytes()
+    result = self.run_publisher(environment=self.environment(FAKE_GH_FAIL_OPERATION='list-releases'))
     self.assertNotEqual(0, result.returncode)
-    self.assertIn('SHA-256 validation failed', result.stderr)
-    self.assertEqual([], self.read_log())
+    self.assertIn('Unable to inspect releases', result.stderr)
+    self.assertEqual(before, self.state_path.read_bytes())
+    self.assert_no_modifying_calls()
+
+  def test_archive_upload_failure_leaves_invisible_draft_without_checksums(self):
+    result = self.run_publisher(environment=self.environment(FAKE_GH_FAIL_UPLOAD=ARCHIVE_NAMES[2]))
+    self.assertNotEqual(0, result.returncode)
+    state = self.read_state()
+    self.assertTrue(state['release']['draft'])
+    self.assertEqual(set(ARCHIVE_NAMES[:2]), set(state['release']['assets']))
+    self.assertNotIn('publish-release', self.operations())
+    self.assertFalse(any(name.endswith('.sha256') for name in state['release']['assets']))
+
+  def test_checksum_upload_failure_is_recovered_on_rerun(self):
+    result = self.run_publisher(environment=self.environment(FAKE_GH_FAIL_UPLOAD=CHECKSUM_NAMES[2], FAKE_GH_FAIL_AFTER_WRITE='1'))
+    self.assertNotEqual(0, result.returncode)
+    self.assertTrue(self.read_state()['release']['draft'])
+    self.assertNotIn('publish-release', self.operations())
+    self.log_path.unlink()
+    result = self.run_publisher()
+    self.assertEqual(0, result.returncode, result.stderr)
+    self.assert_exact_published_release()
+    self.assertIn('delete-release', self.operations())
+
+  def test_publish_failure_leaves_complete_draft_for_direct_retry(self):
+    result = self.run_publisher(environment=self.environment(FAKE_GH_FAIL_OPERATION='publish-release'))
+    self.assertNotEqual(0, result.returncode)
+    self.assertTrue(self.read_state()['release']['draft'])
+    self.assertEqual(set(ASSET_NAMES), set(self.read_state()['release']['assets']))
+    self.log_path.unlink()
+    result = self.run_publisher()
+    self.assertEqual(0, result.returncode, result.stderr)
+    self.assert_exact_published_release()
+    self.assertNotIn('upload-release', self.operations())
+    self.assertNotIn('delete-release', self.operations())
+
+  def test_post_publish_nonimmutable_state_is_detected(self):
+    state = self.read_state()
+    state['immutable_after_publish'] = False
+    self.write_state(state)
+    result = self.run_publisher()
+    self.assertNotEqual(0, result.returncode)
+    self.assertIn('Published release is not immutable', result.stderr)
+    self.assertFalse(self.read_state()['release']['draft'])
+    self.assertFalse(self.read_state()['release']['immutable'])
+    self.assertIn('publish-release', self.operations())
+
+  def test_post_publish_latest_state_is_detected(self):
+    state = self.read_state()
+    state['latest_after_publish'] = True
+    self.write_state(state)
+    result = self.run_publisher()
+    self.assertNotEqual(0, result.returncode)
+    self.assertIn('unexpectedly marked as latest', result.stderr)
+    self.assertFalse(self.read_state()['release']['draft'])
+    self.assertTrue(self.read_state()['release']['immutable'])
+    self.assertLess(self.operations().index('publish-release'), self.operations().index('inspect-latest'))
+
+  def test_interruption_during_upload_leaves_invisible_recoverable_draft(self):
+    result = self.run_publisher(environment=self.environment(FAKE_GH_SIGNAL_UPLOAD=ARCHIVE_NAMES[1]))
+    self.assertEqual(143, result.returncode)
+    state = self.read_state()
+    self.assertTrue(state['release']['draft'])
+    self.assertEqual(set(ARCHIVE_NAMES[:2]), set(state['release']['assets']))
+    self.assertNotIn('publish-release', self.operations())
 
   def test_checksum_line_endings_require_exact_lf_or_crlf(self):
-    archive_name = 'linux_amd64.tar.gz'
-    archive_path = self.artifact_directory / archive_name
-    checksum_path = self.artifact_directory / '{}.sha256'.format(archive_name)
-    digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
-    canonical_line = '{}  {}'.format(digest, archive_name).encode('ascii')
-    invalid_endings = (b'\r', b'', b'\r\r\n', b'\nextra\n')
-    for ending in invalid_endings:
-      with self.subTest(ending=ending):
-        checksum_path.write_bytes(canonical_line + ending)
+    checksum_path = self.artifact_directory / CHECKSUM_NAMES[0]
+    canonical_line = checksum_path.read_bytes().rstrip(b'\n')
+    invalid_contents = (canonical_line + b'\r', canonical_line, canonical_line + b'\r\r\n', canonical_line + b'\nextra\n', canonical_line + b'\x00\n', canonical_line + b'\x01\n')
+    for contents in invalid_contents:
+      with self.subTest(contents=repr(contents[-12:])):
+        self.create_artifacts()
+        checksum_path.write_bytes(contents)
         if self.log_path.exists():
           self.log_path.unlink()
         result = self.run_publisher()
         self.assertNotEqual(0, result.returncode)
         self.assertEqual([], self.read_log())
 
-  def test_missing_credentials_and_artifact_directory_are_rejected(self):
-    result = self.run_publisher(environment=self.environment(S3_CFG=' \n\t'))
+  def test_invalid_commit_and_local_target_set_fail_before_gh(self):
+    invalid_shas = ('a' * 39, 'a' * 41, 'A' * 40, 'g' * 40, '{}\n'.format('a' * 40))
+    for invalid_sha in invalid_shas:
+      with self.subTest(commit_sha=repr(invalid_sha)):
+        result = self.run_publisher(commit_sha=invalid_sha)
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual([], self.read_log())
+    missing_path = self.artifact_directory / CHECKSUM_NAMES[-1]
+    missing_path.unlink()
+    result = self.run_publisher()
     self.assertNotEqual(0, result.returncode)
-    self.assertIn('S3_CFG is required', result.stderr)
+    self.assertEqual([], self.read_log())
+    self.create_artifacts()
+    (self.artifact_directory / 'unexpected.txt').write_text('unexpected', encoding='ascii')
+    result = self.run_publisher()
+    self.assertNotEqual(0, result.returncode)
     self.assertEqual([], self.read_log())
 
-    missing_directory = self.root / 'missing'
-    result = self.run_publisher(artifact_directory=missing_directory)
+  def test_canonical_archive_or_checksum_symlink_is_rejected_before_gh(self):
+    replacement = self.root / 'replacement'
+    replacement.write_bytes(b'replacement')
+    for asset_name in (ARCHIVE_NAMES[0], CHECKSUM_NAMES[0]):
+      with self.subTest(asset_name=asset_name):
+        asset_path = self.artifact_directory / asset_name
+        asset_path.unlink()
+        asset_path.symlink_to(replacement)
+        result = self.run_publisher()
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual([], self.read_log())
+        asset_path.unlink()
+        self.create_artifacts()
+
+  def test_wrong_target_name_or_digest_fails_before_gh(self):
+    checksum_path = self.artifact_directory / CHECKSUM_NAMES[1]
+    checksum_path.rename(self.artifact_directory / 'linux_aarch64.tar.gz.sha256')
+    result = self.run_publisher()
+    self.assertNotEqual(0, result.returncode)
+    self.assertEqual([], self.read_log())
+    self.create_artifacts()
+    checksum_path.write_text('{}  {}\n'.format('0' * 64, ARCHIVE_NAMES[1]), encoding='ascii')
+    result = self.run_publisher()
+    self.assertNotEqual(0, result.returncode)
+    self.assertEqual([], self.read_log())
+
+  def test_missing_token_directory_or_gh_is_rejected(self):
+    result = self.run_publisher(environment=self.environment(GITHUB_TOKEN=' \n\t'))
+    self.assertNotEqual(0, result.returncode)
+    self.assertIn('GITHUB_TOKEN is required', result.stderr)
+    self.assertEqual([], self.read_log())
+    result = self.run_publisher(artifact_directory=self.root / 'missing')
     self.assertNotEqual(0, result.returncode)
     self.assertIn('does not exist', result.stderr)
     self.assertEqual([], self.read_log())
-
-  def test_option_shaped_relative_artifact_directory_is_supported(self):
-    option_directory = self.root / '-P'
-    self.artifact_directory.rename(option_directory)
-    self.artifact_directory = option_directory
-
-    result = self.run_publisher(artifact_directory='-P', cwd=self.root)
-
-    self.assertEqual(0, result.returncode, result.stderr)
+    no_gh_bin = self.root / 'no-gh-bin'
+    no_gh_bin.mkdir()
+    for command_name in ('sha256sum', 'shasum', 'cmp', 'wc', 'tr'):
+      source = shutil.which(command_name)
+      if source is not None:
+        destination = no_gh_bin / Path(source).name
+        if not destination.exists():
+          destination.symlink_to(source)
+    result = self.run_publisher(environment=self.environment(PATH=str(no_gh_bin)))
+    self.assertNotEqual(0, result.returncode)
+    self.assertIn('gh is required', result.stderr)
+    self.assertEqual([], self.read_log())
 
 
 if __name__ == '__main__':

@@ -14,7 +14,9 @@ import org.cef.callback.CefDownloadItemCallback;
 import org.cef.callback.CefDragData;
 import org.cef.callback.CefFileDialogCallback;
 import org.cef.callback.CefJSDialogCallback;
+import org.cef.callback.CefMediaAccessCallback;
 import org.cef.callback.CefMenuModel;
+import org.cef.callback.CefPermissionPromptCallback;
 import org.cef.callback.CefPrintDialogCallback;
 import org.cef.callback.CefPrintJobCallback;
 import org.cef.handler.*;
@@ -40,6 +42,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.Vector;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
@@ -50,7 +53,7 @@ public class CefClient extends CefClientHandler
         implements CefContextMenuHandler, CefDialogHandler, CefDisplayHandler, CefDownloadHandler,
                    CefDragHandler, CefFindHandler, CefFocusHandler, CefJSDialogHandler, CefKeyboardHandler,
                    CefLifeSpanHandler, CefLoadHandler, CefPrintHandler, CefRenderHandler,
-                   CefRequestHandler, CefWindowHandler, CefAudioHandler {
+                   CefRequestHandler, CefWindowHandler, CefAudioHandler, CefPermissionHandler {
     private final HashMap<Integer, CefBrowser> browser_ = new HashMap<Integer, CefBrowser>();
     private final Set<CefBrowser> pendingBrowserCreations_ = new HashSet<CefBrowser>();
     private final CefApp app_;
@@ -64,6 +67,8 @@ public class CefClient extends CefClientHandler
     // first-writer-wins update matches the existing add-handler contract with explicit visibility.
     private final AtomicReference<CefFindHandler> findHandler_ = new AtomicReference<CefFindHandler>();
     private CefFocusHandler focusHandler_ = null;
+    private final AtomicReference<CefPermissionHandler> permissionHandler_ = new AtomicReference<CefPermissionHandler>();
+    private final ConcurrentHashMap<Long, CefPermissionHandler> permissionPromptOwners_ = new ConcurrentHashMap<Long, CefPermissionHandler>();
     private CefJSDialogHandler jsDialogHandler_ = null;
     private CefKeyboardHandler keyboardHandler_ = null;
     private CefLifeSpanHandler lifeSpanHandler_ = null;
@@ -255,6 +260,13 @@ public class CefClient extends CefClientHandler
 
     @Override
     protected CefFocusHandler getFocusHandler() {
+        return this;
+    }
+
+    @Override
+    protected CefPermissionHandler getPermissionHandler() {
+        // Keep the native relay stable for existing browsers while public add/remove operations
+        // atomically replace only the application delegate.
         return this;
     }
 
@@ -573,6 +585,41 @@ public class CefClient extends CefClientHandler
         if (focusHandler_ != null) focusHandler_.onGotFocus(browser);
     }
 
+    // CefPermissionHandler
+
+    public CefClient addPermissionHandler(CefPermissionHandler handler) {
+        if (handler != null) permissionHandler_.compareAndSet(null, handler);
+        return this;
+    }
+
+    public void removePermissionHandler() {
+        permissionHandler_.set(null);
+    }
+
+    @Override
+    public boolean onRequestMediaAccessPermission(CefBrowser browser, CefFrame frame, String requestingOrigin, int requestedPermissions, CefMediaAccessCallback callback) {
+        if (browser == null || frame == null || callback == null) return false;
+        CefPermissionHandler handler = permissionHandler_.get();
+        return handler != null && handler.onRequestMediaAccessPermission(browser, frame, requestingOrigin, requestedPermissions, callback);
+    }
+
+    @Override
+    public boolean onShowPermissionPrompt(CefBrowser browser, long promptId, String requestingOrigin, int requestedPermissions, CefPermissionPromptCallback callback) {
+        if (browser == null || callback == null) return false;
+        CefPermissionHandler handler = permissionHandler_.get();
+        if (handler == null || !handler.onShowPermissionPrompt(browser, promptId, requestingOrigin, requestedPermissions, callback)) return false;
+        // Dismissal belongs to the delegate that accepted this exact prompt, even if public
+        // registration changes while the asynchronous request remains outstanding.
+        permissionPromptOwners_.put(Long.valueOf(promptId), handler);
+        return true;
+    }
+
+    @Override
+    public void onDismissPermissionPrompt(CefBrowser browser, long promptId, int result) {
+        CefPermissionHandler handler = permissionPromptOwners_.remove(Long.valueOf(promptId));
+        if (handler != null && browser != null) handler.onDismissPermissionPrompt(browser, promptId, result);
+    }
+
     // CefJSDialogHandler
 
     public CefClient addJSDialogHandler(CefJSDialogHandler handler) {
@@ -734,6 +781,7 @@ public class CefClient extends CefClientHandler
         Throwable failure = null;
         try {
             failure = CefLifecycleExecutor.runAndCollectFailure(failure, this::unregisterFocusListener);
+            failure = CefLifecycleExecutor.runAndCollectFailure(failure, permissionPromptOwners_::clear);
             failure = CefLifecycleExecutor.runAndCollectFailure(failure, () -> removeContextMenuHandler(this));
             failure = CefLifecycleExecutor.runAndCollectFailure(failure, () -> removeDialogHandler(this));
             failure = CefLifecycleExecutor.runAndCollectFailure(failure, () -> removeDisplayHandler(this));
@@ -742,6 +790,7 @@ public class CefClient extends CefClientHandler
             failure = CefLifecycleExecutor.runAndCollectFailure(failure, () -> removeDragHandler(this));
             failure = CefLifecycleExecutor.runAndCollectFailure(failure, () -> removeFindHandler(this));
             failure = CefLifecycleExecutor.runAndCollectFailure(failure, () -> removeFocusHandler(this));
+            failure = CefLifecycleExecutor.runAndCollectFailure(failure, () -> removePermissionHandler(this));
             failure = CefLifecycleExecutor.runAndCollectFailure(failure, () -> removeJSDialogHandler(this));
             failure = CefLifecycleExecutor.runAndCollectFailure(failure, () -> removeKeyboardHandler(this));
             failure = CefLifecycleExecutor.runAndCollectFailure(failure, () -> removeLifeSpanHandler(this));

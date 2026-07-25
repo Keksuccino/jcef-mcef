@@ -76,7 +76,7 @@ jobs:
           cmake --build jcef_build --parallel 4
       - name: Build and run native unit tests
         run: |
-          cmake --build jcef_build --config Release --target mouse_wheel_platform_util_test --parallel 4
+          cmake --build jcef_build --config Release --target mouse_wheel_platform_util_test permission_util_test --parallel 4
           ctest --test-dir jcef_build --build-config Release --output-on-failure
       - name: Run deterministic tooling tests
         run: python3 -m unittest discover -s tools/distrib/tests -p 'test_*.py' -v
@@ -226,7 +226,7 @@ jobs:
       - name: Build and run native unit tests
         shell: pwsh
         run: |
-          cmake --build jcef_build --config Release --target mouse_wheel_platform_util_test --parallel 4
+          cmake --build jcef_build --config Release --target mouse_wheel_platform_util_test permission_util_test --parallel 4
           ctest --test-dir jcef_build --build-config Release --output-on-failure
       - name: Run deterministic tooling tests
         shell: pwsh
@@ -350,7 +350,7 @@ jobs:
           cmake --build jcef_build --parallel 4
       - name: Build and run native unit tests
         run: |
-          cmake --build jcef_build --config Release --target mouse_wheel_platform_util_test --parallel 4
+          cmake --build jcef_build --config Release --target mouse_wheel_platform_util_test permission_util_test --parallel 4
           ctest --test-dir jcef_build --build-config Release --output-on-failure
       - name: Run deterministic tooling tests
         run: python3 -m unittest discover -s tools/distrib/tests -p 'test_*.py' -v

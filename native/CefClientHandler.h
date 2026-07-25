@@ -89,6 +89,14 @@ JNIEXPORT void JNICALL Java_org_cef_handler_CefClientHandler_N_1removeFocusHandl
 
 /*
  * Class:     org_cef_handler_CefClientHandler
+ * Method:    N_removePermissionHandler
+ * Signature: (Lorg/cef/handler/CefPermissionHandler;)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_handler_CefClientHandler_N_1removePermissionHandler
+  (JNIEnv *, jobject, jobject);
+
+/*
+ * Class:     org_cef_handler_CefClientHandler
  * Method:    N_removeJSDialogHandler
  * Signature: (Lorg/cef/handler/CefJSDialogHandler;)V
  */

@@ -25,6 +25,7 @@
 #include "life_span_handler.h"
 #include "load_handler.h"
 #include "message_router_handler.h"
+#include "permission_handler.h"
 #include "print_handler.h"
 #include "render_handler.h"
 #include "request_handler.h"
@@ -61,6 +62,12 @@ CefMessageRouterConfig GetMessageRouterConfig(JNIEnv* env,
 
 ClientHandler::ClientHandler(JNIEnv* env, jobject handler)
     : handle_(env, handler) {}
+
+ClientHandler::~ClientHandler() {
+  // Normally base Java disposal removes permission bridges before clearing the native binding.
+  // Keep this fallback because other native owners can release the final client reference.
+  RemovePermissionHandler();
+}
 
 template <class T>
 CefRefPtr<T> ClientHandler::GetHandler(const char* class_name) {
@@ -125,6 +132,61 @@ CefRefPtr<CefFindHandler> ClientHandler::GetFindHandler() {
 
 CefRefPtr<CefFocusHandler> ClientHandler::GetFocusHandler() {
   return GetHandler<FocusHandler>("FocusHandler");
+}
+
+CefRefPtr<CefPermissionHandler> ClientHandler::GetPermissionHandler() {
+  {
+    base::AutoLock lock_scope(permission_handler_lock_);
+    if (permission_handler_removed_)
+      return nullptr;
+  }
+
+  // The Java hook is overridable and may dynamically change or reenter terminal cleanup. Invoke it
+  // before taking permission_handler_lock_, then publish by Java object identity under the lock.
+  ScopedJNIEnv env;
+  if (!env)
+    return nullptr;
+  ScopedJNIObjectResult jhandler(env);
+  JNI_CALL_METHOD(env, handle_, "getPermissionHandler", "()Lorg/cef/handler/CefPermissionHandler;", Object, jhandler);
+  if (!jhandler)
+    return nullptr;
+
+  // IsSameObject is a primitive JNI identity check and does not execute application Java code, so
+  // it is safe under the native cache lock. Avoid allocating a temporary global reference for the
+  // stable-handler fast path.
+  {
+    base::AutoLock lock_scope(permission_handler_lock_);
+    if (permission_handler_removed_)
+      return nullptr;
+    for (const auto& existing : permission_handlers_) {
+      if (existing->IsSameJavaHandler(env, jhandler))
+        return existing;
+    }
+  }
+
+  CefRefPtr<PermissionHandler> candidate = new PermissionHandler(env, jhandler);
+  if (!candidate->IsValid()) {
+    if (env->ExceptionCheck()) {
+      env->ExceptionDescribe();
+      env->ExceptionClear();
+    }
+    return nullptr;
+  }
+
+  // Another native caller may publish the same Java identity while the candidate is constructed.
+  // Recheck under the lock and let the unpublished candidate release its global reference outside
+  // the critical section.
+  {
+    base::AutoLock lock_scope(permission_handler_lock_);
+    if (permission_handler_removed_)
+      return nullptr;
+    for (const auto& existing : permission_handlers_) {
+      if (existing->IsSameJavaHandler(env, jhandler))
+        return existing;
+    }
+    permission_handlers_.push_back(candidate);
+  }
+  return candidate;
 }
 
 CefRefPtr<CefJSDialogHandler> ClientHandler::GetJSDialogHandler() {
@@ -250,10 +312,27 @@ void ClientHandler::RemoveMessageRouter(JNIEnv* env, jobject jmessageRouter) {
   }
 }
 
+void ClientHandler::RemovePermissionHandler() {
+  std::vector<CefRefPtr<PermissionHandler>> permission_handlers;
+  {
+    base::AutoLock lock_scope(permission_handler_lock_);
+    if (permission_handler_removed_)
+      return;
+    permission_handler_removed_ = true;
+    permission_handlers.swap(permission_handlers_);
+  }
+  for (const auto& permission_handler : permission_handlers)
+    permission_handler->Shutdown();
+}
+
 void ClientHandler::OnAfterCreated() {}
 
 void ClientHandler::OnBeforeClose(CefRefPtr<CefBrowser> browser) {
   REQUIRE_UI_THREAD();
+
+  std::vector<CefRefPtr<PermissionHandler>> permission_handlers = GetExistingPermissionHandlers();
+  for (const auto& permission_handler : permission_handlers)
+    permission_handler->OnBeforeClose(browser);
 
   base::AutoLock lock_scope(message_router_lock_);
   for (auto& router : message_routers_) {
@@ -274,10 +353,19 @@ void ClientHandler::OnBeforeBrowse(CefRefPtr<CefBrowser> browser,
 void ClientHandler::OnRenderProcessTerminated(CefRefPtr<CefBrowser> browser) {
   REQUIRE_UI_THREAD();
 
+  std::vector<CefRefPtr<PermissionHandler>> permission_handlers = GetExistingPermissionHandlers();
+  for (const auto& permission_handler : permission_handlers)
+    permission_handler->OnRenderProcessTerminated(browser);
+
   base::AutoLock lock_scope(message_router_lock_);
   for (auto& router : message_routers_) {
     router->OnRenderProcessTerminated(browser);
   }
+}
+
+std::vector<CefRefPtr<PermissionHandler>> ClientHandler::GetExistingPermissionHandlers() {
+  base::AutoLock lock_scope(permission_handler_lock_);
+  return permission_handler_removed_ ? std::vector<CefRefPtr<PermissionHandler>>() : permission_handlers_;
 }
 
 jobject ClientHandler::getBrowser(JNIEnv* env, CefRefPtr<CefBrowser> browser) {

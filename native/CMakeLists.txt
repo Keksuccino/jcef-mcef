@@ -44,6 +44,8 @@ set(JCEF_SRCS
   CefJSDialogCallback_N.cpp
   CefListValue_N.cpp
   CefListValue_N.h
+  CefMediaAccessCallback_N.cpp
+  CefMediaAccessCallback_N.h
   CefMenuModel_N.cpp
   CefMenuModel_N.h
   CefMessageRouter_N.cpp
@@ -52,6 +54,8 @@ set(JCEF_SRCS
   CefPostData_N.h
   CefPostDataElement_N.cpp
   CefPostDataElement_N.h
+  CefPermissionPromptCallback_N.cpp
+  CefPermissionPromptCallback_N.h
   CefPrintDialogCallback_N.cpp
   CefPrintDialogCallback_N.h
   CefPrintJobCallback_N.cpp
@@ -141,6 +145,15 @@ set(JCEF_SRCS
   message_router_handler.h
   pdf_print_callback.cpp
   pdf_print_callback.h
+  permission_callback_state.cpp
+  permission_callback_state.h
+  permission_callback_jni.cpp
+  permission_callback_jni.h
+  permission_dispatch_lifecycle.cpp
+  permission_dispatch_lifecycle.h
+  permission_handler.cpp
+  permission_handler.h
+  permission_util.h
   print_handler.cpp
   print_handler.h
   render_handler.cpp
@@ -263,6 +276,8 @@ function(SET_JCEF_CXX20_PROPERTIES target)
 endfunction()
 
 if(BUILD_TESTING)
+  find_package(Threads REQUIRED)
+
   # Keep test artifacts out of normal builds and distributions. CI explicitly
   # builds this target before running CTest on every supported architecture.
   add_executable(mouse_wheel_platform_util_test EXCLUDE_FROM_ALL
@@ -274,6 +289,21 @@ if(BUILD_TESTING)
   SET_JCEF_CXX20_PROPERTIES(mouse_wheel_platform_util_test)
   target_include_directories(mouse_wheel_platform_util_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   add_test(NAME mouse_wheel_platform_util_test COMMAND mouse_wheel_platform_util_test)
+
+  add_executable(permission_util_test EXCLUDE_FROM_ALL
+    tests/permission_util_test.cpp
+    permission_callback_state.cpp
+    permission_callback_state.h
+    permission_dispatch_lifecycle.cpp
+    permission_dispatch_lifecycle.h
+    permission_util.h
+    )
+  SET_EXECUTABLE_TARGET_PROPERTIES(permission_util_test)
+  SET_JCEF_CXX20_PROPERTIES(permission_util_test)
+  target_include_directories(permission_util_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" ${JNI_INCLUDE_DIRS})
+  target_link_libraries(permission_util_test PRIVATE Threads::Threads)
+  add_test(NAME permission_util_test COMMAND permission_util_test)
+  set_tests_properties(permission_util_test PROPERTIES TIMEOUT 90)
 endif()
 
 

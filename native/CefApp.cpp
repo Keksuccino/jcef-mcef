@@ -12,6 +12,7 @@
 #include "context.h"
 #include "jcef_version.h"
 #include "jni_util.h"
+#include "permission_dispatch_lifecycle.h"
 #include "scheme_handler_factory.h"
 #include "url_request.h"
 #include "util.h"
@@ -33,13 +34,15 @@ JNIEXPORT jboolean JNICALL Java_org_cef_CefApp_N_1Initialize(JNIEnv* env, jobjec
   Context* context = Context::GetInstance();
   if (!context || !context->Initialize(env, c, appHandler, jsettings))
     return JNI_FALSE;
-  // URLRequest admission begins only after CefInitialize has succeeded. This
+  // Native bridge admission begins only after CefInitialize has succeeded. This
   // ordering is also what makes failed initialization/abort idempotently safe.
   OpenURLRequestLifecycle();
+  OpenPermissionDispatchLifecycle();
   return JNI_TRUE;
 }
 
 JNIEXPORT void JNICALL Java_org_cef_CefApp_N_1AbortInitialization(JNIEnv* env, jobject) {
+  ClosePermissionDispatchLifecycle();
   CloseURLRequestLifecycle();
   ClearJNIReferences(env);
   Context::Destroy();
@@ -51,6 +54,10 @@ JNIEXPORT void JNICALL Java_org_cef_CefApp_N_1Shutdown(JNIEnv* env, jobject) {
   // request/client references until CefShutdown tears the requests down.
   CloseURLRequestLifecycle();
   Context* context = Context::GetInstance();
+  // Browser-close invalidation is intentionally non-blocking on CEF UI. Drain
+  // direct permission callback dispatch only here, after those callback stacks
+  // have unwound and immediately before Context::Shutdown can unload libcef.
+  ClosePermissionDispatchLifecycle();
   if (context)
     context->Shutdown();
   ClearJNIReferences(env);

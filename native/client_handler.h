@@ -9,6 +9,7 @@
 #include <jni.h>
 
 #include <set>
+#include <vector>
 
 #include "include/base/cef_lock.h"
 #include "include/cef_base.h"
@@ -16,12 +17,14 @@
 
 #include "jni_scoped_helpers.h"
 #include "message_router_handler.h"
+#include "permission_handler.h"
 #include "window_handler.h"
 
 // ClientHandler implementation.
 class ClientHandler : public CefClient {
  public:
   ClientHandler(JNIEnv* env, jobject handler);
+  ~ClientHandler() override;
 
   // CefClient methods
   CefRefPtr<CefContextMenuHandler> GetContextMenuHandler() override;
@@ -32,6 +35,7 @@ class ClientHandler : public CefClient {
   CefRefPtr<CefDragHandler> GetDragHandler() override;
   CefRefPtr<CefFindHandler> GetFindHandler() override;
   CefRefPtr<CefFocusHandler> GetFocusHandler() override;
+  CefRefPtr<CefPermissionHandler> GetPermissionHandler() override;
   CefRefPtr<CefJSDialogHandler> GetJSDialogHandler() override;
   CefRefPtr<CefKeyboardHandler> GetKeyboardHandler() override;
   CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override;
@@ -51,6 +55,7 @@ class ClientHandler : public CefClient {
   // Methods to deal with message router bindings
   void AddMessageRouter(JNIEnv* env, jobject jmessageRouter);
   void RemoveMessageRouter(JNIEnv* env, jobject jmessageRouter);
+  void RemovePermissionHandler();
 
   // Methods to set and remove a browser ref.
   void OnAfterCreated();
@@ -67,6 +72,8 @@ class ClientHandler : public CefClient {
   template <class T>
   CefRefPtr<T> GetHandler(const char* class_name);
 
+  std::vector<CefRefPtr<PermissionHandler>> GetExistingPermissionHandlers();
+
   ScopedJNIObjectGlobal handle_;
 
   // The child browser window.
@@ -77,6 +84,12 @@ class ClientHandler : public CefClient {
 
   // Protects access to |message_routers_|.
   base::Lock message_router_lock_;
+
+  // Cache one native bridge per distinct Java handler identity. CefClient returns a stable relay,
+  // while external subclasses may dynamically return different handler objects.
+  base::Lock permission_handler_lock_;
+  std::vector<CefRefPtr<PermissionHandler>> permission_handlers_;
+  bool permission_handler_removed_ = false;
 
   // Include the default reference counting implementation.
   IMPLEMENT_REFCOUNTING(ClientHandler);

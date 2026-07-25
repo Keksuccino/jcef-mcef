@@ -179,7 +179,7 @@ class PlatformToolingContractTest(unittest.TestCase):
 
   def test_every_workflow_architecture_builds_and_runs_native_unit_tests(self):
     workflow = (REPOSITORY_ROOT / '.github' / 'workflows' / 'build-jcef.yml').read_text(encoding='utf-8')
-    build_command = 'cmake --build jcef_build --config Release --target mouse_wheel_platform_util_test --parallel 4'
+    build_command = 'cmake --build jcef_build --config Release --target mouse_wheel_platform_util_test permission_util_test --parallel 4'
     test_command = 'ctest --test-dir jcef_build --build-config Release --output-on-failure'
     covered_targets = 0
     for job_name in ('linux', 'windows', 'macos'):

@@ -94,6 +94,14 @@ Java_org_cef_handler_CefClientHandler_N_1removeFocusHandler(
                                       "CefFocusHandler");
 }
 
+JNIEXPORT void JNICALL Java_org_cef_handler_CefClientHandler_N_1removePermissionHandler(JNIEnv* env, jobject clientHandler, jobject) {
+  // Base disposal serializes terminal JNI operations, and native removal is idempotent so the
+  // earlier CefClient cleanup and this mandatory base cleanup can safely overlap in purpose.
+  CefRefPtr<ClientHandler> client = GetCefFromJNIObject<ClientHandler>(env, clientHandler, "CefClientHandler");
+  if (client)
+    client->RemovePermissionHandler();
+}
+
 JNIEXPORT void JNICALL
 Java_org_cef_handler_CefClientHandler_N_1removeJSDialogHandler(
     JNIEnv* env,
@@ -178,11 +186,11 @@ Java_org_cef_handler_CefClientHandler_N_1removeWindowHandler(
                                     "CefWindowHandler");
 }
 
-JNIEXPORT void JNICALL
-Java_org_cef_handler_CefClientHandler_N_1CefClientHandler_1DTOR(
-    JNIEnv* env,
-    jobject clientHandler) {
-  // delete reference to the native client handler
-  SetCefForJNIObject<ClientHandler>(env, clientHandler, nullptr,
-                                    "CefClientHandler");
+JNIEXPORT void JNICALL Java_org_cef_handler_CefClientHandler_N_1CefClientHandler_1DTOR(JNIEnv* env, jobject clientHandler) {
+  // Hold a strong reference while invalidating callback states, then clear the Java-owned native
+  // binding. ClientHandler's destructor repeats removal as a final fallback for non-Java teardown.
+  CefRefPtr<ClientHandler> client = GetCefFromJNIObject<ClientHandler>(env, clientHandler, "CefClientHandler");
+  if (client)
+    client->RemovePermissionHandler();
+  SetCefForJNIObject<ClientHandler>(env, clientHandler, nullptr, "CefClientHandler");
 }

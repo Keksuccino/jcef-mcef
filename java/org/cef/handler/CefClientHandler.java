@@ -18,6 +18,8 @@ public abstract class CefClientHandler implements CefNative {
     // Used internally to store a pointer to the CEF object.
     private HashMap<String, Long> N_CefHandle = new HashMap<String, Long>();
     private Vector<CefMessageRouter> msgRouters = new Vector<>();
+    private boolean nativeClientDisposed_ = false;
+    private boolean nativeClientDisposalInProgress_ = false;
 
     @Override
     public void setNativeRef(String identifer, long nativeRef) {
@@ -42,8 +44,15 @@ public abstract class CefClientHandler implements CefNative {
         }
     }
 
-    protected void dispose() {
+    protected synchronized void dispose() {
+        if (nativeClientDisposed_ || nativeClientDisposalInProgress_) return;
+        nativeClientDisposalInProgress_ = true;
         try {
+            // Permission callbacks retain native bridge ownership. Terminate every cached bridge
+            // before releasing the native client binding, including for external subclasses that
+            // rely only on this base disposal implementation.
+            removePermissionHandler(null);
+
             // Call native DTOR if handler will be destroyed
             for (int i = 0; i < msgRouters.size(); i++) {
                 msgRouters.get(i).dispose();
@@ -51,8 +60,13 @@ public abstract class CefClientHandler implements CefNative {
             msgRouters.clear();
 
             N_CefClientHandler_DTOR();
+            nativeClientDisposed_ = true;
         } catch (UnsatisfiedLinkError err) {
             err.printStackTrace();
+        } finally {
+            // The terminal latch blocks same-thread JNI/router reentry without preventing a later
+            // retry if cleanup failed before the native binding was released.
+            nativeClientDisposalInProgress_ = false;
         }
     }
 
@@ -121,6 +135,14 @@ public abstract class CefClientHandler implements CefNative {
      * the native code.
      */
     abstract protected CefFocusHandler getFocusHandler();
+
+    /**
+     * Return the handler for permission requests. The concrete default preserves compatibility
+     * for external CefClientHandler subclasses compiled before this hook existed.
+     */
+    protected CefPermissionHandler getPermissionHandler() {
+        return null;
+    }
 
     /**
      * Return the handler for javascript dialog requests.
@@ -252,6 +274,14 @@ public abstract class CefClientHandler implements CefNative {
         }
     }
 
+    protected synchronized void removePermissionHandler(CefPermissionHandler h) {
+        try {
+            N_removePermissionHandler(h);
+        } catch (UnsatisfiedLinkError err) {
+            err.printStackTrace();
+        }
+    }
+
     protected void removeJSDialogHandler(CefJSDialogHandler h) {
         try {
             N_removeJSDialogHandler(h);
@@ -335,6 +365,7 @@ public abstract class CefClientHandler implements CefNative {
     private final native void N_removeDragHandler(CefDragHandler h);
     private final native void N_removeFindHandler(CefFindHandler h);
     private final native void N_removeFocusHandler(CefFocusHandler h);
+    private final native void N_removePermissionHandler(CefPermissionHandler h);
     private final native void N_removeJSDialogHandler(CefJSDialogHandler h);
     private final native void N_removeKeyboardHandler(CefKeyboardHandler h);
     private final native void N_removeLifeSpanHandler(CefLifeSpanHandler h);

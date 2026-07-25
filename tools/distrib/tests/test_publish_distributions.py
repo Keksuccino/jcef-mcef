@@ -20,13 +20,18 @@ WRONG_SHA = '89abcdef0123456789abcdef0123456789abcdef'
 REPOSITORY = 'Keksuccino/jcef-mcef'
 TAG_NAME = 'java-cef-{}'.format(COMMIT_SHA)
 RELEASE_TITLE = 'JCEF distributions {}'.format(COMMIT_SHA)
-RELEASE_BODY = 'Automated JCEF distributions for commit {};managed-by=tools/distrib/publish_distributions.sh;schema=1'.format(COMMIT_SHA)
-TARGETS = ('linux_amd64', 'linux_arm64', 'macos_amd64', 'macos_arm64', 'windows_amd64', 'windows_arm64')
+RELEASE_BODY = 'Automated JCEF distributions for commit {};managed-by=tools/distrib/publish_distributions.sh;schema=1'.format(
+    COMMIT_SHA)
+TARGETS = ('linux_amd64', 'linux_arm64', 'macos_amd64', 'macos_arm64',
+           'windows_amd64', 'windows_arm64')
 ARCHIVE_NAMES = tuple('{}.tar.gz'.format(target) for target in TARGETS)
 CHECKSUM_NAMES = tuple('{}.tar.gz.sha256'.format(target) for target in TARGETS)
-ASSET_NAMES = tuple(name for pair in zip(ARCHIVE_NAMES, CHECKSUM_NAMES) for name in pair)
+ASSET_NAMES = tuple(
+    name for pair in zip(ARCHIVE_NAMES, CHECKSUM_NAMES) for name in pair)
 TOKEN = 'github-actions-test-token'
-MODIFYING_OPERATIONS = frozenset(('create-ref', 'create-release', 'delete-release', 'upload-release', 'publish-release'))
+MODIFYING_OPERATIONS = frozenset(
+    ('create-ref', 'create-release', 'delete-release', 'upload-release',
+     'publish-release'))
 
 FAKE_GH = r'''#!/usr/bin/env python3
 import base64
@@ -80,8 +85,14 @@ def asset_bytes(encoded):
 arguments = sys.argv[1:]
 if not arguments:
   fail('missing gh command')
-if os.environ.get('GH_TOKEN') != os.environ['FAKE_EXPECTED_TOKEN'] or 'GITHUB_TOKEN' in os.environ:
-  fail('publisher did not isolate the built-in token')
+expected_token = os.environ.get('FAKE_EXPECTED_TOKEN', '')
+if 'GITHUB_TOKEN' in os.environ:
+  fail('publisher leaked GITHUB_TOKEN')
+if expected_token:
+  if os.environ.get('GH_TOKEN') != expected_token:
+    fail('publisher did not isolate the supplied token')
+elif 'GH_TOKEN' in os.environ:
+  fail('publisher did not use the authenticated gh credential store')
 
 state = load_state()
 operation = ''
@@ -93,6 +104,11 @@ if arguments[0] == 'api':
       fail('unexpected GraphQL repository')
     if 'latestRelease{tagName}' not in field_value(arguments, 'query') or '--jq' not in arguments:
       fail('malformed latest-release query')
+  elif len(arguments) > 1 and arguments[1] == 'user':
+    operation = 'inspect-authenticated-user'
+    jq_filter = flag_value(arguments, '--jq')
+    if '.login | type' not in jq_filter:
+      fail('authenticated-login inspection must preserve JSON type')
   else:
     endpoint = next((argument for argument in arguments if argument.startswith('repos/')), '')
     if not endpoint.startswith('repos/' + os.environ['FAKE_EXPECTED_REPOSITORY'] + '/'):
@@ -138,7 +154,7 @@ if not operation:
 if operation in ('list-releases', 'list-tag-refs') and '--paginate' not in arguments:
   fail('inspection query must be paginated')
 
-record = {'arguments': arguments, 'operation': operation, 'github_token_present': 'GITHUB_TOKEN' in os.environ, 'gh_token_matches': os.environ.get('GH_TOKEN') == os.environ['FAKE_EXPECTED_TOKEN']}
+record = {'arguments': arguments, 'operation': operation, 'github_token_present': 'GITHUB_TOKEN' in os.environ, 'gh_token_matches': (os.environ.get('GH_TOKEN') == expected_token if expected_token else 'GH_TOKEN' not in os.environ)}
 with Path(os.environ['FAKE_GH_LOG']).open('a', encoding='utf-8') as stream:
   stream.write(json.dumps(record, sort_keys=True) + '\n')
 if operation == os.environ.get('FAKE_GH_FAIL_OPERATION'):
@@ -147,6 +163,8 @@ if operation == os.environ.get('FAKE_GH_FAIL_OPERATION'):
 release = state.get('release')
 if operation == 'inspect-immutability':
   print(state.get('immutable_status', 'boolean|true'))
+elif operation == 'inspect-authenticated-user':
+  print(state.get('authenticated_login', 'github-actions[bot]'))
 elif operation == 'inspect-latest':
   print(state.get('latest_status', 'null'))
 elif operation == 'list-releases':
@@ -189,7 +207,7 @@ elif operation == 'create-release':
   target = flag_value(arguments, '--target')
   title = flag_value(arguments, '--title')
   body = flag_value(arguments, '--notes')
-  release = {'id': state['next_id'], 'tag': arguments[2], 'target': target, 'draft': True, 'immutable': False, 'prerelease': False, 'title': title, 'body': body, 'author': 'github-actions[bot]', 'assets': {}}
+  release = {'id': state['next_id'], 'tag': arguments[2], 'target': target, 'draft': True, 'immutable': False, 'prerelease': False, 'title': title, 'body': body, 'author': state.get('authenticated_login', 'github-actions[bot]'), 'assets': {}}
   state['next_id'] += 1
   state['release'] = release
   save_state(state)
@@ -238,7 +256,8 @@ elif operation == 'publish-release':
 '''
 
 
-@unittest.skipUnless(os.name == 'posix' and Path('/bin/bash').is_file(), 'publisher integration tests require POSIX /bin/bash')
+@unittest.skipUnless(os.name == 'posix' and Path('/bin/bash').is_file(),
+                     'publisher integration tests require POSIX /bin/bash')
 class PublishDistributionsTest(unittest.TestCase):
 
   def setUp(self):
@@ -263,50 +282,127 @@ class PublishDistributionsTest(unittest.TestCase):
     for index, target in enumerate(TARGETS):
       archive_name = '{}.tar.gz'.format(target)
       archive_path = self.artifact_directory / archive_name
-      archive_path.write_bytes(('archive-{}-{}'.format(index, target)).encode('ascii'))
+      archive_path.write_bytes(('archive-{}-{}'.format(index,
+                                                       target)).encode('ascii'))
       digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
       line_ending = b'\r\n' if target.startswith('windows_') else b'\n'
       checksum = '{}  {}'.format(digest, archive_name).encode('ascii')
-      (self.artifact_directory / '{}.sha256'.format(archive_name)).write_bytes(checksum + line_ending)
+      (self.artifact_directory /
+       '{}.sha256'.format(archive_name)).write_bytes(checksum + line_ending)
 
   def write_state(self, state):
-    self.state_path.write_text(json.dumps(state, sort_keys=True), encoding='utf-8')
+    self.state_path.write_text(
+        json.dumps(state, sort_keys=True), encoding='utf-8')
 
   def read_state(self):
     return json.loads(self.state_path.read_text(encoding='utf-8'))
 
   def environment(self, **updates):
     environment = os.environ.copy()
-    environment.update({'FAKE_EXPECTED_REPOSITORY': REPOSITORY, 'FAKE_EXPECTED_TAG': TAG_NAME, 'FAKE_EXPECTED_TOKEN': TOKEN, 'FAKE_GH_LOG': str(self.log_path), 'FAKE_GH_STATE': str(self.state_path), 'GITHUB_TOKEN': TOKEN, 'GH_TOKEN': 'must-be-replaced', 'PATH': '{}{}{}'.format(self.fake_bin, os.pathsep, environment.get('PATH', ''))})
+    environment.update({
+        'FAKE_EXPECTED_REPOSITORY':
+            REPOSITORY,
+        'FAKE_EXPECTED_TAG':
+            TAG_NAME,
+        'FAKE_EXPECTED_TOKEN':
+            TOKEN,
+        'FAKE_GH_LOG':
+            str(self.log_path),
+        'FAKE_GH_STATE':
+            str(self.state_path),
+        'GITHUB_TOKEN':
+            TOKEN,
+        'PATH':
+            '{}{}{}'.format(self.fake_bin, os.pathsep,
+                            environment.get('PATH', ''))
+    })
     environment.update(updates)
     return environment
 
-  def run_publisher(self, commit_sha=COMMIT_SHA, environment=None, artifact_directory=None, cwd=None):
-    return subprocess.run(['/bin/bash', str(PUBLISHER), commit_sha, str(artifact_directory or self.artifact_directory)], check=False, capture_output=True, text=True, env=environment or self.environment(), cwd=cwd)
+  def keyring_environment(self, **updates):
+    environment = self.environment(FAKE_EXPECTED_TOKEN='')
+    environment.pop('GITHUB_TOKEN', None)
+    environment.pop('GH_TOKEN', None)
+    environment.update(updates)
+    return environment
+
+  def run_publisher(self,
+                    commit_sha=COMMIT_SHA,
+                    environment=None,
+                    artifact_directory=None,
+                    cwd=None):
+    return subprocess.run(
+        [
+            '/bin/bash',
+            str(PUBLISHER), commit_sha,
+            str(artifact_directory or self.artifact_directory)
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment or self.environment(),
+        cwd=cwd)
 
   def read_log(self):
     if not self.log_path.exists():
       return []
-    return [json.loads(line) for line in self.log_path.read_text(encoding='utf-8').splitlines()]
+    return [
+        json.loads(line)
+        for line in self.log_path.read_text(encoding='utf-8').splitlines()
+    ]
 
   def operations(self):
     return [record['operation'] for record in self.read_log()]
 
   def canonical_assets(self):
-    return {name: base64.b64encode((self.artifact_directory / name).read_bytes()).decode('ascii') for name in ASSET_NAMES}
+    return {
+        name: base64.b64encode(
+            (self.artifact_directory / name).read_bytes()).decode('ascii')
+        for name in ASSET_NAMES
+    }
 
-  def set_release(self, draft, asset_names=(), tag_sha=COMMIT_SHA, target=COMMIT_SHA, title=RELEASE_TITLE, body=RELEASE_BODY, author='github-actions[bot]', immutable=None, immutable_status='boolean|true', latest_status='null', overrides=None):
+  def set_release(self,
+                  draft,
+                  asset_names=(),
+                  tag_sha=COMMIT_SHA,
+                  target=COMMIT_SHA,
+                  title=RELEASE_TITLE,
+                  body=RELEASE_BODY,
+                  author='github-actions[bot]',
+                  immutable=None,
+                  immutable_status='boolean|true',
+                  latest_status='null',
+                  overrides=None):
     assets = {name: self.canonical_assets()[name] for name in asset_names}
     for name, contents in (overrides or {}).items():
       assets[name] = base64.b64encode(contents).decode('ascii')
     immutable = not draft if immutable is None else immutable
-    release = {'id': 1, 'tag': TAG_NAME, 'target': target, 'draft': draft, 'immutable': immutable, 'prerelease': False, 'title': title, 'body': body, 'author': author, 'assets': assets}
-    self.write_state({'next_id': 2, 'tag_sha': tag_sha, 'release': release, 'immutable_status': immutable_status, 'latest_status': latest_status})
+    release = {
+        'id': 1,
+        'tag': TAG_NAME,
+        'target': target,
+        'draft': draft,
+        'immutable': immutable,
+        'prerelease': False,
+        'title': title,
+        'body': body,
+        'author': author,
+        'assets': assets
+    }
+    self.write_state({
+        'next_id': 2,
+        'tag_sha': tag_sha,
+        'release': release,
+        'immutable_status': immutable_status,
+        'latest_status': latest_status
+    })
 
   def assert_no_modifying_calls(self):
-    self.assertFalse(any(operation in MODIFYING_OPERATIONS for operation in self.operations()))
+    self.assertFalse(
+        any(operation in MODIFYING_OPERATIONS
+            for operation in self.operations()))
 
-  def assert_exact_published_release(self):
+  def assert_exact_published_release(self, author='github-actions[bot]'):
     state = self.read_state()
     self.assertEqual(COMMIT_SHA, state['tag_sha'])
     self.assertIsNotNone(state['release'])
@@ -316,7 +412,7 @@ class PublishDistributionsTest(unittest.TestCase):
     self.assertEqual(COMMIT_SHA, state['release']['target'])
     self.assertEqual(RELEASE_TITLE, state['release']['title'])
     self.assertEqual(RELEASE_BODY, state['release']['body'])
-    self.assertEqual('github-actions[bot]', state['release']['author'])
+    self.assertEqual(author, state['release']['author'])
     self.assertEqual(self.canonical_assets(), state['release']['assets'])
 
   def test_fresh_publication_creates_exact_tag_and_atomic_release(self):
@@ -324,13 +420,29 @@ class PublishDistributionsTest(unittest.TestCase):
     self.assertEqual(0, result.returncode, result.stderr)
     self.assert_exact_published_release()
     records = self.read_log()
-    self.assertTrue(all(record['gh_token_matches'] and not record['github_token_present'] for record in records))
-    upload_records = [record for record in records if record['operation'] == 'upload-release']
+    self.assertTrue(
+        all(record['gh_token_matches'] and not record['github_token_present']
+            for record in records))
+    upload_records = [
+        record for record in records if record['operation'] == 'upload-release'
+    ]
     self.assertEqual(2, len(upload_records))
-    self.assertEqual(list(ARCHIVE_NAMES), [Path(path).name for path in upload_records[0]['arguments'][3:upload_records[0]['arguments'].index('--repo')]])
-    self.assertEqual(list(CHECKSUM_NAMES), [Path(path).name for path in upload_records[1]['arguments'][3:upload_records[1]['arguments'].index('--repo')]])
-    create_arguments = next(record['arguments'] for record in records if record['operation'] == 'create-release')
-    publish_arguments = next(record['arguments'] for record in records if record['operation'] == 'publish-release')
+    self.assertEqual(
+        list(ARCHIVE_NAMES), [
+            Path(path).name
+            for path in upload_records[0]['arguments'][3:upload_records[0][
+                'arguments'].index('--repo')]
+        ])
+    self.assertEqual(
+        list(CHECKSUM_NAMES), [
+            Path(path).name
+            for path in upload_records[1]['arguments'][3:upload_records[1][
+                'arguments'].index('--repo')]
+        ])
+    create_arguments = next(record['arguments'] for record in records
+                            if record['operation'] == 'create-release')
+    publish_arguments = next(record['arguments'] for record in records
+                             if record['operation'] == 'publish-release')
     self.assertIn('--latest=false', create_arguments)
     self.assertIn('--draft', create_arguments)
     self.assertIn('--verify-tag', create_arguments)
@@ -338,16 +450,59 @@ class PublishDistributionsTest(unittest.TestCase):
     self.assertIn('--draft=false', publish_arguments)
     operations = self.operations()
     self.assertEqual('inspect-immutability', operations[0])
-    self.assertLess(operations.index('inspect-immutability'), operations.index('create-ref'))
-    self.assertLess(operations.index('create-ref'), operations.index('create-release'))
-    self.assertLess(operations.index('upload-release'), operations.index('publish-release'))
-    self.assertLess(operations.index('publish-release'), operations.index('inspect-latest'))
+    self.assertLess(
+        operations.index('inspect-immutability'),
+        operations.index('inspect-authenticated-user'))
+    self.assertLess(
+        operations.index('inspect-authenticated-user'),
+        operations.index('create-ref'))
+    self.assertLess(
+        operations.index('create-ref'), operations.index('create-release'))
+    self.assertLess(
+        operations.index('upload-release'), operations.index('publish-release'))
+    self.assertLess(
+        operations.index('publish-release'), operations.index('inspect-latest'))
+
+  def test_authenticated_gh_keyring_identity_owns_the_release_without_token_environment(
+      self):
+    state = self.read_state()
+    state['authenticated_login'] = 'Keksuccino'
+    self.write_state(state)
+    result = self.run_publisher(environment=self.keyring_environment())
+    self.assertEqual(0, result.returncode, result.stderr)
+    self.assert_exact_published_release(author='Keksuccino')
+    records = self.read_log()
+    self.assertTrue(
+        all(record['gh_token_matches'] and not record['github_token_present']
+            for record in records))
+    self.assertIn('inspect-authenticated-user', self.operations())
+
+  def test_explicit_gh_token_is_isolated_after_local_validation(self):
+    environment = self.environment()
+    environment.pop('GITHUB_TOKEN')
+    environment['GH_TOKEN'] = TOKEN
+    result = self.run_publisher(environment=environment)
+    self.assertEqual(0, result.returncode, result.stderr)
+    self.assert_exact_published_release()
+    self.assertTrue(
+        all(record['gh_token_matches'] and not record['github_token_present']
+            for record in self.read_log()))
+
+  def test_gh_token_precedence_matches_the_gh_cli(self):
+    result = self.run_publisher(environment=self.environment(
+        GITHUB_TOKEN='must-not-be-used', GH_TOKEN=TOKEN))
+    self.assertEqual(0, result.returncode, result.stderr)
+    self.assert_exact_published_release()
+    self.assertTrue(
+        all(record['gh_token_matches'] and not record['github_token_present']
+            for record in self.read_log()))
 
   def test_artifact_directory_with_leading_dash_basename_is_option_safe(self):
     leading_dash_directory = self.root / '-artifacts'
     self.artifact_directory.rename(leading_dash_directory)
     self.artifact_directory = leading_dash_directory
-    result = self.run_publisher(artifact_directory=Path('-artifacts'), cwd=self.root)
+    result = self.run_publisher(
+        artifact_directory=Path('-artifacts'), cwd=self.root)
     self.assertEqual(0, result.returncode, result.stderr)
     self.assert_exact_published_release()
 
@@ -362,10 +517,16 @@ class PublishDistributionsTest(unittest.TestCase):
     self.assertEqual('inspect-immutability', self.operations()[0])
     self.assertIn('inspect-latest', self.operations())
 
-  def test_immutable_release_preflight_rejects_disabled_or_malformed_state_without_modification(self):
+  def test_immutable_release_preflight_rejects_disabled_or_malformed_state_without_modification(
+      self):
     for immutable_status in ('boolean|false', 'string|true', 'invalid', ''):
       with self.subTest(immutable_status=repr(immutable_status)):
-        self.write_state({'next_id': 1, 'tag_sha': None, 'release': None, 'immutable_status': immutable_status})
+        self.write_state({
+            'next_id': 1,
+            'tag_sha': None,
+            'release': None,
+            'immutable_status': immutable_status
+        })
         before = self.state_path.read_bytes()
         if self.log_path.exists():
           self.log_path.unlink()
@@ -378,14 +539,40 @@ class PublishDistributionsTest(unittest.TestCase):
 
   def test_immutable_release_preflight_inspection_failure_is_non_mutating(self):
     before = self.state_path.read_bytes()
-    result = self.run_publisher(environment=self.environment(FAKE_GH_FAIL_OPERATION='inspect-immutability'))
+    result = self.run_publisher(environment=self.environment(
+        FAKE_GH_FAIL_OPERATION='inspect-immutability'))
     self.assertNotEqual(0, result.returncode)
-    self.assertIn('Unable to inspect immutable-release configuration', result.stderr)
+    self.assertIn('Unable to inspect immutable-release configuration',
+                  result.stderr)
     self.assertEqual(before, self.state_path.read_bytes())
     self.assertEqual(['inspect-immutability'], self.operations())
     self.assert_no_modifying_calls()
 
-  def test_nonimmutable_published_release_is_rejected_without_modification(self):
+  def test_authenticated_login_failure_or_malformed_value_is_non_mutating(self):
+    cases = (({
+        'FAKE_GH_FAIL_OPERATION': 'inspect-authenticated-user'
+    }, None), ({}, ''), ({}, 'unexpected|login'), ({}, 'unexpected\nlogin'),)
+    for environment_updates, authenticated_login in cases:
+      with self.subTest(
+          environment_updates=environment_updates,
+          authenticated_login=repr(authenticated_login)):
+        state = {'next_id': 1, 'tag_sha': None, 'release': None}
+        if authenticated_login is not None:
+          state['authenticated_login'] = authenticated_login
+        self.write_state(state)
+        before = self.state_path.read_bytes()
+        if self.log_path.exists():
+          self.log_path.unlink()
+        result = self.run_publisher(environment=self.environment(
+            **environment_updates))
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual(before, self.state_path.read_bytes())
+        self.assertEqual(['inspect-immutability', 'inspect-authenticated-user'],
+                         self.operations())
+        self.assert_no_modifying_calls()
+
+  def test_nonimmutable_published_release_is_rejected_without_modification(
+      self):
     self.set_release(False, ASSET_NAMES, immutable=False)
     before = self.state_path.read_bytes()
     result = self.run_publisher()
@@ -394,8 +581,10 @@ class PublishDistributionsTest(unittest.TestCase):
     self.assertEqual(before, self.state_path.read_bytes())
     self.assert_no_modifying_calls()
 
-  def test_published_release_marked_latest_is_rejected_without_modification(self):
-    self.set_release(False, ASSET_NAMES, latest_status='tag|{}'.format(TAG_NAME))
+  def test_published_release_marked_latest_is_rejected_without_modification(
+      self):
+    self.set_release(
+        False, ASSET_NAMES, latest_status='tag|{}'.format(TAG_NAME))
     before = self.state_path.read_bytes()
     result = self.run_publisher()
     self.assertNotEqual(0, result.returncode)
@@ -406,7 +595,8 @@ class PublishDistributionsTest(unittest.TestCase):
   def test_latest_release_inspection_failure_is_non_mutating(self):
     self.set_release(False, ASSET_NAMES)
     before = self.state_path.read_bytes()
-    result = self.run_publisher(environment=self.environment(FAKE_GH_FAIL_OPERATION='inspect-latest'))
+    result = self.run_publisher(environment=self.environment(
+        FAKE_GH_FAIL_OPERATION='inspect-latest'))
     self.assertNotEqual(0, result.returncode)
     self.assertIn('Unable to inspect the latest release', result.stderr)
     self.assertEqual(before, self.state_path.read_bytes())
@@ -421,14 +611,19 @@ class PublishDistributionsTest(unittest.TestCase):
           self.log_path.unlink()
         result = self.run_publisher()
         self.assertNotEqual(0, result.returncode)
-        self.assertIn('Latest-release query returned malformed state', result.stderr)
+        self.assertIn('Latest-release query returned malformed state',
+                      result.stderr)
         self.assertEqual(before, self.state_path.read_bytes())
         self.assert_no_modifying_calls()
 
-  def test_partial_or_mismatched_published_release_fails_without_modification(self):
-    cases = ((ASSET_NAMES[:-1], None), (ASSET_NAMES, {ARCHIVE_NAMES[2]: b'wrong archive'}))
+  def test_partial_or_mismatched_published_release_fails_without_modification(
+      self):
+    cases = ((ASSET_NAMES[:-1], None), (ASSET_NAMES, {
+        ARCHIVE_NAMES[2]: b'wrong archive'
+    }))
     for asset_names, overrides in cases:
-      with self.subTest(asset_names=len(asset_names), mismatch=overrides is not None):
+      with self.subTest(
+          asset_names=len(asset_names), mismatch=overrides is not None):
         self.set_release(False, asset_names, overrides=overrides)
         before = self.state_path.read_bytes()
         if self.log_path.exists():
@@ -440,7 +635,15 @@ class PublishDistributionsTest(unittest.TestCase):
         self.assert_no_modifying_calls()
 
   def test_published_metadata_or_tag_mismatch_is_strictly_non_mutating(self):
-    cases = ({'target': WRONG_SHA}, {'author': 'someone-else'}, {'body': 'wrong marker'}, {'tag_sha': WRONG_SHA})
+    cases = ({
+        'target': WRONG_SHA
+    }, {
+        'author': 'someone-else'
+    }, {
+        'body': 'wrong marker'
+    }, {
+        'tag_sha': WRONG_SHA
+    })
     for updates in cases:
       with self.subTest(updates=updates):
         self.set_release(False, ASSET_NAMES, **updates)
@@ -459,7 +662,8 @@ class PublishDistributionsTest(unittest.TestCase):
     self.assert_exact_published_release()
     self.assertIn('delete-release', self.operations())
     self.assertNotIn('create-ref', self.operations())
-    self.assertLess(self.operations().index('delete-release'), self.operations().index('create-release'))
+    self.assertLess(self.operations().index('delete-release'),
+                    self.operations().index('create-release'))
 
   def test_complete_owned_draft_publishes_without_reupload(self):
     self.set_release(True, ASSET_NAMES)
@@ -485,7 +689,22 @@ class PublishDistributionsTest(unittest.TestCase):
     self.assertNotIn('create-ref', self.operations())
 
   def test_unowned_or_unexpected_draft_fails_without_modification(self):
-    cases = ({'author': 'someone-else'}, {'body': 'wrong marker'}, {'immutable': True}, {'overrides': {'unexpected.txt': b'unexpected'}}, {'overrides': {'unexpected.txt': b'unexpected'}, 'tag_sha': None})
+    cases = ({
+        'author': 'someone-else'
+    }, {
+        'body': 'wrong marker'
+    }, {
+        'immutable': True
+    }, {
+        'overrides': {
+            'unexpected.txt': b'unexpected'
+        }
+    }, {
+        'overrides': {
+            'unexpected.txt': b'unexpected'
+        },
+        'tag_sha': None
+    })
     for updates in cases:
       with self.subTest(updates=updates):
         asset_names = ARCHIVE_NAMES[:1]
@@ -509,23 +728,28 @@ class PublishDistributionsTest(unittest.TestCase):
 
   def test_inspection_failure_is_not_treated_as_absence(self):
     before = self.state_path.read_bytes()
-    result = self.run_publisher(environment=self.environment(FAKE_GH_FAIL_OPERATION='list-releases'))
+    result = self.run_publisher(environment=self.environment(
+        FAKE_GH_FAIL_OPERATION='list-releases'))
     self.assertNotEqual(0, result.returncode)
     self.assertIn('Unable to inspect releases', result.stderr)
     self.assertEqual(before, self.state_path.read_bytes())
     self.assert_no_modifying_calls()
 
-  def test_archive_upload_failure_leaves_invisible_draft_without_checksums(self):
-    result = self.run_publisher(environment=self.environment(FAKE_GH_FAIL_UPLOAD=ARCHIVE_NAMES[2]))
+  def test_archive_upload_failure_leaves_invisible_draft_without_checksums(
+      self):
+    result = self.run_publisher(environment=self.environment(
+        FAKE_GH_FAIL_UPLOAD=ARCHIVE_NAMES[2]))
     self.assertNotEqual(0, result.returncode)
     state = self.read_state()
     self.assertTrue(state['release']['draft'])
     self.assertEqual(set(ARCHIVE_NAMES[:2]), set(state['release']['assets']))
     self.assertNotIn('publish-release', self.operations())
-    self.assertFalse(any(name.endswith('.sha256') for name in state['release']['assets']))
+    self.assertFalse(
+        any(name.endswith('.sha256') for name in state['release']['assets']))
 
   def test_checksum_upload_failure_is_recovered_on_rerun(self):
-    result = self.run_publisher(environment=self.environment(FAKE_GH_FAIL_UPLOAD=CHECKSUM_NAMES[2], FAKE_GH_FAIL_AFTER_WRITE='1'))
+    result = self.run_publisher(environment=self.environment(
+        FAKE_GH_FAIL_UPLOAD=CHECKSUM_NAMES[2], FAKE_GH_FAIL_AFTER_WRITE='1'))
     self.assertNotEqual(0, result.returncode)
     self.assertTrue(self.read_state()['release']['draft'])
     self.assertNotIn('publish-release', self.operations())
@@ -536,10 +760,12 @@ class PublishDistributionsTest(unittest.TestCase):
     self.assertIn('delete-release', self.operations())
 
   def test_publish_failure_leaves_complete_draft_for_direct_retry(self):
-    result = self.run_publisher(environment=self.environment(FAKE_GH_FAIL_OPERATION='publish-release'))
+    result = self.run_publisher(environment=self.environment(
+        FAKE_GH_FAIL_OPERATION='publish-release'))
     self.assertNotEqual(0, result.returncode)
     self.assertTrue(self.read_state()['release']['draft'])
-    self.assertEqual(set(ASSET_NAMES), set(self.read_state()['release']['assets']))
+    self.assertEqual(
+        set(ASSET_NAMES), set(self.read_state()['release']['assets']))
     self.log_path.unlink()
     result = self.run_publisher()
     self.assertEqual(0, result.returncode, result.stderr)
@@ -567,10 +793,12 @@ class PublishDistributionsTest(unittest.TestCase):
     self.assertIn('unexpectedly marked as latest', result.stderr)
     self.assertFalse(self.read_state()['release']['draft'])
     self.assertTrue(self.read_state()['release']['immutable'])
-    self.assertLess(self.operations().index('publish-release'), self.operations().index('inspect-latest'))
+    self.assertLess(self.operations().index('publish-release'),
+                    self.operations().index('inspect-latest'))
 
   def test_interruption_during_upload_leaves_invisible_recoverable_draft(self):
-    result = self.run_publisher(environment=self.environment(FAKE_GH_SIGNAL_UPLOAD=ARCHIVE_NAMES[1]))
+    result = self.run_publisher(environment=self.environment(
+        FAKE_GH_SIGNAL_UPLOAD=ARCHIVE_NAMES[1]))
     self.assertEqual(143, result.returncode)
     state = self.read_state()
     self.assertTrue(state['release']['draft'])
@@ -580,7 +808,10 @@ class PublishDistributionsTest(unittest.TestCase):
   def test_checksum_line_endings_require_exact_lf_or_crlf(self):
     checksum_path = self.artifact_directory / CHECKSUM_NAMES[0]
     canonical_line = checksum_path.read_bytes().rstrip(b'\n')
-    invalid_contents = (canonical_line + b'\r', canonical_line, canonical_line + b'\r\r\n', canonical_line + b'\nextra\n', canonical_line + b'\x00\n', canonical_line + b'\x01\n')
+    invalid_contents = (canonical_line + b'\r', canonical_line,
+                        canonical_line + b'\r\r\n',
+                        canonical_line + b'\nextra\n',
+                        canonical_line + b'\x00\n', canonical_line + b'\x01\n')
     for contents in invalid_contents:
       with self.subTest(contents=repr(contents[-12:])):
         self.create_artifacts()
@@ -592,7 +823,8 @@ class PublishDistributionsTest(unittest.TestCase):
         self.assertEqual([], self.read_log())
 
   def test_invalid_commit_and_local_target_set_fail_before_gh(self):
-    invalid_shas = ('a' * 39, 'a' * 41, 'A' * 40, 'g' * 40, '{}\n'.format('a' * 40))
+    invalid_shas = ('a' * 39, 'a' * 41, 'A' * 40, 'g' * 40, '{}\n'.format(
+        'a' * 40))
     for invalid_sha in invalid_shas:
       with self.subTest(commit_sha=repr(invalid_sha)):
         result = self.run_publisher(commit_sha=invalid_sha)
@@ -604,7 +836,8 @@ class PublishDistributionsTest(unittest.TestCase):
     self.assertNotEqual(0, result.returncode)
     self.assertEqual([], self.read_log())
     self.create_artifacts()
-    (self.artifact_directory / 'unexpected.txt').write_text('unexpected', encoding='ascii')
+    (self.artifact_directory / 'unexpected.txt').write_text(
+        'unexpected', encoding='ascii')
     result = self.run_publisher()
     self.assertNotEqual(0, result.returncode)
     self.assertEqual([], self.read_log())
@@ -625,20 +858,24 @@ class PublishDistributionsTest(unittest.TestCase):
 
   def test_wrong_target_name_or_digest_fails_before_gh(self):
     checksum_path = self.artifact_directory / CHECKSUM_NAMES[1]
-    checksum_path.rename(self.artifact_directory / 'linux_aarch64.tar.gz.sha256')
+    checksum_path.rename(
+        self.artifact_directory / 'linux_aarch64.tar.gz.sha256')
     result = self.run_publisher()
     self.assertNotEqual(0, result.returncode)
     self.assertEqual([], self.read_log())
     self.create_artifacts()
-    checksum_path.write_text('{}  {}\n'.format('0' * 64, ARCHIVE_NAMES[1]), encoding='ascii')
+    checksum_path.write_text(
+        '{}  {}\n'.format('0' * 64, ARCHIVE_NAMES[1]), encoding='ascii')
     result = self.run_publisher()
     self.assertNotEqual(0, result.returncode)
     self.assertEqual([], self.read_log())
 
-  def test_missing_token_directory_or_gh_is_rejected(self):
-    result = self.run_publisher(environment=self.environment(GITHUB_TOKEN=' \n\t'))
+  def test_whitespace_token_directory_or_gh_is_rejected(self):
+    result = self.run_publisher(environment=self.environment(
+        GITHUB_TOKEN=' \n\t'))
     self.assertNotEqual(0, result.returncode)
-    self.assertIn('GITHUB_TOKEN is required', result.stderr)
+    self.assertIn('GITHUB_TOKEN must contain a non-whitespace token when set',
+                  result.stderr)
     self.assertEqual([], self.read_log())
     result = self.run_publisher(artifact_directory=self.root / 'missing')
     self.assertNotEqual(0, result.returncode)
@@ -652,7 +889,8 @@ class PublishDistributionsTest(unittest.TestCase):
         destination = no_gh_bin / Path(source).name
         if not destination.exists():
           destination.symlink_to(source)
-    result = self.run_publisher(environment=self.environment(PATH=str(no_gh_bin)))
+    result = self.run_publisher(environment=self.environment(
+        PATH=str(no_gh_bin)))
     self.assertNotEqual(0, result.returncode)
     self.assertIn('gh is required', result.stderr)
     self.assertEqual([], self.read_log())

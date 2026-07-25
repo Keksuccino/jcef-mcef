@@ -51,7 +51,8 @@ class Java17CheckTest(unittest.TestCase):
             'java17-test',
             str(helper), *tools
         ]
-      return subprocess.run(command, check=False, capture_output=True, text=True, env=environment)
+      return subprocess.run(
+          command, check=False, capture_output=True, text=True, env=environment)
 
   def test_exact_java_17_release_is_accepted(self):
     self.assertEqual(0, self.run_check('17.0.15', ('java', 'javac')).returncode)
@@ -106,11 +107,13 @@ class PlatformToolingContractTest(unittest.TestCase):
       script = (TOOLS_ROOT / script_name).read_text(encoding='utf-8')
       self.assertEqual(1, script.count('-Werror'), script_name)
 
-  def test_every_workflow_architecture_runs_isolated_windowless_and_windowed_suites(self):
+  def test_every_workflow_architecture_runs_isolated_windowless_and_windowed_suites(
+      self):
     workflow = (
         REPOSITORY_ROOT / '.github' / 'workflows' / 'build-jcef.yml').read_text(
             encoding='utf-8')
-    self.assertEqual(3, workflow.count('name: Run windowless/native JUnit suite'))
+    self.assertEqual(3,
+                     workflow.count('name: Run windowless/native JUnit suite'))
     self.assertEqual(3, workflow.count('name: Run windowed JUnit suite'))
     self.assertEqual(3, workflow.count('--include-tag native-cef'))
     self.assertEqual(3, workflow.count('--exclude-tag windowed-cef'))
@@ -126,33 +129,38 @@ class PlatformToolingContractTest(unittest.TestCase):
     self.assertIsNotNone(windows_job)
     windows_job_text = windows_job.group(1)
     quoted_argument = '"{}"'.format(WINDOWLESS_RENDERING_CONFIG_ARGUMENT)
-    self.assertEqual(1, windows_job_text.count(WINDOWLESS_RENDERING_CONFIG_ARGUMENT))
+    self.assertEqual(
+        1, windows_job_text.count(WINDOWLESS_RENDERING_CONFIG_ARGUMENT))
     self.assertIn(quoted_argument, windows_job_text)
 
   def test_windows_arm64_uses_java17_distribution_without_vm_exit_failure(self):
-    workflow = (REPOSITORY_ROOT / '.github' / 'workflows' / 'build-jcef.yml').read_text(encoding='utf-8')
+    workflow = (
+        REPOSITORY_ROOT / '.github' / 'workflows' / 'build-jcef.yml').read_text(
+            encoding='utf-8')
     job_pattern = r'^  windows:\n(.*?)(?=^  [a-z][a-z0-9_-]*:\n|\Z)'
     windows_job = re.search(job_pattern, workflow, re.DOTALL | re.MULTILINE)
     self.assertIsNotNone(windows_job)
     windows_job_text = windows_job.group(1)
-    amd64_entry = re.search(r'- runner: windows-2022\n(.*?)(?=\n\s+- runner:)', windows_job_text, re.DOTALL)
-    arm64_entry = re.search(r'- runner: windows-11-arm\n(.*?)(?=\n\s+runs-on:)', windows_job_text, re.DOTALL)
+    amd64_entry = re.search(r'- runner: windows-2022\n(.*?)(?=\n\s+- runner:)',
+                            windows_job_text, re.DOTALL)
+    arm64_entry = re.search(r'- runner: windows-11-arm\n(.*?)(?=\n\s+runs-on:)',
+                            windows_job_text, re.DOTALL)
     self.assertIsNotNone(amd64_entry)
     self.assertIsNotNone(arm64_entry)
     self.assertIn('java_distribution: microsoft', amd64_entry.group(1))
     self.assertIn("java_version: '17'", amd64_entry.group(1))
     self.assertIn('java_distribution: zulu', arm64_entry.group(1))
     self.assertIn("java_version: '17.0.20+8'", arm64_entry.group(1))
-    self.assertIn('distribution: ${{ matrix.java_distribution }}', windows_job_text)
+    self.assertIn('distribution: ${{ matrix.java_distribution }}',
+                  windows_job_text)
     self.assertIn('java-version: ${{ matrix.java_version }}', windows_job_text)
 
   def test_windows_ant_download_retries_verified_mirrors(self):
     workflow = (
         REPOSITORY_ROOT / '.github' / 'workflows' / 'build-jcef.yml').read_text(
             encoding='utf-8')
-    windows_job = re.search(
-        r'^  windows:\n(.*?)(?=^  [a-z][a-z0-9_-]*:\n|\Z)', workflow,
-        re.DOTALL | re.MULTILINE)
+    windows_job = re.search(r'^  windows:\n(.*?)(?=^  [a-z][a-z0-9_-]*:\n|\Z)',
+                            workflow, re.DOTALL | re.MULTILINE)
     self.assertIsNotNone(windows_job)
     ant_step = re.search(
         r'^      - name: Set up Apache Ant 1\.10\.17\n(.*?)(?=^      - (?:name:|uses:)|\Z)',
@@ -178,15 +186,22 @@ class PlatformToolingContractTest(unittest.TestCase):
         step_text.index('$downloaded = $true'))
 
   def test_every_workflow_architecture_builds_and_runs_native_unit_tests(self):
-    workflow = (REPOSITORY_ROOT / '.github' / 'workflows' / 'build-jcef.yml').read_text(encoding='utf-8')
+    workflow = (
+        REPOSITORY_ROOT / '.github' / 'workflows' / 'build-jcef.yml').read_text(
+            encoding='utf-8')
     build_command = 'cmake --build jcef_build --config Release --target mouse_wheel_platform_util_test permission_util_test --parallel 4'
     test_command = 'ctest --test-dir jcef_build --build-config Release --output-on-failure'
     covered_targets = 0
     for job_name in ('linux', 'windows', 'macos'):
-      job = re.search(r'^  {}:\n(.*?)(?=^  [a-z][a-z0-9_-]*:\n|\Z)'.format(job_name), workflow, re.DOTALL | re.MULTILINE)
+      job = re.search(
+          r'^  {}:\n(.*?)(?=^  [a-z][a-z0-9_-]*:\n|\Z)'.format(job_name),
+          workflow, re.DOTALL | re.MULTILINE)
       self.assertIsNotNone(job)
-      covered_targets += len(re.findall(r'^\s+target:\s+(?:linux|windows|macos)_', job.group(1), re.MULTILINE))
-      self.assertEqual(1, job.group(1).count('name: Build and run native unit tests'))
+      covered_targets += len(
+          re.findall(r'^\s+target:\s+(?:linux|windows|macos)_',
+                     job.group(1), re.MULTILINE))
+      self.assertEqual(
+          1, job.group(1).count('name: Build and run native unit tests'))
       self.assertEqual(1, job.group(1).count(build_command))
       self.assertEqual(1, job.group(1).count(test_command))
     self.assertEqual(6, covered_targets)
@@ -249,18 +264,25 @@ class PlatformToolingContractTest(unittest.TestCase):
     self.assertLess(
         step_text.index(ant_call), step_text.index(header_verification))
 
-  def test_windows_arm64_places_chromium_fence_on_original_process_command_line(self):
+  def test_windows_arm64_places_chromium_fence_on_original_process_command_line(
+      self):
     runner = (TOOLS_ROOT / 'run_tests.bat').read_text(encoding='utf-8')
-    arm64_block = re.search(r'if /I "%PLATFORM%" == "windows_arm64" \((.*?)\n\)', runner, re.DOTALL)
+    arm64_block = re.search(
+        r'if /I "%PLATFORM%" == "windows_arm64" \((.*?)\n\)', runner, re.DOTALL)
     self.assertIsNotNone(arm64_block)
     self.assertIn('set "JUNIT_LAUNCHER_OPTION=-cp"', arm64_block.group(1))
-    self.assertIn('set "JUNIT_LAUNCHER_PATH=%JUNIT_JAR%;%CLASS_PATH%"', arm64_block.group(1))
-    self.assertIn('set "JUNIT_LAUNCHER_CLASS=tests.junittests.WindowsJUnitLauncher"', arm64_block.group(1))
-    self.assertIn('set "CHROMIUM_PROCESS_ARGUMENT=--disable-best-effort-tasks"', arm64_block.group(1))
+    self.assertIn('set "JUNIT_LAUNCHER_PATH=%JUNIT_JAR%;%CLASS_PATH%"',
+                  arm64_block.group(1))
+    self.assertIn(
+        'set "JUNIT_LAUNCHER_CLASS=tests.junittests.WindowsJUnitLauncher"',
+        arm64_block.group(1))
+    self.assertIn('set "CHROMIUM_PROCESS_ARGUMENT=--disable-best-effort-tasks"',
+                  arm64_block.group(1))
     self.assertEqual(1, runner.count('--disable-best-effort-tasks'))
     self.assertIn('set "JUNIT_LAUNCHER_OPTION=-jar"', runner)
     self.assertIn('set "CHROMIUM_PROCESS_ARGUMENT="', runner)
-    self.assertIn('%JUNIT_LAUNCHER_CLASS% %CHROMIUM_PROCESS_ARGUMENT% execute', runner)
+    self.assertIn('%JUNIT_LAUNCHER_CLASS% %CHROMIUM_PROCESS_ARGUMENT% execute',
+                  runner)
 
   def test_windows_test_runner_opens_internal_awt_shutdown_api(self):
     runner = (TOOLS_ROOT / 'run_tests.bat').read_text(encoding='utf-8')
@@ -283,14 +305,18 @@ class PlatformToolingContractTest(unittest.TestCase):
     java_invocation = '"-XX:ErrorFile=%JVM_CRASH_REPORT%"'
     pid_log_invocation = '"-Xlog:os=info:file=%JVM_PID_LOG%:none:filecount=0"'
     capture_exit = 'set "TEST_EXIT_CODE=%ERRORLEVEL%"'
-    detect_report = 'for %%F in ("{}") do if exist "%%~fF" ('.format(report_glob)
-    capture_pid = 'for %%F in ("{}") do if exist "%%~fF" call :capture_jvm_process_id'.format(pid_log_glob)
+    detect_report = 'for %%F in ("{}") do if exist "%%~fF" ('.format(
+        report_glob)
+    capture_pid = 'for %%F in ("{}") do if exist "%%~fF" call :capture_jvm_process_id'.format(
+        pid_log_glob)
     cwd_fallback = 'call :record_jvm_crash_report "%JVM_LAUNCH_DIRECTORY%\\hs_err_pid%JVM_PROCESS_ID%.log"'
     temp_fallback = 'call :record_jvm_crash_report "%JVM_TEMP_PATH%\\hs_err_pid%JVM_PROCESS_ID%.log"'
     fail_success = 'if defined JVM_CRASH_REPORT_CREATED if "%TEST_EXIT_CODE%" == "0" set "TEST_EXIT_CODE=1"'
     self.assertIn(report_id, runner)
-    self.assertIn('if exist "{}" goto prepare_crash_report'.format(report_glob), runner)
-    self.assertIn('if exist "{}" goto prepare_crash_report'.format(pid_log_glob), runner)
+    self.assertIn('if exist "{}" goto prepare_crash_report'.format(report_glob),
+                  runner)
+    self.assertIn(
+        'if exist "{}" goto prepare_crash_report'.format(pid_log_glob), runner)
     self.assertIn(report_path, runner)
     self.assertIn(pid_log_path, runner)
     self.assertIn(java_invocation, runner)
@@ -300,15 +326,20 @@ class PlatformToolingContractTest(unittest.TestCase):
     self.assertIn(cwd_fallback, runner)
     self.assertIn(temp_fallback, runner)
     self.assertIn('set "JVM_TEMP_PATH=%TMP%"', runner)
-    self.assertIn('if not defined JVM_TEMP_PATH set "JVM_TEMP_PATH=%TEMP%"', runner)
-    self.assertIn('if not defined JVM_TEMP_PATH set "JVM_TEMP_PATH=%USERPROFILE%"', runner)
-    self.assertIn('if not defined JVM_TEMP_PATH set "JVM_TEMP_PATH=%SystemRoot%"', runner)
+    self.assertIn('if not defined JVM_TEMP_PATH set "JVM_TEMP_PATH=%TEMP%"',
+                  runner)
+    self.assertIn(
+        'if not defined JVM_TEMP_PATH set "JVM_TEMP_PATH=%USERPROFILE%"',
+        runner)
+    self.assertIn(
+        'if not defined JVM_TEMP_PATH set "JVM_TEMP_PATH=%SystemRoot%"', runner)
     self.assertIn('if not defined JVM_PROCESS_ID (', runner)
     self.assertIn('copy /Y "%~1" "%OUT_PATH%\\%~nx1"', runner)
     self.assertIn('JVM fatal error report was created:', runner)
     self.assertIn(fail_success, runner)
     self.assertLess(runner.index(report_id), runner.index(java_invocation))
-    self.assertLess(runner.index(pid_log_path), runner.index(pid_log_invocation))
+    self.assertLess(
+        runner.index(pid_log_path), runner.index(pid_log_invocation))
     self.assertLess(runner.index(java_invocation), runner.index(capture_exit))
     self.assertLess(runner.index(capture_exit), runner.index(detect_report))
     self.assertLess(runner.index(detect_report), runner.index(capture_pid))
@@ -316,28 +347,49 @@ class PlatformToolingContractTest(unittest.TestCase):
     self.assertLess(runner.index(detect_report), runner.index(fail_success))
 
   def test_windows_arm64_browser_process_mitigations_remain_test_only(self):
-    helper = (REPOSITORY_ROOT / 'java' / 'tests' / 'junittests' / 'WindowsArm64TestCommandLine.java').read_text(encoding='utf-8')
+    helper = (REPOSITORY_ROOT / 'java' / 'tests' / 'junittests' /
+              'WindowsArm64TestCommandLine.java').read_text(encoding='utf-8')
     setup = (REPOSITORY_ROOT / 'java' / 'tests' / 'junittests' /
              'TestSetupExtension.java').read_text(encoding='utf-8')
-    retry_process = (REPOSITORY_ROOT / 'java' / 'tests' / 'junittests' / 'CefPreInitializationRetryProcess.java').read_text(encoding='utf-8')
-    retry_test = (REPOSITORY_ROOT / 'java' / 'tests' / 'junittests' / 'CefPreInitializationRetryTest.java').read_text(encoding='utf-8')
-    self.assertIn('if (!processType.isEmpty() || !usesMitigations(windows, architecture)) return;', helper)
-    self.assertIn('DISABLE_BEST_EFFORT_TASKS_SWITCH = "--disable-best-effort-tasks"', helper)
-    self.assertIn('WINDOWS_SOFTWARE_UNEXPORTABLE_KEYS_FEATURE = "WebAuthenticationUseInsecureSoftwareUnexportableKeys"', helper)
-    self.assertIn('WINDOWS_KEY_CREDENTIAL_TELEMETRY_FEATURE = "ReportKeyCredentialManagerSupportWin"', helper)
-    self.assertIn('appendCommaSeparatedSwitchValue(commandLine, ENABLE_FEATURES_SWITCH, WINDOWS_SOFTWARE_UNEXPORTABLE_KEYS_FEATURE);', helper)
-    self.assertIn('appendCommaSeparatedSwitchValue(commandLine, DISABLE_FEATURES_SWITCH, WINDOWS_KEY_CREDENTIAL_TELEMETRY_FEATURE);', helper)
+    retry_process = (REPOSITORY_ROOT / 'java' / 'tests' / 'junittests' /
+                     'CefPreInitializationRetryProcess.java').read_text(
+                         encoding='utf-8')
+    retry_test = (REPOSITORY_ROOT / 'java' / 'tests' / 'junittests' /
+                  'CefPreInitializationRetryTest.java').read_text(
+                      encoding='utf-8')
+    self.assertIn(
+        'if (!processType.isEmpty() || !usesMitigations(windows, architecture)) return;',
+        helper)
+    self.assertIn(
+        'DISABLE_BEST_EFFORT_TASKS_SWITCH = "--disable-best-effort-tasks"',
+        helper)
+    self.assertIn(
+        'WINDOWS_SOFTWARE_UNEXPORTABLE_KEYS_FEATURE = "WebAuthenticationUseInsecureSoftwareUnexportableKeys"',
+        helper)
+    self.assertIn(
+        'WINDOWS_KEY_CREDENTIAL_TELEMETRY_FEATURE = "ReportKeyCredentialManagerSupportWin"',
+        helper)
+    self.assertIn(
+        'appendCommaSeparatedSwitchValue(commandLine, ENABLE_FEATURES_SWITCH, WINDOWS_SOFTWARE_UNEXPORTABLE_KEYS_FEATURE);',
+        helper)
+    self.assertIn(
+        'appendCommaSeparatedSwitchValue(commandLine, DISABLE_FEATURES_SWITCH, WINDOWS_KEY_CREDENTIAL_TELEMETRY_FEATURE);',
+        helper)
     callback = 'WindowsArm64TestCommandLine.configureBrowserProcess(processType, commandLine);'
     self.assertIn(callback, setup)
     self.assertIn(callback, retry_process)
-    early_switch = retry_test.index('WindowsArm64TestCommandLine.appendEarlyProcessSwitch(command);')
+    early_switch = retry_test.index(
+        'WindowsArm64TestCommandLine.appendEarlyProcessSwitch(command);')
     self.assertIn('setStaticField("appHandler_", null);', retry_process)
-    main_class = retry_test.index('command.add(CefPreInitializationRetryProcess.class.getName());')
+    main_class = retry_test.index(
+        'command.add(CefPreInitializationRetryProcess.class.getName());')
     child_arguments = retry_test.index('Path rootCache =')
     reset = retry_process.index('resetJavaConstructorState(abandoned);')
     handler = retry_process.index('CefApp.addAppHandler(retryHandler);')
-    assertion = retry_process.index('assertRetryHandlerInstalled(retryHandler);')
-    retry = retry_process.index('CefApp retried = CefApp.getInstance(settings);')
+    assertion = retry_process.index(
+        'assertRetryHandlerInstalled(retryHandler);')
+    retry = retry_process.index(
+        'CefApp retried = CefApp.getInstance(settings);')
     self.assertLess(main_class, early_switch)
     self.assertLess(early_switch, child_arguments)
     self.assertLess(reset, handler)
@@ -354,81 +406,91 @@ class PlatformToolingContractTest(unittest.TestCase):
       self.assertRegex(revision, r'^[0-9a-f]{40}$')
 
   def test_workflow_pins_compatible_python_for_every_architecture(self):
-    workflow = (REPOSITORY_ROOT / '.github' / 'workflows' / 'build-jcef.yml').read_text(encoding='utf-8')
+    workflow = (
+        REPOSITORY_ROOT / '.github' / 'workflows' / 'build-jcef.yml').read_text(
+            encoding='utf-8')
     setup_python_revision = 'a309ff8b426b58ec0e2a45f0f869d46889d02405'
-    self.assertEqual(3, workflow.count('uses: actions/setup-python@{}'.format(setup_python_revision)))
+    self.assertEqual(
+        3,
+        workflow.count(
+            'uses: actions/setup-python@{}'.format(setup_python_revision)))
     self.assertEqual(3, workflow.count("python-version: '3.12.10'"))
-    self.assertEqual(3, workflow.count('architecture: ${{ matrix.python_architecture }}'))
+    self.assertEqual(
+        3, workflow.count('architecture: ${{ matrix.python_architecture }}'))
     self.assertEqual(3, workflow.count('id: setup-python'))
-    self.assertEqual(3, workflow.count('PYTHON_EXECUTABLE: ${{ steps.setup-python.outputs.python-path }}'))
-    self.assertEqual(3, len(re.findall(r'python_architecture:\s+x64\b', workflow)))
-    self.assertEqual(3, len(re.findall(r'python_architecture:\s+arm64\b', workflow)))
+    self.assertEqual(
+        3,
+        workflow.count(
+            'PYTHON_EXECUTABLE: ${{ steps.setup-python.outputs.python-path }}'))
+    self.assertEqual(3,
+                     len(re.findall(r'python_architecture:\s+x64\b', workflow)))
+    self.assertEqual(
+        3, len(re.findall(r'python_architecture:\s+arm64\b', workflow)))
 
 
 class PublicationWorkflowContractTest(unittest.TestCase):
 
   def setUp(self):
-    self.workflow = (REPOSITORY_ROOT / '.github' / 'workflows' / 'build-jcef.yml').read_text(encoding='utf-8')
+    self.workflow = (
+        REPOSITORY_ROOT / '.github' / 'workflows' / 'build-jcef.yml').read_text(
+            encoding='utf-8')
 
   def job(self, name):
-    match = re.search(r'^  {}:\n(.*?)(?=^  [a-z][a-z0-9_-]*:\n|\Z)'.format(name), self.workflow, re.DOTALL | re.MULTILINE)
+    match = re.search(
+        r'^  {}:\n(.*?)(?=^  [a-z][a-z0-9_-]*:\n|\Z)'.format(name),
+        self.workflow, re.DOTALL | re.MULTILINE)
     self.assertIsNotNone(match, 'missing {} workflow job'.format(name))
     return match.group(1)
 
-  def test_manual_publication_is_explicit_and_master_only(self):
-    dispatch = re.search(r'^  workflow_dispatch:\n(.*?)(?=^[a-z][a-z0-9_-]*:|\Z)', self.workflow, re.DOTALL | re.MULTILINE)
-    self.assertIsNotNone(dispatch)
-    self.assertRegex(dispatch.group(1), r'inputs:\n\s+publish:\n\s+description: [^\n]+\n\s+required: false\n\s+default: false\n\s+type: boolean')
-    publish_job = self.job('publish')
-    gate = re.search(r'^    if: >-\n((?:      [^\n]*\n)+)', publish_job, re.MULTILINE)
-    self.assertIsNotNone(gate)
-    normalized_gate = ' '.join(line.strip() for line in gate.group(1).splitlines())
-    self.assertEqual("success() && github.repository == 'Keksuccino/jcef-mcef' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))", normalized_gate)
-
-  def test_only_central_job_can_publish_after_every_platform_succeeds(self):
-    publish_job = self.job('publish')
-    self.assertIn('needs: [linux, windows, macos]', publish_job)
-    self.assertIn('runs-on: ubuntu-24.04', publish_job)
-    global_permissions = re.search(r'^permissions:\n((?:  [^\n]+\n)+)', self.workflow, re.MULTILINE)
-    job_permissions = re.search(r'^    permissions:\n((?:      [^\n]+\n)+)', publish_job, re.MULTILINE)
+  def test_workflow_only_builds_and_never_claims_publication_authority(self):
+    self.assertIsNotNone(
+        re.search(r'^  workflow_dispatch:\n', self.workflow, re.MULTILINE))
+    self.assertNotIn('inputs:', self.workflow)
+    self.assertNotIn('publish:', self.workflow)
+    global_permissions = re.search(r'^permissions:\n((?:  [^\n]+\n)+)',
+                                   self.workflow, re.MULTILINE)
     self.assertIsNotNone(global_permissions)
-    self.assertIsNotNone(job_permissions)
-    self.assertEqual(['contents: read'], [line.strip() for line in global_permissions.group(1).splitlines()])
-    self.assertEqual(['contents: write'], [line.strip() for line in job_permissions.group(1).splitlines()])
-    self.assertEqual(1, self.workflow.count('contents: write'))
-    self.assertIn('persist-credentials: false', publish_job)
-    self.assertEqual(1, publish_job.count('GITHUB_TOKEN: ${{ github.token }}'))
-    self.assertEqual(1, publish_job.count('bash tools/distrib/publish_distributions.sh "$PUBLICATION_SHA" release-artifacts'))
-    self.assertIn('group: publish-jcef-${{ github.sha }}', publish_job)
-    self.assertIn('cancel-in-progress: false', publish_job)
+    self.assertEqual(['contents: read'], [
+        line.strip() for line in global_permissions.group(1).splitlines()
+    ])
+    self.assertNotIn('contents: write', self.workflow)
+    self.assertNotIn('GITHUB_TOKEN', self.workflow)
+    self.assertNotIn('github.token', self.workflow)
+    self.assertNotIn('secrets.', self.workflow)
+    self.assertNotIn('publish_distributions.sh', self.workflow)
+    self.assertNotIn('actions/download-artifact', self.workflow)
+    jobs = self.workflow.split('\njobs:\n', 1)[1]
+    self.assertEqual(['linux', 'windows', 'macos'],
+                     re.findall(r'^  ([a-z][a-z0-9_-]*):\n', jobs,
+                                re.MULTILINE))
     for build_job_name in ('linux', 'windows', 'macos'):
       build_job = self.job(build_job_name)
       self.assertNotIn('s3cmd', build_job)
       self.assertNotIn('S3_CFG', build_job)
       self.assertNotIn('GITHUB_TOKEN', build_job)
       self.assertNotIn('publish_distributions.sh', build_job)
-    self.assertNotIn('secrets.', publish_job)
     self.assertNotIn('s3cmd', self.workflow)
     self.assertNotIn('S3_CFG', self.workflow)
-    self.assertEqual(1, self.workflow.count('Publish commit build as a GitHub Release'))
 
-  def test_all_direct_artifacts_are_aggregated_with_pinned_download_action(self):
+  def test_all_direct_artifacts_are_uploaded_as_canonical_raw_files(self):
     upload_revision = '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'
-    download_revision = '3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c'
     for build_job_name in ('linux', 'windows', 'macos'):
       build_job = self.job(build_job_name)
-      self.assertGreaterEqual(build_job.count('uses: actions/upload-artifact@{}'.format(upload_revision)), 2)
-      self.assertEqual(1, build_job.count('path: binary_distrib/${{ matrix.target }}.tar.gz\n'))
-      self.assertEqual(1, build_job.count('path: binary_distrib/${{ matrix.target }}.tar.gz.sha256\n'))
+      self.assertGreaterEqual(
+          build_job.count(
+              'uses: actions/upload-artifact@{}'.format(upload_revision)), 2)
+      self.assertEqual(
+          1,
+          build_job.count('path: binary_distrib/${{ matrix.target }}.tar.gz\n'))
+      self.assertEqual(
+          1,
+          build_job.count(
+              'path: binary_distrib/${{ matrix.target }}.tar.gz.sha256\n'))
       self.assertEqual(2, build_job.count('archive: false'))
       self.assertEqual(2, build_job.count('if-no-files-found: error'))
-    self.assertEqual(1, self.workflow.count('uses: actions/download-artifact@{}'.format(download_revision)))
-    publish_job = self.job('publish')
-    self.assertIn("pattern: '*_*.tar.gz*'", publish_job)
-    self.assertIn('path: release-artifacts', publish_job)
-    self.assertIn('merge-multiple: true', publish_job)
     self.assertEqual(6, self.workflow.count('target: '))
     self.assertEqual(6, self.workflow.count('archive: false'))
+
 
 if __name__ == '__main__':
   unittest.main()

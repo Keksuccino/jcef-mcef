@@ -4,11 +4,11 @@
 # that can be found in the LICENSE file.
 
 set -euo pipefail
+set +x
 
 readonly REPOSITORY_OWNER='Keksuccino'
 readonly REPOSITORY_NAME='jcef-mcef'
 readonly REPOSITORY="${REPOSITORY_OWNER}/${REPOSITORY_NAME}"
-readonly RELEASE_AUTHOR='github-actions[bot]'
 readonly RELEASE_MARKER='managed-by=tools/distrib/publish_distributions.sh;schema=1'
 readonly LATEST_RELEASE_QUERY="query(\$owner:String!,\$name:String!){repository(owner:\$owner,name:\$name){latestRelease{tagName}}}"
 readonly -a TARGETS=(
@@ -20,10 +20,20 @@ readonly -a TARGETS=(
   windows_arm64
 )
 
-# Keep credentials out of every local validation subprocess. Only the resolved
-# gh executable receives the captured built-in token later through GH_TOKEN.
-GITHUB_TOKEN_CONTENT="${GITHUB_TOKEN:-}"
-unset GITHUB_TOKEN GH_TOKEN
+# Keep credentials out of every local validation subprocess. An explicitly
+# supplied token is captured and exposed only to the resolved gh executable
+# after all local artifacts validate. With no token environment variable, gh
+# uses the maintainer's authenticated credential store instead.
+ENV_TOKEN_SOURCE=''
+ENV_TOKEN_CONTENT=''
+if [ "${GH_TOKEN+x}" = x ]; then
+  ENV_TOKEN_SOURCE='GH_TOKEN'
+  ENV_TOKEN_CONTENT="$GH_TOKEN"
+elif [ "${GITHUB_TOKEN+x}" = x ]; then
+  ENV_TOKEN_SOURCE='GITHUB_TOKEN'
+  ENV_TOKEN_CONTENT="$GITHUB_TOKEN"
+fi
+unset GITHUB_TOKEN GH_TOKEN GH_HOST
 
 GH_PATH=''
 HASH_COMMAND=''
@@ -44,6 +54,7 @@ METADATA_PRERELEASE=''
 METADATA_TITLE=''
 METADATA_BODY=''
 METADATA_AUTHOR=''
+RELEASE_AUTHOR=''
 
 ASSET_NAMES=()
 ASSET_SIZES=()
@@ -54,6 +65,14 @@ CHECKSUM_PATHS=()
 die() {
   echo "ERROR: $*" >&2
   exit 1
+}
+
+gh_command() {
+  if [ -n "$ENV_TOKEN_SOURCE" ]; then
+    GH_TOKEN="$ENV_TOKEN_CONTENT" GH_HOST=github.com GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 "$GH_PATH" "$@"
+  else
+    GH_HOST=github.com GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 "$GH_PATH" "$@"
+  fi
 }
 
 hash_file() {
@@ -101,7 +120,7 @@ asset_name_is_expected() {
 
 require_immutable_releases() {
   local immutable_status
-  if ! immutable_status="$("$GH_PATH" api "repos/${REPOSITORY}/immutable-releases" --jq '[(.enabled | type), (.enabled | tostring)] | join("|")')"; then
+  if ! immutable_status="$(gh_command api "repos/${REPOSITORY}/immutable-releases" --jq '[(.enabled | type), (.enabled | tostring)] | join("|")')"; then
     die "Unable to inspect immutable-release configuration for ${REPOSITORY}"
   fi
   if [ "$immutable_status" != 'boolean|true' ]; then
@@ -109,10 +128,21 @@ require_immutable_releases() {
   fi
 }
 
+resolve_release_author() {
+  local authenticated_login
+  if ! authenticated_login="$(gh_command api user --jq 'if ((.login | type) == "string") then .login else "" end')"; then
+    die 'Unable to determine the authenticated GitHub login'
+  fi
+  if [[ ! "$authenticated_login" =~ ^[A-Za-z0-9][A-Za-z0-9-]*(\[bot\])?$ ]]; then
+    die 'Authenticated GitHub login is missing or malformed'
+  fi
+  RELEASE_AUTHOR="$authenticated_login"
+}
+
 ensure_release_is_not_latest() {
   local latest_status
   local latest_tag
-  if ! latest_status="$("$GH_PATH" api graphql -f "query=${LATEST_RELEASE_QUERY}" -F "owner=${REPOSITORY_OWNER}" -F "name=${REPOSITORY_NAME}" --jq 'if (.errors != null or (.data.repository | type) != "object" or (.data.repository | has("latestRelease") | not)) then "invalid" elif .data.repository.latestRelease == null then "null" elif ((.data.repository.latestRelease | type) == "object" and (.data.repository.latestRelease.tagName | type) == "string") then "tag|" + .data.repository.latestRelease.tagName else "invalid" end')"; then
+  if ! latest_status="$(gh_command api graphql -f "query=${LATEST_RELEASE_QUERY}" -F "owner=${REPOSITORY_OWNER}" -F "name=${REPOSITORY_NAME}" --jq 'if (.errors != null or (.data.repository | type) != "object" or (.data.repository | has("latestRelease") | not)) then "invalid" elif .data.repository.latestRelease == null then "null" elif ((.data.repository.latestRelease | type) == "object" and (.data.repository.latestRelease.tagName | type) == "string") then "tag|" + .data.repository.latestRelease.tagName else "invalid" end')"; then
     die "Unable to inspect the latest release for ${REPOSITORY}"
   fi
   if [ "$latest_status" = null ]; then
@@ -130,7 +160,7 @@ ensure_release_is_not_latest() {
 query_release_ids() {
   # A successful, paginated list query is required to prove absence. A failed
   # tag lookup must never be mistaken for permission or network-safe absence.
-  if ! RELEASE_IDS="$("$GH_PATH" api --paginate "repos/${REPOSITORY}/releases?per_page=100" --jq ".[] | select(.tag_name == \"${TAG_NAME}\") | .id")"; then
+  if ! RELEASE_IDS="$(gh_command api --paginate "repos/${REPOSITORY}/releases?per_page=100" --jq ".[] | select(.tag_name == \"${TAG_NAME}\") | .id")"; then
     die "Unable to inspect releases for ${TAG_NAME}"
   fi
   if [[ "$RELEASE_IDS" == *$'\n'* ]]; then
@@ -145,7 +175,7 @@ query_release_ids() {
 
 refresh_release_metadata() {
   local metadata
-  if ! metadata="$("$GH_PATH" release view "$TAG_NAME" --repo "$REPOSITORY" --json tagName,targetCommitish,isDraft,isImmutable,isPrerelease,name,body,author --jq '[.tagName, .targetCommitish, (.isDraft | tostring), (.isImmutable | tostring), (.isPrerelease | tostring), .name, .body, .author.login] | join("|")')"; then
+  if ! metadata="$(gh_command release view "$TAG_NAME" --repo "$REPOSITORY" --json tagName,targetCommitish,isDraft,isImmutable,isPrerelease,name,body,author --jq '[.tagName, .targetCommitish, (.isDraft | tostring), (.isImmutable | tostring), (.isPrerelease | tostring), .name, .body, .author.login] | join("|")')"; then
     die "Unable to inspect release metadata for ${TAG_NAME}"
   fi
   IFS='|' read -r METADATA_TAG METADATA_TARGET METADATA_DRAFT METADATA_IMMUTABLE METADATA_PRERELEASE METADATA_TITLE METADATA_BODY METADATA_AUTHOR <<< "$metadata"
@@ -194,7 +224,7 @@ require_immutable_published_release() {
 }
 
 query_tag_refs() {
-  if ! TAG_REFS="$("$GH_PATH" api --paginate "repos/${REPOSITORY}/git/matching-refs/tags/${TAG_NAME}" --jq ".[] | select(.ref == \"refs/tags/${TAG_NAME}\") | .ref")"; then
+  if ! TAG_REFS="$(gh_command api --paginate "repos/${REPOSITORY}/git/matching-refs/tags/${TAG_NAME}" --jq ".[] | select(.ref == \"refs/tags/${TAG_NAME}\") | .ref")"; then
     die "Unable to inspect tag ${TAG_NAME}"
   fi
   if [[ "$TAG_REFS" == *$'\n'* ]]; then
@@ -212,7 +242,7 @@ ensure_exact_tag() {
     fi
     # Create a lightweight tag explicitly so gh can never infer the default
     # branch tip. Existing refs are only validated and are never retargeted.
-    if ! "$GH_PATH" api --method POST "repos/${REPOSITORY}/git/refs" -f "ref=refs/tags/${TAG_NAME}" -f "sha=${COMMIT_SHA}" >/dev/null; then
+    if ! gh_command api --method POST "repos/${REPOSITORY}/git/refs" -f "ref=refs/tags/${TAG_NAME}" -f "sha=${COMMIT_SHA}" >/dev/null; then
       die "Unable to create exact tag ${TAG_NAME}"
     fi
     query_tag_refs
@@ -220,7 +250,7 @@ ensure_exact_tag() {
   if [ "$TAG_REFS" != "refs/tags/${TAG_NAME}" ]; then
     die "Exact tag lookup failed for ${TAG_NAME}"
   fi
-  if ! resolved_sha="$("$GH_PATH" api "repos/${REPOSITORY}/commits/${TAG_NAME}" --jq '.sha')"; then
+  if ! resolved_sha="$(gh_command api "repos/${REPOSITORY}/commits/${TAG_NAME}" --jq '.sha')"; then
     die "Unable to resolve tag ${TAG_NAME}"
   fi
   if [ "$resolved_sha" != "$COMMIT_SHA" ]; then
@@ -229,7 +259,7 @@ ensure_exact_tag() {
 }
 
 refresh_release_assets() {
-  if ! RELEASE_ASSETS="$("$GH_PATH" release view "$TAG_NAME" --repo "$REPOSITORY" --json assets --jq '.assets[] | [.name, (.size | tostring), .state, (.digest // "")] | join("|")')"; then
+  if ! RELEASE_ASSETS="$(gh_command release view "$TAG_NAME" --repo "$REPOSITORY" --json assets --jq '.assets[] | [.name, (.size | tostring), .state, (.digest // "")] | join("|")')"; then
     die "Unable to inspect release assets for ${TAG_NAME}"
   fi
 }
@@ -299,7 +329,7 @@ release_assets_match() {
 }
 
 create_empty_draft() {
-  if ! "$GH_PATH" release create "$TAG_NAME" --repo "$REPOSITORY" --draft --verify-tag --target "$COMMIT_SHA" --title "$RELEASE_TITLE" --notes "$RELEASE_BODY" --latest=false; then
+  if ! gh_command release create "$TAG_NAME" --repo "$REPOSITORY" --draft --verify-tag --target "$COMMIT_SHA" --title "$RELEASE_TITLE" --notes "$RELEASE_BODY" --latest=false; then
     die "Unable to create draft release ${TAG_NAME}"
   fi
   query_release_ids
@@ -322,7 +352,7 @@ publish_verified_draft() {
   if ! release_assets_match; then
     die "Draft release asset validation failed for ${TAG_NAME}"
   fi
-  if ! "$GH_PATH" release edit "$TAG_NAME" --repo "$REPOSITORY" --draft=false --verify-tag --target "$COMMIT_SHA" --latest=false; then
+  if ! gh_command release edit "$TAG_NAME" --repo "$REPOSITORY" --draft=false --verify-tag --target "$COMMIT_SHA" --latest=false; then
     die "Unable to publish verified draft release ${TAG_NAME}"
   fi
   query_release_ids
@@ -408,19 +438,18 @@ for target in "${TARGETS[@]}"; do
   CHECKSUM_PATHS+=("$checksum_path")
 done
 
-if [ -z "$GITHUB_TOKEN_CONTENT" ] || [[ ! "$GITHUB_TOKEN_CONTENT" =~ [^[:space:]] ]]; then
-  die 'GITHUB_TOKEN is required for distribution publication'
-fi
 GH_PATH="$(command -v gh || true)"
 if [ -z "$GH_PATH" ]; then
   die 'gh is required for distribution publication'
 fi
-export GH_TOKEN="$GITHUB_TOKEN_CONTENT"
-GITHUB_TOKEN_CONTENT=''
-export GH_PROMPT_DISABLED=1
-export GH_NO_UPDATE_NOTIFIER=1
+if [ -n "$ENV_TOKEN_SOURCE" ]; then
+  if [ -z "$ENV_TOKEN_CONTENT" ] || [[ ! "$ENV_TOKEN_CONTENT" =~ [^[:space:]] ]]; then
+    die "${ENV_TOKEN_SOURCE} must contain a non-whitespace token when set"
+  fi
+fi
 
 require_immutable_releases
+resolve_release_author
 query_release_ids
 if [ -n "$RELEASE_IDS" ]; then
   refresh_release_metadata
@@ -450,7 +479,7 @@ if [ -n "$RELEASE_IDS" ]; then
     echo "Published recovered GitHub Release ${TAG_NAME}"
     exit 0
   fi
-  if ! "$GH_PATH" release delete "$TAG_NAME" --repo "$REPOSITORY" --yes; then
+  if ! gh_command release delete "$TAG_NAME" --repo "$REPOSITORY" --yes; then
     die "Unable to remove incomplete owned draft ${TAG_NAME}"
   fi
   query_release_ids
@@ -466,10 +495,10 @@ create_empty_draft
 
 # Checksums are uploaded only after the complete archive upload succeeds. The
 # release remains an invisible, recoverable draft until all 12 assets verify.
-if ! "$GH_PATH" release upload "$TAG_NAME" "${ARCHIVE_PATHS[@]}" --repo "$REPOSITORY"; then
+if ! gh_command release upload "$TAG_NAME" "${ARCHIVE_PATHS[@]}" --repo "$REPOSITORY"; then
   die "Archive upload failed for draft ${TAG_NAME}"
 fi
-if ! "$GH_PATH" release upload "$TAG_NAME" "${CHECKSUM_PATHS[@]}" --repo "$REPOSITORY"; then
+if ! gh_command release upload "$TAG_NAME" "${CHECKSUM_PATHS[@]}" --repo "$REPOSITORY"; then
   die "Checksum upload failed for draft ${TAG_NAME}"
 fi
 

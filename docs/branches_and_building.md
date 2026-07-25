@@ -211,6 +211,23 @@ pump; MCEF continues to select and drive its external message pump itself.
 
 `.github/workflows/build-jcef.yml` builds, tests, packages, checksums, and
 publishes workflow artifacts for all six targets on native GitHub-hosted
-runners. AppVeyor independently covers `windows_amd64`. Master builds also
-publish the same tar.gz and checksum files to the configured MCEF object
-storage location.
+runners. The workflow has read-only repository permissions and never creates
+tags or releases. AppVeyor independently covers `windows_amd64`.
+
+Publishing is a separate maintainer operation. Immutable releases must be
+enabled for the repository, `gh` must be authenticated as a maintainer that can
+read that setting and create releases, and the local checkout must exactly
+match the freshly fetched `origin/master`. After an exact master workflow run
+has completed successfully, publish it from macOS or Linux with:
+
+```sh
+tools/distrib/publish_workflow_run.sh <workflow-run-id>
+```
+
+The publisher accepts only the exact six successful platform jobs and twelve
+canonical, non-expired raw artifacts. It downloads every artifact by ID,
+verifies its GitHub-reported size and SHA-256 digest, checks each archive
+against its checksum sidecar, and then creates a non-latest immutable release
+named `java-cef-<commit-sha>`. No personal token is stored in the repository;
+the tool uses the authenticated `gh` credential store unless `GH_TOKEN` or
+`GITHUB_TOKEN` is deliberately supplied for that invocation.

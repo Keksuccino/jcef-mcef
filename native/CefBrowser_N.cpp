@@ -184,13 +184,16 @@ bool GetTouchEvent(JNIEnv* env, jint id, jfloat x, jfloat y, jfloat radius_x, jf
   if (pressure < 0.0F || pressure > 1.0F)
     return RejectTouchEvent(env, "Touch pressure must be between 0 and 1");
 
-  cef_touch_event_type_t type;
+  // GCC's interprocedural maybe-uninitialized analysis does not prove that the switch helpers
+  // assign on every true return. These defaults are never observed because unknown values return
+  // before event construction.
+  cef_touch_event_type_t type = CEF_TET_RELEASED;
   if (!GetTouchEventType(env, type_value, &type))
     return false;
   const uint32_t unsigned_modifiers = static_cast<uint32_t>(modifiers);
   if ((unsigned_modifiers & ~kKnownTouchModifiersMask) != 0)
     return RejectTouchEvent(env, "Touch modifiers contain unknown CEF event flag bits");
-  cef_pointer_type_t pointer_type;
+  cef_pointer_type_t pointer_type = CEF_POINTER_TYPE_UNKNOWN;
   if (!GetPointerType(env, pointer_type_value, &pointer_type))
     return false;
 

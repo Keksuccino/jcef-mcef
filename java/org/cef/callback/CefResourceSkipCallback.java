@@ -12,7 +12,7 @@ public interface CefResourceSkipCallback {
      * Callback for asynchronous continuation of Skip(). If |bytes_skipped| > 0
      * then either Skip() will be called again until the requested number of
      * bytes have been skipped or the request will proceed. If |bytes_skipped|
-     * <= 0 the request will fail with ERR_REQUEST_RANGE_NOT_SATISFIABLE.
+     * is {@code <= 0} the request will fail with ERR_REQUEST_RANGE_NOT_SATISFIABLE.
      * Call this method exactly once for each asynchronous Skip(); subsequent
      * calls for the same Skip() are ignored.
      */

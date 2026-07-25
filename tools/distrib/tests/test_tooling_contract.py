@@ -101,6 +101,11 @@ class PlatformToolingContractTest(unittest.TestCase):
       self.assertIn('binary_distrib/${{ matrix.target }}.tar.gz.sha256',
                     workflow)
 
+  def test_documentation_scripts_fail_on_javadoc_warnings(self):
+    for script_name in ('make_docs.sh', 'make_docs.bat'):
+      script = (TOOLS_ROOT / script_name).read_text(encoding='utf-8')
+      self.assertEqual(1, script.count('-Werror'), script_name)
+
   def test_every_workflow_architecture_runs_isolated_windowless_and_windowed_suites(self):
     workflow = (
         REPOSITORY_ROOT / '.github' / 'workflows' / 'build-jcef.yml').read_text(

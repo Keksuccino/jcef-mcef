@@ -99,9 +99,9 @@ public interface CefResourceHandler {
      * at a later time set |bytesRead| to 0, return true, fill the buffer returned by
      * {@link CefResourceReadCallback#getBuffer()} and call the callback exactly once when the data
      * is available. To indicate response completion set |bytesRead| to 0 and return false.
-     * To indicate failure set |bytesRead| to <0 (e.g. -2 for ERR_FAILED) and return false. <p> For
-     * backwards compatibility set |bytesRead| to -1 and return false and the readResponse() method
-     * will be called.
+     * To indicate failure set |bytesRead| to {@code < 0} (e.g. -2 for ERR_FAILED) and return false.
+     * <p>For backwards compatibility set |bytesRead| to -1 and return false and the readResponse()
+     * method will be called.
      * @param dataOut Write immediate response data to this buffer. For asynchronous reads use the
      *         callback buffer, which remains valid until the callback is called.
      * @param bytesToRead Size of the buffer.
@@ -120,7 +120,7 @@ public interface CefResourceHandler {
      * bytes of response data. If data is available immediately set |bytesSkipped| to the number of
      * bytes skipped and return true. To read the data at a later time set |bytesSkipped| to 0,
      * return true and execute |callback| exactly once when the data is available. To indicate
-     * failure set |bytesSkipped| to < 0 (e.g. -2 for ERR_FAILED) and return false.
+     * failure set |bytesSkipped| to {@code < 0} (e.g. -2 for ERR_FAILED) and return false.
      * @param bytesToSkip Number of bytes to skip.
      * @param bytesSkipped Number of bytes skipped.
      * @param callback Callback to execute if data will be skipped asynchronously.

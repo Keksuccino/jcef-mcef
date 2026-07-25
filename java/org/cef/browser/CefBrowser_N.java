@@ -89,7 +89,7 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     /**
      * Clones and validates settings before a native-backed browser superclass is constructed.
      * This ordering prevents Swing subclasses from deferring the exception to a later paint and
-     * prevents Java from finalizing a partially constructed native-backed object.
+     * avoids constructing browser-wrapper state for invalid settings.
      */
     static CefBrowserSettings copyAndValidateSettings(CefBrowserSettings settings, boolean osr, boolean transparent) {
         CefBrowserSettings snapshot = settings == null ? new CefBrowserSettings() : settings.clone();
@@ -369,11 +369,7 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     private void notifyBrowserCreated() {
         creationController_.succeeded();
         if (isClosing_) {
-            try {
-                N_Close(true);
-            } catch (UnsatisfiedLinkError ule) {
-                ule.printStackTrace();
-            }
+            closeNative(true);
             return;
         }
         CefBrowser_N parent = parent_;
@@ -433,12 +429,6 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
             err.printStackTrace();
         }
         return 0;
-    }
-
-    @Override
-    protected void finalize() throws Throwable {
-        close(true);
-        super.finalize();
     }
 
     @Override
@@ -714,6 +704,14 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     }
 
     private void closeNative(boolean force) {
+        synchronized (this) {
+            // Native creation publishes the handle before notifyBrowserCreated marks the
+            // controller CREATED. Serializing close admission prevents JNI entry for
+            // never-created browsers. Native admission repeats the lifecycle check and converts
+            // the raw handle to an owning reference before using it.
+            if (isClosed_ || !creationController_.isCreated() || getNativeRef("CefBrowser") == 0)
+                return;
+        }
         try {
             N_Close(force);
         } catch (UnsatisfiedLinkError ule) {

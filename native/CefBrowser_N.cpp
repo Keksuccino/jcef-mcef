@@ -3457,7 +3457,7 @@ class ScopedBrowserLifecycleMonitor {
   const bool entered_;
 };
 
-CefRefPtr<CefBrowser> GetLifecycleSafeJNIBrowser(JNIEnv* env, jobject jbrowser) {
+CefRefPtr<CefBrowser> GetLifecycleSafeJNIBrowser(JNIEnv* env, jobject jbrowser, const bool allow_closing = false) {
   CefRefPtr<CefBrowser> browser;
   {
     ScopedBrowserLifecycleMonitor monitor(env, jbrowser);
@@ -3467,7 +3467,7 @@ CefRefPtr<CefBrowser> GetLifecycleSafeJNIBrowser(JNIEnv* env, jobject jbrowser) 
     ScopedJNIClass cls(env, env->GetObjectClass(jbrowser));
     int closing = 0;
     int closed = 0;
-    if (!cls || !GetJNIFieldBoolean(env, cls, jbrowser, "isClosing_", &closing) || !GetJNIFieldBoolean(env, cls, jbrowser, "isClosed_", &closed) || closing || closed)
+    if (!cls || !GetJNIFieldBoolean(env, cls, jbrowser, "isClosing_", &closing) || !GetJNIFieldBoolean(env, cls, jbrowser, "isClosed_", &closed) || (!allow_closing && closing) || closed)
       return nullptr;
 
     browser = GetJNIBrowser(env, jbrowser);
@@ -4064,10 +4064,17 @@ JNIEXPORT void JNICALL
 Java_org_cef_browser_CefBrowser_1N_N_1Close(JNIEnv* env,
                                             jobject obj,
                                             jboolean force) {
-  CefRefPtr<CefBrowser> browser = JNI_GET_BROWSER_OR_RETURN(env, obj);
+  // Acquire an owning reference while holding the Java lifecycle monitor, then release the
+  // monitor before posting, waiting or invoking CEF because close callbacks reenter Java.
+  CefRefPtr<CefBrowser> browser = GetLifecycleSafeJNIBrowser(env, obj, true);
+  if (!browser.get() || !browser->IsValid())
+    return;
+  CefRefPtr<CefBrowserHost> host = browser->GetHost();
+  if (!host.get())
+    return;
   if (force != JNI_FALSE) {
-    if (browser->GetHost()->IsWindowRenderingDisabled()) {
-      browser->GetHost()->CloseBrowser(true);
+    if (host->IsWindowRenderingDisabled()) {
+      host->CloseBrowser(true);
     } else {
       // Destroy the native window representation.
 #if defined(OS_LINUX)
@@ -4091,7 +4098,7 @@ Java_org_cef_browser_CefBrowser_1N_N_1Close(JNIEnv* env,
 #endif
     }
   } else {
-    browser->GetHost()->CloseBrowser(false);
+    host->CloseBrowser(false);
   }
 }
 

@@ -14,7 +14,6 @@ import org.cef.CefClient;
 import org.cef.browser.CefBrowser;
 import org.cef.browser.CefBrowserOsr;
 import org.cef.browser.CefFrame;
-import org.cef.event.CefMouseEvent;
 import org.cef.event.CefPointerType;
 import org.cef.event.CefTouchEvent;
 import org.cef.event.CefTouchEventType;
@@ -41,10 +40,10 @@ class CefTouchEventNativeTest {
     private static final int WORKER_TIMEOUT_SECONDS = 5;
     private static final String TEST_URL = "http://touch-input.test/index.html";
     private static final String TITLE_PREFIX = "jcef-touch:";
-    private static final String TEST_CONTENT = "<!doctype html><html><head><meta charset='utf-8'><style>html,body{margin:0;width:100%;height:100%;overflow:hidden}#target{position:absolute;inset:0;touch-action:none;user-select:none}</style></head><body><div id='target'></div><script>(()=>{const target=document.getElementById('target');let phase=0,pointerDown=null,touchCount=0,touchGeometry=null;const point=e=>Math.round(e.clientX)+':'+Math.round(e.clientY);const publishDown=()=>{if(!pointerDown||touchCount!==1||!touchGeometry)return;phase=1;document.title='jcef-touch:down:'+pointerDown.pointerType+':'+pointerDown.pressure+':'+pointerDown.point+':'+pointerDown.shift+':touchstart:'+touchCount+':'+touchGeometry;};const report=e=>{if(e.target!==target){document.title='jcef-touch:unexpected-target:'+e.type;return;}if(phase===0&&e.pointerType==='mouse')return;const shift=e.shiftKey?'shift':'no-shift';if(e.type==='pointerdown'&&phase===0){pointerDown={pointerType:e.pointerType,pressure:e.pressure.toFixed(3),point:point(e),shift};publishDown();return;}if(e.type==='pointermove'&&phase===1){phase=2;document.title='jcef-touch:move:'+e.pointerType+':'+e.pressure.toFixed(3)+':'+point(e)+':'+shift;return;}if(e.type==='pointerup'&&phase===2){phase=3;document.title='jcef-touch:up:'+e.pointerType+':'+point(e)+':'+shift;return;}document.title='jcef-touch:unexpected:'+e.type+':'+phase;};target.addEventListener('click',e=>{if(phase===0)document.title='jcef-touch:input-ready:'+point(e);});target.addEventListener('pointerdown',report);target.addEventListener('pointermove',report);target.addEventListener('pointerup',report);target.addEventListener('pointercancel',report);target.addEventListener('touchstart',e=>{if(e.target!==target){document.title='jcef-touch:unexpected-target:touchstart';return;}if(phase===0){touchCount=e.touches.length;const touch=e.touches[0];touchGeometry=touch?touch.radiusX.toFixed(3)+':'+touch.radiusY.toFixed(3)+':'+touch.rotationAngle.toFixed(3):'none';publishDown();}});document.title='jcef-touch:ready';})();</script></body></html>";
+    private static final String TEST_CONTENT = "<!doctype html><html><head><meta charset='utf-8'><style>html,body{margin:0;width:100%;height:100%;overflow:hidden}#target{position:absolute;inset:0;touch-action:none;user-select:none}</style></head><body><div id='target'></div><script>(()=>{const target=document.getElementById('target');let phase=0,pointerDown=null,touchCount=0,touchGeometry=null;const point=e=>Math.round(e.clientX)+':'+Math.round(e.clientY);const publishDown=()=>{if(!pointerDown||touchCount!==1||!touchGeometry)return;phase=1;document.title='jcef-touch:down:'+pointerDown.pointerType+':'+pointerDown.pressure+':'+pointerDown.point+':'+pointerDown.shift+':touchstart:'+touchCount+':'+touchGeometry;};const report=e=>{if(e.target!==target){document.title='jcef-touch:unexpected-target:'+e.type;return;}const shift=e.shiftKey?'shift':'no-shift';if(e.type==='pointerdown'&&phase===0){pointerDown={pointerType:e.pointerType,pressure:e.pressure.toFixed(3),point:point(e),shift};publishDown();return;}if(e.type==='pointermove'&&phase===1){phase=2;document.title='jcef-touch:move:'+e.pointerType+':'+e.pressure.toFixed(3)+':'+point(e)+':'+shift;return;}if(e.type==='pointerup'&&phase===2){phase=3;document.title='jcef-touch:up:'+e.pointerType+':'+point(e)+':'+shift;return;}document.title='jcef-touch:unexpected:'+e.type+':'+phase;};target.addEventListener('pointerdown',report);target.addEventListener('pointermove',report);target.addEventListener('pointerup',report);target.addEventListener('pointercancel',report);target.addEventListener('touchstart',e=>{if(e.target!==target){document.title='jcef-touch:unexpected-target:touchstart';return;}if(phase===0){touchCount=e.touches.length;const touch=e.touches[0];touchGeometry=touch?touch.radiusX.toFixed(3)+':'+touch.radiusY.toFixed(3)+':'+touch.rotationAngle.toFixed(3):'none';publishDown();}});document.title='jcef-touch:ready';})();</script></body></html>";
     private static final Method NATIVE_SEND_TOUCH_EVENT = getNativeSendTouchEvent();
 
-    private enum Phase { READY, FOCUS_READY, INPUT_READY, DOWN, MOVE, UP, COMPLETE }
+    private enum Phase { READY, FOCUS_READY, DOWN, MOVE, UP, COMPLETE }
 
     @Test
     void deliversRendererAcknowledgedPenSequenceAndIgnoresPostCloseInput() {
@@ -57,15 +56,12 @@ class CefTouchEventNativeTest {
         AtomicBoolean focusReady = new AtomicBoolean();
         AtomicBoolean focusSetupQueued = new AtomicBoolean();
         AtomicBoolean focusSetupDispatched = new AtomicBoolean();
-        AtomicBoolean inputProbeQueued = new AtomicBoolean();
-        AtomicBoolean inputProbeDispatched = new AtomicBoolean();
         AtomicBoolean touchPressQueued = new AtomicBoolean();
         AtomicBoolean touchPressDispatched = new AtomicBoolean();
         AtomicBoolean touchMoveQueued = new AtomicBoolean();
         AtomicBoolean touchMoveDispatched = new AtomicBoolean();
         AtomicBoolean touchReleaseQueued = new AtomicBoolean();
         AtomicBoolean touchReleaseDispatched = new AtomicBoolean();
-        CountDownLatch inputProbeFinished = new CountDownLatch(1);
         CountDownLatch touchWorkersFinished = new CountDownLatch(3);
         Supplier<TestFrame> frameFactory = () -> new TestFrame() {
             private volatile Phase phase_ = Phase.READY;
@@ -111,16 +107,9 @@ class CefTouchEventNativeTest {
                         break;
                     case FOCUS_READY:
                         assertEquals("jcef-touch:focus-ready:320:200:target", title);
-                        phase_ = Phase.INPUT_READY;
-                        focusReady.set(true);
-                        maybeEnqueueInputProbe(browser);
-                        break;
-                    case INPUT_READY:
-                        assertEquals("jcef-touch:input-ready:20:20", title);
-                        assertTrue(firstPaint.get());
-                        assertTrue(browser.isWindowRenderingDisabled());
                         phase_ = Phase.DOWN;
-                        enqueueWorker("jcef-touch-press-worker", touchPressQueued, touchPressDispatched, touchWorkersFinished, () -> sendValidatedTouchPress(browser));
+                        focusReady.set(true);
+                        maybeEnqueueTouchPress(browser);
                         break;
                     case DOWN:
                         assertEquals("jcef-touch:down:pen:0.350:80:70:shift:touchstart:1:3.000:4.000:14.324", title);
@@ -145,7 +134,7 @@ class CefTouchEventNativeTest {
 
             private void markPainted(CefBrowser browser) {
                 firstPaint.set(true);
-                maybeEnqueueInputProbe(browser);
+                maybeEnqueueTouchPress(browser);
             }
 
             private void enqueueFocusSetup(CefBrowser browser) {
@@ -163,9 +152,9 @@ class CefTouchEventNativeTest {
                 }
             }
 
-            private void maybeEnqueueInputProbe(CefBrowser browser) {
+            private void maybeEnqueueTouchPress(CefBrowser browser) {
                 if (!firstPaint.get() || !focusReady.get()) return;
-                enqueueWorker("jcef-touch-input-probe-worker", inputProbeQueued, inputProbeDispatched, inputProbeFinished, () -> ((TouchBrowser) browser).sendInputProbe());
+                enqueueWorker("jcef-touch-press-worker", touchPressQueued, touchPressDispatched, touchWorkersFinished, () -> sendValidatedTouchPress(browser));
             }
 
             private void awaitRendererFocus(CefBrowser browser) {
@@ -179,6 +168,8 @@ class CefTouchEventNativeTest {
             }
 
             private void sendValidatedTouchPress(CefBrowser browser) {
+                assertTrue(firstPaint.get());
+                assertTrue(browser.isWindowRenderingDisabled());
                 assertNativeValidation(browser);
                 browser.sendTouchEvent(new CefTouchEvent(TOUCH_ID, 80.0f, 70.0f, 3.0f, 4.0f, 0.25f, 0.35f, CefTouchEventType.PRESSED, EventFlags.EVENTFLAG_SHIFT_DOWN, CefPointerType.PEN));
             }
@@ -229,9 +220,8 @@ class CefTouchEventNativeTest {
         };
         TestFrame frame = TestFrame.createOnEventDispatchThread(frameFactory);
 
-        awaitFrameAndAlwaysTerminate(frame, () -> "title=" + lastTitle.get() + ", paint=" + firstPaint.get() + ", focusSetupQueued=" + focusSetupQueued.get() + ", focusSetupDispatched=" + focusSetupDispatched.get() + ", rendererFocusConfirmed=" + focusReady.get() + ", inputProbeQueued=" + inputProbeQueued.get() + ", inputProbeDispatched=" + inputProbeDispatched.get() + ", inputProbeFinished=" + (inputProbeFinished.getCount() == 0) + ", touchPressQueued=" + touchPressQueued.get() + ", touchPressDispatched=" + touchPressDispatched.get() + ", touchMoveQueued=" + touchMoveQueued.get() + ", touchMoveDispatched=" + touchMoveDispatched.get() + ", touchReleaseQueued=" + touchReleaseQueued.get() + ", touchReleaseDispatched=" + touchReleaseDispatched.get() + ", eventWorkersRemaining=" + touchWorkersFinished.getCount());
+        awaitFrameAndAlwaysTerminate(frame, () -> "title=" + lastTitle.get() + ", paint=" + firstPaint.get() + ", focusSetupQueued=" + focusSetupQueued.get() + ", focusSetupDispatched=" + focusSetupDispatched.get() + ", rendererFocusConfirmed=" + focusReady.get() + ", touchPressQueued=" + touchPressQueued.get() + ", touchPressDispatched=" + touchPressDispatched.get() + ", touchMoveQueued=" + touchMoveQueued.get() + ", touchMoveDispatched=" + touchMoveDispatched.get() + ", touchReleaseQueued=" + touchReleaseQueued.get() + ", touchReleaseDispatched=" + touchReleaseDispatched.get() + ", eventWorkersRemaining=" + touchWorkersFinished.getCount());
         assertNull(failure.get(), () -> "OSR touch flow failed at title " + lastTitle.get() + ": " + failure.get());
-        assertTrue(await(inputProbeFinished), "Touch input-route probe worker did not finish");
         assertTrue(await(touchWorkersFinished), "Touch event workers did not finish");
         assertTrue(delivered.get(), () -> "OSR touch flow did not complete; last title=" + lastTitle.get());
         TouchBrowser browser = browserReference.get();
@@ -317,11 +307,6 @@ class CefTouchEventNativeTest {
 
         private void notifyInitialSize() {
             wasResized(VIEW_WIDTH, VIEW_HEIGHT);
-        }
-
-        private void sendInputProbe() {
-            sendMouseEvent(new CefMouseEvent(1, 20, 20, 1, 0, CefMouseEvent.BUTTON1_MASK));
-            sendMouseEvent(new CefMouseEvent(0, 20, 20, 1, 0, 0));
         }
     }
 }

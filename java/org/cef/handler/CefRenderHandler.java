@@ -88,6 +88,30 @@ public interface CefRenderHandler {
     public default void onImeCompositionRangeChanged(CefBrowser browser, CefRange selectedRange, Rectangle[] characterBounds) {}
 
     /**
+     * Called synchronously on CEF's UI thread when the text selection changes.
+     *
+     * <p>{@code selectedText} is an exact UTF-16 snapshot of the currently selected text, including
+     * supplementary characters and embedded NUL code units. {@code selectedRange} preserves CEF's
+     * exact unsigned endpoints without normalization; its endpoints are UTF-16 offsets, not Unicode
+     * code-point indexes. For a reversed selection, the range retains its direction while the text
+     * remains in logical document order.
+     *
+     * <p>Both values are detached, Java-owned, non-null snapshots that remain usable after this
+     * callback returns. Collapsed and cleared selections have empty text; CEF can also supply empty
+     * text when it cannot derive a selected-text slice from the native event. An omitted native
+     * range is represented by {@code CefRange(0, 0)}. CEF may emit an initial empty selection
+     * event, so callers must not rely on a fixed callback count or ordering around page and focus
+     * changes.
+     *
+     * @param browser The browser generating the event.
+     * @param selectedText The exact selected text. This is empty for collapsed or cleared
+     *         selections, or when CEF cannot supply the selected-text slice; inspect
+     *         {@code selectedRange} separately to determine the selection state.
+     * @param selectedRange The exact selected character range.
+     */
+    public default void onTextSelectionChanged(CefBrowser browser, String selectedText, CefRange selectedRange) {}
+
+    /**
      * Add provided listener.
      * @param listener Code that gets executed after a frame was rendered.
      */

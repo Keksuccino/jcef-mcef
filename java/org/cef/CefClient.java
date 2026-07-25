@@ -927,6 +927,15 @@ public class CefClient extends CefClientHandler
             realHandler.onImeCompositionRangeChanged(browser, selectedRange, characterBounds);
     }
 
+    @Override
+    public void onTextSelectionChanged(CefBrowser browser, String selectedText, CefRange selectedRange) {
+        if (browser == null) return;
+
+        CefRenderHandler realHandler = browser.getRenderHandler();
+        if (realHandler != null)
+            realHandler.onTextSelectionChanged(browser, selectedText, selectedRange);
+    }
+
     // Paint listeners are owned by each browser's render handler. CefClient only routes paint
     // callbacks and intentionally has no client-wide listener collection.
     @Override

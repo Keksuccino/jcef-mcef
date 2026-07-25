@@ -10,6 +10,8 @@
 #include "include/base/cef_logging.h"
 #include "jni_util.h"
 
+static_assert(CEF_API_VERSION == 15100, "CEF API changed: re-audit the text-selection callback and Java bridge contract");
+
 namespace {
 
 jobject NewJNIScreenInfo(JNIEnv* env, CefScreenInfo& screenInfo) {
@@ -298,6 +300,28 @@ void RenderHandler::OnImeCompositionRangeChanged(CefRefPtr<CefBrowser> browser, 
     return;
 
   JNI_CALL_VOID_METHOD(env, handle_, "onImeCompositionRangeChanged", "(Lorg/cef/browser/CefBrowser;Lorg/cef/misc/CefRange;[Ljava/awt/Rectangle;)V", jbrowser.get(), jselected_range.get(), jcharacter_bounds.get());
+}
+
+void RenderHandler::OnTextSelectionChanged(CefRefPtr<CefBrowser> browser, const CefString& selected_text, const CefRange& selected_range) {
+  REQUIRE_UI_THREAD();
+
+  ScopedJNIEnv env;
+  if (!env)
+    return;
+
+  ScopedJNIBrowser jbrowser(env, browser);
+  if (DescribeAndClearJNIException(env) || !jbrowser)
+    return;
+
+  ScopedJNIObjectLocal jselected_text(env, NewJNIString(env, selected_text));
+  if (DescribeAndClearJNIException(env) || !jselected_text)
+    return;
+
+  ScopedJNIObjectLocal jselected_range(env, NewJNICefRange(env, selected_range));
+  if (DescribeAndClearJNIException(env) || !jselected_range)
+    return;
+
+  JNI_CALL_VOID_METHOD(env, handle_, "onTextSelectionChanged", "(Lorg/cef/browser/CefBrowser;Ljava/lang/String;Lorg/cef/misc/CefRange;)V", jbrowser.get(), jselected_text.get(), jselected_range.get());
 }
 
 bool RenderHandler::StartDragging(CefRefPtr<CefBrowser> browser,

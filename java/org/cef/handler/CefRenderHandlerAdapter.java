@@ -50,6 +50,9 @@ public abstract class CefRenderHandlerAdapter implements CefRenderHandler {
     public void onImeCompositionRangeChanged(CefBrowser browser, CefRange selectedRange, Rectangle[] characterBounds) {}
 
     @Override
+    public void onTextSelectionChanged(CefBrowser browser, String selectedText, CefRange selectedRange) {}
+
+    @Override
     public void addOnPaintListener(Consumer<CefPaintEvent> listener) {}
 
     @Override

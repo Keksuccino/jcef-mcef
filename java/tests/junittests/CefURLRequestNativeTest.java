@@ -30,6 +30,8 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -44,6 +46,49 @@ class CefURLRequestNativeTest {
     // CEF 151 couples its 5xx and network-change SimpleURLLoader retries: omitting this flag
     // enables both. Disable those configured retries so each Java request maps to one server GET.
     private static final int NO_SIMPLE_URL_LOADER_RETRIES = CefRequest.CefUrlRequestFlags.UR_FLAG_NO_RETRY_ON_5XX;
+
+    @Test
+    void creationSuccessReturnsTheSameWrapperAfterReentrantTokenDisposal() throws Exception {
+        Class<?> nativeClass = Class.forName("org.cef.network.CefURLRequest_N");
+        Constructor<?> constructor = nativeClass.getDeclaredConstructor(CefRequest.class, CefURLRequestClient.class);
+        constructor.setAccessible(true);
+        Object wrapper = constructor.newInstance(null, null);
+        Method race = nativeClass.getDeclaredMethod("N_RunDisposedCreationRaceForTesting", nativeClass);
+        race.setAccessible(true);
+        assertTrue((Boolean) race.invoke(null, wrapper));
+
+        Method completeCreation = nativeClass.getDeclaredMethod("completeCreation", nativeClass);
+        completeCreation.setAccessible(true);
+        assertSame(wrapper, completeCreation.invoke(null, wrapper));
+        Method getNativeRef = nativeClass.getDeclaredMethod("getNativeRef", String.class);
+        getNativeRef.setAccessible(true);
+        assertEquals(0L, getNativeRef.invoke(wrapper, "CefURLRequest"));
+    }
+
+    @Test
+    void tokenRegistryRetainsConcurrentQueryAndCancelLookupsAcrossDisposal() throws Exception {
+        assertTrue(invokeNativeBooleanForTesting("N_RunTokenRegistryConcurrencyForTesting"));
+    }
+
+    @Test
+    void acceptedPendingDispatchIsSafelyAbandonedBeforeLateExecution() throws Exception {
+        assertTrue(invokeNativeBooleanForTesting("N_RunPendingDispatchAbandonmentForTesting"));
+    }
+
+    @Test
+    void lifecycleQuiescesRetainedAccessAndNeverReusesTokensAcrossReopen() throws Exception {
+        Class<?> nativeClass = Class.forName("org.cef.network.CefURLRequest_N");
+        Constructor<?> constructor = nativeClass.getDeclaredConstructor(CefRequest.class, CefURLRequestClient.class);
+        constructor.setAccessible(true);
+        Object wrapper = constructor.newInstance(null, null);
+        Method lifecycle = nativeClass.getDeclaredMethod("N_RunURLRequestLifecycleForTesting", nativeClass);
+        lifecycle.setAccessible(true);
+        assertTrue((Boolean) lifecycle.invoke(null, wrapper));
+
+        Method getNativeRef = nativeClass.getDeclaredMethod("getNativeRef", String.class);
+        getNativeRef.setAccessible(true);
+        assertEquals(0L, getNativeRef.invoke(wrapper, "CefURLRequest"));
+    }
 
     @Test
     void invalidRequestOrClientReturnsNullWithoutBindingTheClient() {
@@ -258,6 +303,13 @@ class CefURLRequestNativeTest {
         request.setMethod("GET");
         request.setFlags(CefRequest.CefUrlRequestFlags.UR_FLAG_SKIP_CACHE | NO_SIMPLE_URL_LOADER_RETRIES);
         return request;
+    }
+
+    private static boolean invokeNativeBooleanForTesting(String methodName) throws Exception {
+        Class<?> nativeClass = Class.forName("org.cef.network.CefURLRequest_N");
+        Method method = nativeClass.getDeclaredMethod(methodName);
+        method.setAccessible(true);
+        return (Boolean) method.invoke(null);
     }
 
     private static CefRequest createCacheableRequest(String url) {

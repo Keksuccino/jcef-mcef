@@ -9,6 +9,7 @@
 #include "jni_scoped_helpers.h"
 #include "jni_util.h"
 #include "string_visitor.h"
+#include "url_request.h"
 
 namespace {
 
@@ -173,6 +174,16 @@ Java_org_cef_browser_CefFrame_1N_N_1LoadURL(JNIEnv* env,
   if (!frame || !url)
     return;
   frame->LoadURL(GetJNIString(env, url));
+}
+
+JNIEXPORT jobject JNICALL Java_org_cef_browser_CefFrame_1N_N_1CreateURLRequest(JNIEnv* env, jobject obj, jlong self, jobject jrequest, jobject jrequest_client) {
+  URLRequestAdmission admission = AcquireURLRequestCreationAdmission();
+  if (!admission)
+    return nullptr;
+  CefRefPtr<CefFrame> frame = GetSelf(self);
+  if (!frame || !jrequest || !jrequest_client)
+    return nullptr;
+  return CreateFrameURLRequest(env, jrequest, jrequest_client, frame, admission);
 }
 
 JNIEXPORT void JNICALL

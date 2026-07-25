@@ -5,7 +5,9 @@
 package org.cef.browser;
 
 import org.cef.callback.CefStringVisitor;
+import org.cef.callback.CefURLRequestClient;
 import org.cef.network.CefRequest;
+import org.cef.network.CefURLRequest;
 
 import java.util.Objects;
 
@@ -144,6 +146,27 @@ public interface CefFrame {
     default void loadURL(String url) {
         Objects.requireNonNull(url, "url");
         throw unsupportedOperation("loadURL");
+    }
+
+    /**
+     * Create a URL request that CEF treats as originating from this frame and its browser. Unlike
+     * {@link CefURLRequest#create(CefRequest, CefURLRequestClient)}, the request participates in
+     * this browser's request handling and uses its request context. CEF marks the request read-only
+     * when creation begins, including when it subsequently rejects an invalid URL. JCEF performs
+     * creation and all request access on the CEF UI thread; authentication callbacks run on CEF's
+     * IO thread and all other {@link CefURLRequestClient} callbacks run on the CEF UI thread.
+     *
+     * @param request The request configuration.
+     * @param client Receives progress, data, authentication, and completion callbacks.
+     * @return The new URL request, or {@code null} if the frame or request is no longer valid or
+     *         CEF cannot create the request.
+     * @throws NullPointerException if {@code request} or {@code client} is {@code null}.
+     * @throws UnsupportedOperationException if the implementation does not support this operation.
+     */
+    default CefURLRequest createURLRequest(CefRequest request, CefURLRequestClient client) {
+        Objects.requireNonNull(request, "request");
+        Objects.requireNonNull(client, "client");
+        throw unsupportedOperation("createURLRequest");
     }
 
     /**

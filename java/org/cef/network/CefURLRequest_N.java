@@ -10,8 +10,15 @@ import org.cef.callback.CefURLRequestClient;
 import org.cef.handler.CefLoadHandler.ErrorCode;
 
 class CefURLRequest_N extends CefURLRequest implements CefNative {
-    // Used internally to store a pointer to the CEF object.
-    private long N_CefHandle = 0;
+    // Opaque value owned by the loaded native ABI. Current native builds use a registry token;
+    // older compatible native builds may still use their legacy handle representation.
+    private volatile long N_CefHandle = 0;
+    // Creation can complete and reenter a disposing Java callback before an off-UI factory caller
+    // resumes. Track the native factory result independently so that race cannot turn a
+    // successfully delivered request into a null Java return value. The token remains an
+    // ordinary-success fallback for older native libraries, which cannot report a request already
+    // disposed during creation.
+    private volatile boolean N_CreationSucceeded = false;
     private final CefRequest request_;
     private final CefURLRequestClient client_;
 
@@ -39,8 +46,7 @@ class CefURLRequest_N extends CefURLRequest implements CefNative {
         } catch (UnsatisfiedLinkError ule) {
             ule.printStackTrace();
         }
-        if (result.N_CefHandle == 0) return null;
-        return result;
+        return completeCreation(result);
     }
 
     public static final CefURLRequest createNative(CefRequest request, CefURLRequestClient client, CefRequestContext requestContext) {
@@ -56,9 +62,13 @@ class CefURLRequest_N extends CefURLRequest implements CefNative {
             } catch (UnsatisfiedLinkError ule) {
                 ule.printStackTrace();
             }
-            if (result.N_CefHandle == 0) return null;
-            return result;
+            return completeCreation(result);
         }
+    }
+
+    private static CefURLRequest completeCreation(CefURLRequest_N result) {
+        if (!result.N_CreationSucceeded && result.N_CefHandle == 0) return null;
+        return result;
     }
 
     @Override
@@ -137,4 +147,8 @@ class CefURLRequest_N extends CefURLRequest implements CefNative {
     private final native CefResponse N_GetResponse(long self);
     private final native boolean N_ResponseWasCached(long self);
     private final native void N_Cancel(long self);
+    static native boolean N_RunDisposedCreationRaceForTesting(CefURLRequest_N request);
+    static native boolean N_RunTokenRegistryConcurrencyForTesting();
+    static native boolean N_RunPendingDispatchAbandonmentForTesting();
+    static native boolean N_RunURLRequestLifecycleForTesting(CefURLRequest_N request);
 }

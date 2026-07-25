@@ -71,6 +71,38 @@ JNIEXPORT jboolean JNICALL Java_org_cef_network_CefURLRequest_1N_N_1ResponseWasC
 JNIEXPORT void JNICALL Java_org_cef_network_CefURLRequest_1N_N_1Cancel
   (JNIEnv *, jobject, jlong);
 
+/*
+ * Class:     org_cef_network_CefURLRequest_N
+ * Method:    N_RunDisposedCreationRaceForTesting
+ * Signature: (Lorg/cef/network/CefURLRequest_N;)Z
+ */
+JNIEXPORT jboolean JNICALL Java_org_cef_network_CefURLRequest_1N_N_1RunDisposedCreationRaceForTesting
+  (JNIEnv *, jclass, jobject);
+
+/*
+ * Class:     org_cef_network_CefURLRequest_N
+ * Method:    N_RunTokenRegistryConcurrencyForTesting
+ * Signature: ()Z
+ */
+JNIEXPORT jboolean JNICALL Java_org_cef_network_CefURLRequest_1N_N_1RunTokenRegistryConcurrencyForTesting
+  (JNIEnv *, jclass);
+
+/*
+ * Class:     org_cef_network_CefURLRequest_N
+ * Method:    N_RunPendingDispatchAbandonmentForTesting
+ * Signature: ()Z
+ */
+JNIEXPORT jboolean JNICALL Java_org_cef_network_CefURLRequest_1N_N_1RunPendingDispatchAbandonmentForTesting
+  (JNIEnv *, jclass);
+
+/*
+ * Class:     org_cef_network_CefURLRequest_N
+ * Method:    N_RunURLRequestLifecycleForTesting
+ * Signature: (Lorg/cef/network/CefURLRequest_N;)Z
+ */
+JNIEXPORT jboolean JNICALL Java_org_cef_network_CefURLRequest_1N_N_1RunURLRequestLifecycleForTesting
+  (JNIEnv *, jclass, jobject);
+
 #ifdef __cplusplus
 }
 #endif

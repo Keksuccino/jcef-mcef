@@ -15,13 +15,15 @@ import org.cef.network.CefURLRequest;
 
 /**
  * Implement this interface to handle events related to browser requests. The methods of this class
- * will be called on the IO thread unless otherwise indicated.
+ * will be called on the IO thread unless otherwise indicated. The {@code browser} and {@code frame}
+ * parameters are null for standalone requests created by {@link CefURLRequest#create} and identify
+ * the association for requests created by {@link CefFrame#createURLRequest}.
  */
 public interface CefResourceRequestHandler {
     /**
      * Called on the IO thread before a resource is loaded. The |browser| and |frame| values
      * represent the source of the request, and may be null for requests originating from service
-     * workers or CefURLRequest.
+     * workers or standalone URL requests.
      *
      * @param browser The corresponding browser.
      * @param frame The frame generating the event. Instance only valid within the scope of this
@@ -36,7 +38,7 @@ public interface CefResourceRequestHandler {
     /**
      * Called on the IO thread before a resource request is loaded. The |browser| and |frame| values
      * represent the source of the request, and may be null for requests originating from service
-     * workers or CefURLRequest. To redirect or change the resource load optionally modify
+     * workers or standalone URL requests. To redirect or change the resource load optionally modify
      * |request|. Modification of the request URL will be treated as a redirect.
      *
      * @param browser The corresponding browser.
@@ -51,7 +53,7 @@ public interface CefResourceRequestHandler {
     /**
      * Called on the IO thread before a resource is loaded. The |browser| and |frame| values
      * represent the source of the request, and may be null for requests originating from service
-     * workers or CefURLRequest.
+     * workers or standalone URL requests.
      *
      * @param browser The corresponding browser.
      * @param frame The frame generating the event. Instance only valid within the scope of this
@@ -65,8 +67,8 @@ public interface CefResourceRequestHandler {
     /**
      * Called on the IO thread when a resource load is redirected. The |browser| and |frame| values
      * represent the source of the request, and may be null for requests originating from service
-     * workers or CefURLRequest. The |request| parameter will contain the old URL and other
-     * request-related information.
+     * workers or standalone URL requests. The |request| parameter will contain the old URL and
+     * other request-related information.
      *
      * @param browser The corresponding browser.
      * @param frame The frame generating the event. Instance only valid within the scope of this
@@ -83,10 +85,10 @@ public interface CefResourceRequestHandler {
     /**
      * Called on the IO thread when a resource response is received. The |browser| and |frame|
      * values represent the source of the request, and may be null for requests originating from
-     * service workers or CefURLRequest. To allow the resource load to proceed without modification
-     * return false. To redirect or retry the resource load optionally modify |request| and return
-     * true. Modification of the request URL will be treated as a redirect. Requests handled using
-     * the default network loader cannot be redirected in this callback.
+     * service workers or standalone URL requests. To allow the resource load to proceed without
+     * modification return false. To redirect or retry the resource load optionally modify |request|
+     * and return true. Modification of the request URL will be treated as a redirect. Requests
+     * handled using the default network loader cannot be redirected in this callback.
      *
      * @param browser The corresponding browser.
      * @param frame The frame generating the event. Instance only valid within the scope of this
@@ -103,9 +105,9 @@ public interface CefResourceRequestHandler {
     /**
      * Called on the IO thread when a resource load has completed. The |browser| and |frame| values
      * represent the source of the request, and may be null for requests originating from service
-     * workers or CefURLRequest. This method will be called for all requests, including requests
-     * that are aborted due to CEF shutdown or destruction of the associated browser. In cases where
-     * the associated browser is destroyed this callback may arrive after the
+     * workers or standalone URL requests. This method will be called for all requests, including
+     * requests that are aborted due to CEF shutdown or destruction of the associated browser. In
+     * cases where the associated browser is destroyed this callback may arrive after the
      * CefLifeSpanHandler.onBeforeClose callback for that browser. The CefFrame.isValid method can
      * be used to test for this situation, and care should be taken not to call |browser| or |frame|
      * methods that modify state (like loadURL, sendProcessMessage, etc.) if the frame is invalid.
@@ -126,7 +128,7 @@ public interface CefResourceRequestHandler {
     /**
      * Called on the IO thread to handle requests for URLs with an unknown protocol component. The
      * |browser| and |frame| values represent the source of the request, and may be null for
-     * requests originating from service workers or CefURLRequest.
+     * requests originating from service workers or standalone URL requests.
      *
      * SECURITY WARNING: YOU SHOULD USE THIS METHOD TO ENFORCE RESTRICTIONS BASED ON SCHEME, HOST
      * OR OTHER URL ANALYSIS BEFORE ALLOWING OS EXECUTION.

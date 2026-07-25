@@ -13,6 +13,7 @@
 #include "jcef_version.h"
 #include "jni_util.h"
 #include "scheme_handler_factory.h"
+#include "url_request.h"
 #include "util.h"
 
 #if defined(OS_LINUX)
@@ -30,17 +31,25 @@ JNIEXPORT jboolean JNICALL Java_org_cef_CefApp_N_1PreInitialize(JNIEnv* env, job
 
 JNIEXPORT jboolean JNICALL Java_org_cef_CefApp_N_1Initialize(JNIEnv* env, jobject c, jobject appHandler, jobject jsettings) {
   Context* context = Context::GetInstance();
-  return context && context->Initialize(env, c, appHandler, jsettings)
-             ? JNI_TRUE
-             : JNI_FALSE;
+  if (!context || !context->Initialize(env, c, appHandler, jsettings))
+    return JNI_FALSE;
+  // URLRequest admission begins only after CefInitialize has succeeded. This
+  // ordering is also what makes failed initialization/abort idempotently safe.
+  OpenURLRequestLifecycle();
+  return JNI_TRUE;
 }
 
 JNIEXPORT void JNICALL Java_org_cef_CefApp_N_1AbortInitialization(JNIEnv* env, jobject) {
+  CloseURLRequestLifecycle();
   ClearJNIReferences(env);
   Context::Destroy();
 }
 
 JNIEXPORT void JNICALL Java_org_cef_CefApp_N_1Shutdown(JNIEnv* env, jobject) {
+  // Reject new URLRequest work, quiesce active bridge operations and drain the
+  // JCEF-owned registry references before CefShutdown. CEF may retain its own
+  // request/client references until CefShutdown tears the requests down.
+  CloseURLRequestLifecycle();
   Context* context = Context::GetInstance();
   if (context)
     context->Shutdown();

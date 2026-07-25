@@ -9,11 +9,20 @@ import org.cef.callback.CefURLRequestClient;
 import org.cef.handler.CefLoadHandler.ErrorCode;
 
 /**
- * Class used to make a URL request. URL requests are not associated with a
- * browser instance so no CefClient callbacks will be executed. URL requests
- * can be created on any valid CEF thread in either the browser or render
- * process. Once created the methods of the URL request object must be accessed
- * on the same thread that created it.
+ * Class used to make a URL request. Requests created by this class's static
+ * factory methods are not associated with a browser instance, so no CefClient
+ * callbacks will be executed. Requests created by
+ * {@link org.cef.browser.CefFrame#createURLRequest(CefRequest, CefURLRequestClient)}
+ * are associated with that frame and browser instead. This JCEF bridge creates
+ * browser-process requests on the CEF UI thread and synchronously marshals all
+ * request access to that thread, regardless of the Java caller thread.
+ *
+ * <p>The native URL-request lifecycle makes a late {@link #dispose()} or stale
+ * token access harmless after CEF shutdown. It does not own generic native
+ * wrappers: callers must dispose the {@link CefRequest} supplied at creation and
+ * every {@link CefResponse} obtained from {@link #getResponse()} before the
+ * {@link org.cef.CefApp} shutdown sequence begins (normally before disposing the
+ * app).</p>
  */
 public abstract class CefURLRequest {
     public static enum Status {
@@ -37,14 +46,10 @@ public abstract class CefURLRequest {
     /**
      * Create a new URL request. Only GET, POST, HEAD, DELETE and PUT request
      * methods are supported. Multiple post data elements are not supported and
-     * elements of type PDE_TYPE_FILE are only supported for requests originating
-     * from the browser process. Requests originating from the render process will
-     * receive the same handling as requests originating from Web content -- if
-     * the response contains Content-Disposition or Mime-Type header values that
-     * would not normally be rendered then the response may receive special
-     * handling inside the browser (for example, via the file download code path
-     * instead of the URL request code path). The |request| object will be marked
-     * as read-only after calling this method.
+     * elements of type PDE_TYPE_FILE are supported because JCEF creates these
+     * requests in the browser process. The |request| object will be marked as
+     * read-only after calling this method. The caller remains responsible for
+     * disposing {@code request} before {@link org.cef.CefApp} shutdown begins.
      */
     public static final CefURLRequest create(CefRequest request, CefURLRequestClient client) {
         return CefURLRequest_N.createNative(request, client);
@@ -53,7 +58,8 @@ public abstract class CefURLRequest {
     /**
      * Create a new URL request using {@code requestContext}. Passing {@code null}
      * uses the global request context and is equivalent to {@link #create(CefRequest,
-     * CefURLRequestClient)}.
+     * CefURLRequestClient)}. The caller remains responsible for disposing
+     * {@code request} before {@link org.cef.CefApp} shutdown begins.
      */
     public static final CefURLRequest create(CefRequest request, CefURLRequestClient client, CefRequestContext requestContext) {
         return CefURLRequest_N.createNative(request, client, requestContext);
@@ -94,7 +100,9 @@ public abstract class CefURLRequest {
     /**
      * Returns the response, or NULL if no response information is available.
      * Response information will only be available after the upload has completed.
-     * The returned object is read-only and should not be modified.
+     * The returned object is read-only and should not be modified. It is a generic
+     * native wrapper and must be disposed before {@link org.cef.CefApp} shutdown
+     * begins.
      */
     public abstract CefResponse getResponse();
 

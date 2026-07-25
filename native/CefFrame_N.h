@@ -121,6 +121,14 @@ JNIEXPORT void JNICALL Java_org_cef_browser_CefFrame_1N_N_1LoadURL
 
 /*
  * Class:     org_cef_browser_CefFrame_N
+ * Method:    N_CreateURLRequest
+ * Signature: (JLorg/cef/network/CefRequest;Lorg/cef/callback/CefURLRequestClient;)Lorg/cef/network/CefURLRequest;
+ */
+JNIEXPORT jobject JNICALL Java_org_cef_browser_CefFrame_1N_N_1CreateURLRequest
+  (JNIEnv *, jobject, jlong, jobject, jobject);
+
+/*
+ * Class:     org_cef_browser_CefFrame_N
  * Method:    N_ExecuteJavaScript
  * Signature: (JLjava/lang/String;Ljava/lang/String;I)V
  */

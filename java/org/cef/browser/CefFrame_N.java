@@ -6,7 +6,9 @@ package org.cef.browser;
 
 import org.cef.callback.CefNativeAdapter;
 import org.cef.callback.CefStringVisitor;
+import org.cef.callback.CefURLRequestClient;
 import org.cef.network.CefRequest;
+import org.cef.network.CefURLRequest;
 
 import java.util.Objects;
 
@@ -163,6 +165,18 @@ class CefFrame_N extends CefNativeAdapter implements CefFrame {
     }
 
     @Override
+    public CefURLRequest createURLRequest(CefRequest request, CefURLRequestClient client) {
+        Objects.requireNonNull(request, "request");
+        Objects.requireNonNull(client, "client");
+        try {
+            return N_CreateURLRequest(getNativeRef(null), request, client);
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+            return null;
+        }
+    }
+
+    @Override
     public void executeJavaScript(String code, String url, int line) {
         try {
             N_ExecuteJavaScript(getNativeRef(null), code, url, line);
@@ -257,6 +271,7 @@ class CefFrame_N extends CefNativeAdapter implements CefFrame {
     private final native void N_GetText(long self, CefStringVisitor visitor);
     private final native void N_LoadRequest(long self, CefRequest request);
     private final native void N_LoadURL(long self, String url);
+    private final native CefURLRequest N_CreateURLRequest(long self, CefRequest request, CefURLRequestClient client);
     private final native void N_ExecuteJavaScript(long self, String code, String url, int line);
     private final native void N_Undo(long self);
     private final native void N_Redo(long self);

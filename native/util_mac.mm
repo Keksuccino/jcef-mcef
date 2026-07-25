@@ -24,6 +24,7 @@
 #include "jni_util.h"
 #include "render_handler.h"
 #include "temp_window.h"
+#include "url_request.h"
 #include "window_handler.h"
 
 namespace {
@@ -285,6 +286,10 @@ void RemoveMouseMonitorOnMainThread() {
 
 + (void)shutdown {
   DCHECK([NSThread isMainThread]);
+  // Cmd+Q can reach this direct CefShutdown path without Java N_Shutdown.
+  // Close is idempotent, and must quiesce before any runtime-loaded CEF symbol
+  // or URLRequest-owned reference becomes unavailable.
+  CloseURLRequestLifecycle();
   // Cmd+Q and Java disposal can converge here. Only the first path owns
   // CefShutdown.
   if (!g_client_app_)

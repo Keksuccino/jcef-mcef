@@ -7,9 +7,11 @@ package org.cef.callback;
 import org.cef.network.CefURLRequest;
 
 /**
- * Interface that should be implemented by the CefURLRequest client. The
- * methods of this class will be called on the same thread that created the
- * request unless otherwise documented.
+ * Interface that should be implemented by the CefURLRequest client. JCEF calls
+ * authentication on CEF's IO thread and all other methods on the CEF UI thread. When a factory is
+ * invoked outside the UI thread, a fast callback may run before that Java factory call returns.
+ * Callbacks that receive a {@code request} argument should use it instead of assuming the caller
+ * has already assigned the returned object; the authentication callback has no request argument.
  */
 public interface CefURLRequestClient extends CefNative {
     /**
@@ -70,8 +72,11 @@ public interface CefURLRequestClient extends CefNative {
      * |isProxy| indicates whether the host is a proxy server. |host| contains the
      * hostname and |port| contains the port number. Return true to continue the
      * request and call CefAuthCallback::Continue() when the authentication
-     * information is available. Return false to cancel the request. This method
-     * will only be called for requests initiated from the browser process.
+     * information is available. For a frame-associated request, returning false
+     * falls through to the owning browser's CefRequestHandler, if any. Otherwise,
+     * including for a standalone request, returning false immediately cancels the
+     * request. This method is only called for requests initiated from the browser
+     * process.
      */
     boolean getAuthCredentials(boolean isProxy, String host, int port, String realm, String scheme, CefAuthCallback callback);
 

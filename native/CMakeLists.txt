@@ -160,8 +160,10 @@ set(JCEF_SRCS
   string_visitor.cpp
   string_visitor.h
   temp_window.h
+  url_request.cpp
   url_request_client.cpp
   url_request_client.h
+  url_request.h
   util.h
   window_handler.cpp
   window_handler.h

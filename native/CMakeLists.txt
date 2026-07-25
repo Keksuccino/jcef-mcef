@@ -302,6 +302,15 @@ if(BUILD_TESTING)
   SET_JCEF_CXX20_PROPERTIES(permission_util_test)
   target_include_directories(permission_util_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" ${JNI_INCLUDE_DIRS})
   target_link_libraries(permission_util_test PRIVATE Threads::Threads)
+  if(OS_WINDOWS)
+    # CEF 151's MSVC CefRefPtr checks use cef::logging::LogMessage from
+    # libcef_dll_wrapper even with fake callbacks. Its implementation calls
+    # libcef's C logging exports, and /DELAYLOAD:libcef.dll requires delayimp
+    # from ${CEF_STANDARD_LIBS}. Keep this Windows-only because macOS
+    # intentionally loads CEF dynamically.
+    add_dependencies(permission_util_test libcef_dll_wrapper)
+    target_link_libraries(permission_util_test PRIVATE libcef_lib libcef_dll_wrapper ${CEF_STANDARD_LIBS})
+  endif()
   add_test(NAME permission_util_test COMMAND permission_util_test)
   set_tests_properties(permission_util_test PROPERTIES TIMEOUT 90)
 endif()

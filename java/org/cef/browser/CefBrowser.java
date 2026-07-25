@@ -68,6 +68,19 @@ public interface CefBrowser {
     //
 
     /**
+     * Returns whether the underlying CEF browser object is currently valid. Native-backed
+     * browsers remain valid after close is requested and while CEF invokes
+     * {@code CefLifeSpanHandler::OnBeforeClose}, then become invalid after that callback returns.
+     *
+     * @return {@code true} if the underlying CEF browser object is currently valid
+     * @throws UnsupportedOperationException if this browser implementation cannot report CEF
+     *         validity
+     */
+    public default boolean isValid() {
+        throw new UnsupportedOperationException("isValid is not supported by this browser");
+    }
+
+    /**
      * Tests if the browser can navigate backwards.
      * @return true if the browser can navigate backwards.
      */
@@ -115,6 +128,21 @@ public interface CefBrowser {
      * @return The browser identifier
      */
     public int getIdentifier();
+
+    /**
+     * Returns whether this browser and {@code that} reference the same underlying CEF browser
+     * handle.
+     *
+     * @param that the browser to compare with
+     * @return {@code true} if both wrappers reference the same underlying CEF browser handle
+     * @throws NullPointerException if {@code that} is {@code null}
+     * @throws UnsupportedOperationException if this browser implementation cannot compare CEF
+     *         browser identity
+     */
+    public default boolean isSame(CefBrowser that) {
+        Objects.requireNonNull(that, "that");
+        throw new UnsupportedOperationException("isSame is not supported by this browser");
+    }
 
     /**
      * Returns the main (top-level) frame for the browser window.
@@ -232,6 +260,17 @@ public interface CefBrowser {
     public String getURL();
 
     // The following methods are forwarded to CefBrowserHost.
+
+    /**
+     * Returns whether the underlying CEF browser host uses windowless rendering.
+     *
+     * @return {@code true} if window rendering is disabled for the underlying CEF browser host
+     * @throws UnsupportedOperationException if this browser implementation cannot report the CEF
+     *         rendering mode
+     */
+    public default boolean isWindowRenderingDisabled() {
+        throw new UnsupportedOperationException("isWindowRenderingDisabled is not supported by this browser");
+    }
 
     /**
      * Request that the browser close.

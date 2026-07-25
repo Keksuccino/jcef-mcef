@@ -3891,6 +3891,11 @@ Java_org_cef_browser_CefBrowser_1N_N_1GetWindowHandle(JNIEnv* env,
   return (jlong)windowHandle;
 }
 
+JNIEXPORT jboolean JNICALL Java_org_cef_browser_CefBrowser_1N_N_1IsValid(JNIEnv* env, jobject obj) {
+  CefRefPtr<CefBrowser> browser = GetLifecycleSafeJNIBrowser(env, obj, true);
+  return browser.get() && browser->IsValid() ? JNI_TRUE : JNI_FALSE;
+}
+
 JNIEXPORT jboolean JNICALL
 Java_org_cef_browser_CefBrowser_1N_N_1CanGoBack(JNIEnv* env, jobject obj) {
   CefRefPtr<CefBrowser> browser =
@@ -3947,6 +3952,23 @@ JNIEXPORT jint JNICALL
 Java_org_cef_browser_CefBrowser_1N_N_1GetIdentifier(JNIEnv* env, jobject obj) {
   CefRefPtr<CefBrowser> browser = JNI_GET_BROWSER_OR_RETURN(env, obj, -1);
   return browser->GetIdentifier();
+}
+
+JNIEXPORT jboolean JNICALL Java_org_cef_browser_CefBrowser_1N_N_1IsSame(JNIEnv* env, jobject obj, jobject jthat) {
+  ScopedJNIClass native_browser_class(env, "org/cef/browser/CefBrowser_N");
+  if (!native_browser_class || !jthat || env->IsInstanceOf(jthat, native_browser_class) == JNI_FALSE)
+    return JNI_FALSE;
+
+  // Promote each raw handle under its own Java lifecycle monitor. Keeping both owning references
+  // after those independent scopes avoids deadlock between two simultaneous reversed comparisons
+  // without allowing OnBeforeClose to release an operand during the native call.
+  CefRefPtr<CefBrowser> browser = GetLifecycleSafeJNIBrowser(env, obj, true);
+  if (!browser.get())
+    return JNI_FALSE;
+  CefRefPtr<CefBrowser> that = GetLifecycleSafeJNIBrowser(env, jthat, true);
+  if (!that.get() || !browser->IsValid() || !that->IsValid())
+    return JNI_FALSE;
+  return browser->IsSame(that) ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jobject JNICALL
@@ -4092,6 +4114,14 @@ Java_org_cef_browser_CefBrowser_1N_N_1GetURL(JNIEnv* env, jobject obj) {
   jstring tmp = NewJNIString(env, "");
   CefRefPtr<CefBrowser> browser = JNI_GET_BROWSER_OR_RETURN(env, obj, tmp);
   return NewJNIString(env, browser->GetMainFrame()->GetURL());
+}
+
+JNIEXPORT jboolean JNICALL Java_org_cef_browser_CefBrowser_1N_N_1IsWindowRenderingDisabled(JNIEnv* env, jobject obj) {
+  CefRefPtr<CefBrowser> browser = GetLifecycleSafeJNIBrowser(env, obj, true);
+  if (!browser.get() || !browser->IsValid())
+    return JNI_FALSE;
+  CefRefPtr<CefBrowserHost> host = browser->GetHost();
+  return host.get() && host->IsWindowRenderingDisabled() ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL

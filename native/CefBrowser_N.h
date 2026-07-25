@@ -87,6 +87,14 @@ JNIEXPORT jlong JNICALL Java_org_cef_browser_CefBrowser_1N_N_1GetWindowHandle
 
 /*
  * Class:     org_cef_browser_CefBrowser_N
+ * Method:    N_IsValid
+ * Signature: ()Z
+ */
+JNIEXPORT jboolean JNICALL Java_org_cef_browser_CefBrowser_1N_N_1IsValid
+  (JNIEnv *, jobject);
+
+/*
+ * Class:     org_cef_browser_CefBrowser_N
  * Method:    N_CanGoBack
  * Signature: ()Z
  */
@@ -156,6 +164,14 @@ JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1StopLoad
  */
 JNIEXPORT jint JNICALL Java_org_cef_browser_CefBrowser_1N_N_1GetIdentifier
   (JNIEnv *, jobject);
+
+/*
+ * Class:     org_cef_browser_CefBrowser_N
+ * Method:    N_IsSame
+ * Signature: (Lorg/cef/browser/CefBrowser;)Z
+ */
+JNIEXPORT jboolean JNICALL Java_org_cef_browser_CefBrowser_1N_N_1IsSame
+  (JNIEnv *, jobject, jobject);
 
 /*
  * Class:     org_cef_browser_CefBrowser_N
@@ -283,6 +299,14 @@ JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1ExecuteJavaScript
  * Signature: ()Ljava/lang/String;
  */
 JNIEXPORT jstring JNICALL Java_org_cef_browser_CefBrowser_1N_N_1GetURL
+  (JNIEnv *, jobject);
+
+/*
+ * Class:     org_cef_browser_CefBrowser_N
+ * Method:    N_IsWindowRenderingDisabled
+ * Signature: ()Z
+ */
+JNIEXPORT jboolean JNICALL Java_org_cef_browser_CefBrowser_1N_N_1IsWindowRenderingDisabled
   (JNIEnv *, jobject);
 
 /*

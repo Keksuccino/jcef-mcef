@@ -432,6 +432,17 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     }
 
     @Override
+    public boolean isValid() {
+        if (!isNativeBrowserStateQueryAvailable()) return false;
+        try {
+            return N_IsValid();
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+        return false;
+    }
+
+    @Override
     public boolean canGoBack() {
         try {
             return N_CanGoBack();
@@ -514,6 +525,18 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
             ule.printStackTrace();
             return -1;
         }
+    }
+
+    @Override
+    public boolean isSame(CefBrowser that) {
+        Objects.requireNonNull(that, "that");
+        if (!isNativeBrowserStateQueryAvailable()) return false;
+        try {
+            return N_IsSame(that);
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+        return false;
     }
 
     @Override
@@ -668,6 +691,17 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
             ule.printStackTrace();
         }
         return "";
+    }
+
+    @Override
+    public boolean isWindowRenderingDisabled() {
+        if (!isNativeBrowserStateQueryAvailable()) return false;
+        try {
+            return N_IsWindowRenderingDisabled();
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+        return false;
     }
 
     @Override
@@ -1324,6 +1358,16 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
         return !isClosing_ && !isClosed_ && creationController_.isCreated() && getNativeRef("CefBrowser") != 0;
     }
 
+    /**
+     * Identity and render-mode queries follow CEF's native lifetime, which ends at
+     * OnBeforeClose return rather than when Java requests a force-close. Native admission repeats
+     * this check while promoting the raw handle to an owning reference so pointer clearing cannot
+     * race the query.
+     */
+    private synchronized boolean isNativeBrowserStateQueryAvailable() {
+        return !isClosed_ && creationController_.isCreated() && getNativeRef("CefBrowser") != 0;
+    }
+
     private interface IntCallback {
         void onComplete(int value);
     }
@@ -1399,6 +1443,7 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     private final native CefRegistration N_AddDevToolsMessageObserver(
             CefDevToolsMessageObserver observer);
     private final native long N_GetWindowHandle(long surfaceHandle);
+    private final native boolean N_IsValid();
     private final native boolean N_CanGoBack();
     private final native void N_GoBack();
     private final native boolean N_CanGoForward();
@@ -1408,6 +1453,7 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     private final native void N_ReloadIgnoreCache();
     private final native void N_StopLoad();
     private final native int N_GetIdentifier();
+    private final native boolean N_IsSame(CefBrowser that);
     private final native CefFrame N_GetMainFrame();
     private final native CefFrame N_GetFocusedFrame();
     private final native CefFrame N_GetFrameByIdentifier(String identifier);
@@ -1424,6 +1470,7 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     private final native void N_LoadURL(String url);
     private final native void N_ExecuteJavaScript(String code, String url, int line);
     private final native String N_GetURL();
+    private final native boolean N_IsWindowRenderingDisabled();
     private final native void N_Close(boolean force);
     private final native void N_SetFocus(boolean enable);
     private final native void N_SetWindowVisibility(boolean visible);

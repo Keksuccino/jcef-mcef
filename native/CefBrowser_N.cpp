@@ -8,14 +8,17 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string_view>
+#include <type_traits>
 
 #include "include/base/cef_callback.h"
 #include "include/cef_browser.h"
 #include "include/cef_parser.h"
 #include "include/cef_task.h"
+#include "include/cef_version.h"
 #include "include/wrapper/cef_closure_task.h"
 
 #include "browser_process_handler.h"
@@ -42,8 +45,6 @@
 #include <X11/XF86keysym.h>
 #include <X11/keysym.h>
 
-#include "include/cef_version.h"
-
 // CEF 151's SUPPORTS_OZONE_X11 path reconstructs DomKey from the Windows key
 // code and Shift state. It ignores CefKeyEvent.character and Caps Lock for
 // that calculation, so the Linux live-input expectations deliberately expose
@@ -68,6 +69,25 @@ static_assert(PET_POPUP == 1, "CEF API 15100 PET_POPUP value changed");
 static_assert(CEF_ZOOM_COMMAND_OUT == 0, "CEF API 15100 CEF_ZOOM_COMMAND_OUT value changed");
 static_assert(CEF_ZOOM_COMMAND_RESET == 1, "CEF API 15100 CEF_ZOOM_COMMAND_RESET value changed");
 static_assert(CEF_ZOOM_COMMAND_IN == 2, "CEF API 15100 CEF_ZOOM_COMMAND_IN value changed");
+static_assert(CEF_TET_RELEASED == 0, "CEF API 15100 CEF_TET_RELEASED value changed");
+static_assert(CEF_TET_PRESSED == 1, "CEF API 15100 CEF_TET_PRESSED value changed");
+static_assert(CEF_TET_MOVED == 2, "CEF API 15100 CEF_TET_MOVED value changed");
+static_assert(CEF_TET_CANCELLED == 3, "CEF API 15100 CEF_TET_CANCELLED value changed");
+static_assert(CEF_POINTER_TYPE_TOUCH == 0, "CEF API 15100 CEF_POINTER_TYPE_TOUCH value changed");
+static_assert(CEF_POINTER_TYPE_MOUSE == 1, "CEF API 15100 CEF_POINTER_TYPE_MOUSE value changed");
+static_assert(CEF_POINTER_TYPE_PEN == 2, "CEF API 15100 CEF_POINTER_TYPE_PEN value changed");
+static_assert(CEF_POINTER_TYPE_ERASER == 3, "CEF API 15100 CEF_POINTER_TYPE_ERASER value changed");
+static_assert(CEF_POINTER_TYPE_UNKNOWN == 4, "CEF API 15100 CEF_POINTER_TYPE_UNKNOWN value changed");
+static_assert(std::is_same_v<decltype(cef_touch_event_t::id), int> && std::is_same_v<decltype(cef_touch_event_t::x), float> && std::is_same_v<decltype(cef_touch_event_t::y), float> && std::is_same_v<decltype(cef_touch_event_t::radius_x), float> && std::is_same_v<decltype(cef_touch_event_t::radius_y), float> && std::is_same_v<decltype(cef_touch_event_t::rotation_angle), float> && std::is_same_v<decltype(cef_touch_event_t::pressure), float> && std::is_same_v<decltype(cef_touch_event_t::type), cef_touch_event_type_t> && std::is_same_v<decltype(cef_touch_event_t::modifiers), uint32_t> && std::is_same_v<decltype(cef_touch_event_t::pointer_type), cef_pointer_type_t>, "CEF API 15100 touch event field types changed");
+// CefMotionEventOSR in this exact CEF build drops metadata-only MOVED events when X and Y are
+// unchanged. It also passes CEF's documented radian rotation value to Chromium's degree-based
+// SetAxesAndOrientation API. Keep both workarounds pinned until that implementation is re-audited.
+static_assert(std::string_view(CEF_VERSION) == "151.2.3+g89cd581+chromium-151.0.7922.34" && CEF_COMMIT_NUMBER == 3553 && std::string_view(CEF_COMMIT_HASH) == "89cd5813e47d84c68e56ced336c2c01b7dc77b8d", "CEF changed: re-audit CefMotionEventOSR stationary MOVED handling, rotation units and the public touch input contract");
+
+constexpr uint32_t kKnownTouchModifiersMask = EVENTFLAG_CAPS_LOCK_ON | EVENTFLAG_SHIFT_DOWN | EVENTFLAG_CONTROL_DOWN | EVENTFLAG_ALT_DOWN | EVENTFLAG_LEFT_MOUSE_BUTTON | EVENTFLAG_MIDDLE_MOUSE_BUTTON | EVENTFLAG_RIGHT_MOUSE_BUTTON | EVENTFLAG_COMMAND_DOWN | EVENTFLAG_NUM_LOCK_ON | EVENTFLAG_IS_KEY_PAD | EVENTFLAG_IS_LEFT | EVENTFLAG_IS_RIGHT | EVENTFLAG_ALTGR_DOWN | EVENTFLAG_IS_REPEAT | EVENTFLAG_PRECISION_SCROLLING_DELTA | EVENTFLAG_SCROLL_BY_PAGE;
+constexpr float kTouchRotationPiRadians = 3.14159265358979323846F;
+constexpr double kTouchRadiansToDegrees = 180.0 / 3.14159265358979323846;
+static_assert(kKnownTouchModifiersMask == 0xFFFFU, "CEF API 15100 event flag mask changed");
 
 bool GetPaintElementType(JNIEnv* env, jint value, CefBrowserHost::PaintElementType* type) {
   switch (value) {
@@ -102,6 +122,91 @@ bool GetZoomCommand(JNIEnv* env, jint value, cef_zoom_command_t* command) {
         env->ThrowNew(exception_class, "Unknown CEF zoom command");
       return false;
   }
+}
+
+bool RejectTouchEvent(JNIEnv* env, const char* message) {
+  ScopedJNIClass exception_class(env, "java/lang/IllegalArgumentException");
+  if (exception_class)
+    env->ThrowNew(exception_class, message);
+  return false;
+}
+
+bool GetTouchEventType(JNIEnv* env, jint value, cef_touch_event_type_t* type) {
+  switch (value) {
+    case CEF_TET_RELEASED:
+      *type = CEF_TET_RELEASED;
+      return true;
+    case CEF_TET_PRESSED:
+      *type = CEF_TET_PRESSED;
+      return true;
+    case CEF_TET_MOVED:
+      *type = CEF_TET_MOVED;
+      return true;
+    case CEF_TET_CANCELLED:
+      *type = CEF_TET_CANCELLED;
+      return true;
+    default:
+      return RejectTouchEvent(env, "Unknown CEF touch event type");
+  }
+}
+
+bool GetPointerType(JNIEnv* env, jint value, cef_pointer_type_t* pointer_type) {
+  switch (value) {
+    case CEF_POINTER_TYPE_TOUCH:
+      *pointer_type = CEF_POINTER_TYPE_TOUCH;
+      return true;
+    case CEF_POINTER_TYPE_MOUSE:
+      *pointer_type = CEF_POINTER_TYPE_MOUSE;
+      return true;
+    case CEF_POINTER_TYPE_PEN:
+      *pointer_type = CEF_POINTER_TYPE_PEN;
+      return true;
+    case CEF_POINTER_TYPE_ERASER:
+      *pointer_type = CEF_POINTER_TYPE_ERASER;
+      return true;
+    case CEF_POINTER_TYPE_UNKNOWN:
+      *pointer_type = CEF_POINTER_TYPE_UNKNOWN;
+      return true;
+    default:
+      return RejectTouchEvent(env, "Unknown CEF pointer type");
+  }
+}
+
+bool GetTouchEvent(JNIEnv* env, jint id, jfloat x, jfloat y, jfloat radius_x, jfloat radius_y, jfloat rotation_angle, jfloat pressure, jint type_value, jint modifiers, jint pointer_type_value, CefTouchEvent* event) {
+  if (id == -1)
+    return RejectTouchEvent(env, "Touch id must not be -1");
+  if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(radius_x) || !std::isfinite(radius_y) || !std::isfinite(rotation_angle) || !std::isfinite(pressure))
+    return RejectTouchEvent(env, "Touch coordinates and metadata must be finite");
+  if (radius_x < 0.0F || radius_y < 0.0F)
+    return RejectTouchEvent(env, "Touch radii must not be negative");
+  if (rotation_angle < 0.0F || rotation_angle >= kTouchRotationPiRadians)
+    return RejectTouchEvent(env, "Touch rotation angle must be at least 0 and less than pi radians");
+  if (pressure < 0.0F || pressure > 1.0F)
+    return RejectTouchEvent(env, "Touch pressure must be between 0 and 1");
+
+  cef_touch_event_type_t type;
+  if (!GetTouchEventType(env, type_value, &type))
+    return false;
+  const uint32_t unsigned_modifiers = static_cast<uint32_t>(modifiers);
+  if ((unsigned_modifiers & ~kKnownTouchModifiersMask) != 0)
+    return RejectTouchEvent(env, "Touch modifiers contain unknown CEF event flag bits");
+  cef_pointer_type_t pointer_type;
+  if (!GetPointerType(env, pointer_type_value, &pointer_type))
+    return false;
+
+  event->id = id;
+  event->x = x;
+  event->y = y;
+  event->radius_x = radius_x;
+  event->radius_y = radius_y;
+  // CefMotionEventOSR forwards this field unchanged into Chromium's degree-based API despite the
+  // public CEF radians contract. Convert only at this final native boundary so Java stays honest.
+  event->rotation_angle = static_cast<float>(static_cast<double>(rotation_angle) * kTouchRadiansToDegrees);
+  event->pressure = pressure;
+  event->type = type;
+  event->modifiers = unsigned_modifiers;
+  event->pointer_type = pointer_type;
+  return true;
 }
 
 // These values are stable public ABI constants from java.awt.event and GLFW.
@@ -3482,7 +3587,7 @@ CefRefPtr<CefBrowser> GetLifecycleSafeJNIBrowser(JNIEnv* env, jobject jbrowser, 
   return env->ExceptionCheck() ? nullptr : browser;
 }
 
-CefRefPtr<CefBrowserHost> GetWindowlessImeHost(const CefRefPtr<CefBrowser>& browser) {
+CefRefPtr<CefBrowserHost> GetWindowlessInputHost(const CefRefPtr<CefBrowser>& browser) {
   if (!browser.get() || !browser->IsValid())
     return nullptr;
   CefRefPtr<CefBrowserHost> host = browser->GetHost();
@@ -4201,7 +4306,7 @@ JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1ImeSetComposition(J
   if (!ime_composition::ConvertSetComposition(env, text, underlines, replacement_range, selection_range, &composition))
     return;
 
-  CefRefPtr<CefBrowserHost> host = GetWindowlessImeHost(browser);
+  CefRefPtr<CefBrowserHost> host = GetWindowlessInputHost(browser);
   if (host.get())
     host->ImeSetComposition(composition.text, composition.underlines, composition.replacement_range, composition.selection_range);
 }
@@ -4215,23 +4320,36 @@ JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1ImeCommitText(JNIEn
   if (!ime_composition::ConvertCommitText(env, text, replacement_range, &commit))
     return;
 
-  CefRefPtr<CefBrowserHost> host = GetWindowlessImeHost(browser);
+  CefRefPtr<CefBrowserHost> host = GetWindowlessInputHost(browser);
   if (host.get())
     host->ImeCommitText(commit.text, commit.replacement_range, relative_cursor_position);
 }
 
 JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1ImeFinishComposingText(JNIEnv* env, jobject obj, jboolean keep_selection) {
   CefRefPtr<CefBrowser> browser = GetLifecycleSafeJNIBrowser(env, obj);
-  CefRefPtr<CefBrowserHost> host = GetWindowlessImeHost(browser);
+  CefRefPtr<CefBrowserHost> host = GetWindowlessInputHost(browser);
   if (host.get())
     host->ImeFinishComposingText(keep_selection != JNI_FALSE);
 }
 
 JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1ImeCancelComposition(JNIEnv* env, jobject obj) {
   CefRefPtr<CefBrowser> browser = GetLifecycleSafeJNIBrowser(env, obj);
-  CefRefPtr<CefBrowserHost> host = GetWindowlessImeHost(browser);
+  CefRefPtr<CefBrowserHost> host = GetWindowlessInputHost(browser);
   if (host.get())
     host->ImeCancelComposition();
+}
+
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1SendTouchEvent(JNIEnv* env, jobject obj, jint id, jfloat x, jfloat y, jfloat radius_x, jfloat radius_y, jfloat rotation_angle, jfloat pressure, jint type, jint modifiers, jint pointer_type) {
+  CefTouchEvent event;
+  if (!GetTouchEvent(env, id, x, y, radius_x, radius_y, rotation_angle, pressure, type, modifiers, pointer_type, &event))
+    return;
+
+  // Retain the browser under the same Java lifecycle monitor used by close-sensitive input paths.
+  // CefBrowserHost performs its own UI-thread hop and copies the event when one is required.
+  CefRefPtr<CefBrowser> browser = GetLifecycleSafeJNIBrowser(env, obj);
+  CefRefPtr<CefBrowserHost> host = GetWindowlessInputHost(browser);
+  if (host.get())
+    host->SendTouchEvent(event);
 }
 
 JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1SetWindowVisibility(JNIEnv* env, jobject obj, jboolean visible) {

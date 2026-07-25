@@ -8,6 +8,7 @@ import org.cef.CefClient;
 import org.cef.callback.CefPdfPrintCallback;
 import org.cef.callback.CefRunFileDialogCallback;
 import org.cef.callback.CefStringVisitor;
+import org.cef.event.CefTouchEvent;
 import org.cef.handler.CefDialogHandler.FileDialogMode;
 import org.cef.handler.CefRenderHandler;
 import org.cef.handler.CefWindowHandler;
@@ -379,6 +380,46 @@ public interface CefBrowser {
      */
     public default void imeCancelComposition() {
         throw new UnsupportedOperationException("imeCancelComposition is not supported by this browser");
+    }
+
+    /**
+     * Sends one touch-point update to a windowless browser. Native JCEF browsers forward the
+     * immutable snapshot without clamping, coordinate/radius scaling, sequence repair, or an
+     * additional task repost. Calls made before native browser creation or while the browser is
+     * closing or closed have no effect, and windowed native browsers ignore this method. This
+     * method may be called from any browser-process thread.
+     *
+     * <p>CEF 151.2.3 documents rotation in radians but passes it to a Chromium API that requires
+     * degrees. The native bridge compensates for that pinned CEF defect so callers continue to use
+     * the documented radians contract. Its exact-version build assertion forces this workaround
+     * to be re-audited whenever CEF changes.
+     *
+     * <p>Chromium touch handling must be enabled for these events to be dispatched. Desktop
+     * applications running on hosts without touch hardware commonly need to pass
+     * {@code --touch-events=enabled} during CEF startup.
+     *
+     * <p>The caller must serialize events for a browser and supply X/Y in logical view coordinates
+     * (the same coordinate space used by its render handler). CEF documents radii only as pixel
+     * values; this bridge forwards them verbatim rather than assuming an X/Y scale conversion.
+     * Every contact begins with one {@code PRESSED}, continues with zero or more {@code MOVED}
+     * events, and ends with one {@code RELEASED} or {@code CANCELLED} event. Contact IDs must be
+     * unique while active and may be any {@code int} except {@code -1}. CEF tracks at most 16
+     * concurrent contacts and ignores excess or incorrectly sequenced events.
+     *
+     * <p>The pinned CEF 151.2.3 OSR implementation discards a {@code MOVED} event when both
+     * coordinates equal that contact's previous coordinates. Consequently, a metadata-only change
+     * to radius, rotation, pressure, pointer type, or modifiers is discarded. Callers must resupply
+     * still-applicable metadata with a later coordinate-changing event; this bridge deliberately
+     * does not synthesize coordinate changes.
+     *
+     * @param event the complete immutable touch-point snapshot
+     * @throws NullPointerException if {@code event} is {@code null}
+     * @throws UnsupportedOperationException if this browser implementation does not support CEF
+     *         OSR touch input
+     */
+    public default void sendTouchEvent(CefTouchEvent event) {
+        Objects.requireNonNull(event, "event");
+        throw new UnsupportedOperationException("sendTouchEvent is not supported by this browser");
     }
 
     /**

@@ -15,6 +15,7 @@ import org.cef.callback.CefStringVisitor;
 import org.cef.event.CefKeyEvent;
 import org.cef.event.CefMouseEvent;
 import org.cef.event.CefMouseWheelEvent;
+import org.cef.event.CefTouchEvent;
 import org.cef.handler.CefClientHandler;
 import org.cef.handler.CefDialogHandler.FileDialogMode;
 import org.cef.handler.CefRenderHandler;
@@ -814,6 +815,17 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
         }
     }
 
+    @Override
+    public void sendTouchEvent(CefTouchEvent event) {
+        Objects.requireNonNull(event, "event");
+        if (!isNativeInputEligible()) return;
+        try {
+            N_SendTouchEvent(event.getId(), event.getX(), event.getY(), event.getRadiusX(), event.getRadiusY(), event.getRotationAngle(), event.getPressure(), event.getType().getValue(), event.getModifiers(), event.getPointerType().getValue());
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+    }
+
     private static CefCompositionUnderline[] copyAndValidateImeUnderlines(String text, List<CefCompositionUnderline> underlines) {
         CefCompositionUnderline[] snapshot = underlines.toArray(new CefCompositionUnderline[0]);
         long textLength = text.length();
@@ -1546,6 +1558,7 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     private final native void N_ImeCommitText(String text, CefRange replacementRange, int relativeCursorPosition);
     private final native void N_ImeFinishComposingText(boolean keepSelection);
     private final native void N_ImeCancelComposition();
+    private final native void N_SendTouchEvent(int id, float x, float y, float radiusX, float radiusY, float rotationAngle, float pressure, int type, int modifiers, int pointerType);
     private final native void N_SetWindowVisibility(boolean visible);
     private final native void N_NotifyScreenInfoChanged();
     private final native void N_CanZoom(int command, IntCallback callback);

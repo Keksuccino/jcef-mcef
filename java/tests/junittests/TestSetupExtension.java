@@ -86,6 +86,7 @@ public class TestSetupExtension implements BeforeAllCallback, AutoCloseable {
                 super.onBeforeCommandLineProcessing(processType, commandLine);
                 WindowsArm64TestCommandLine.configureBrowserProcess(processType, commandLine);
                 PermissionTestCommandLine.configureBrowserProcess(processType, commandLine);
+                TouchTestCommandLine.configureBrowserProcess(processType, commandLine);
             }
 
             @Override

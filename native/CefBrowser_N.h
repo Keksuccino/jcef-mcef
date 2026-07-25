@@ -367,6 +367,14 @@ JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1ImeCancelCompositio
 
 /*
  * Class:     org_cef_browser_CefBrowser_N
+ * Method:    N_SendTouchEvent
+ * Signature: (IFFFFFFIII)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1SendTouchEvent
+  (JNIEnv *, jobject, jint, jfloat, jfloat, jfloat, jfloat, jfloat, jfloat, jint, jint, jint);
+
+/*
+ * Class:     org_cef_browser_CefBrowser_N
  * Method:    N_SetWindowVisibility
  * Signature: (Z)V
  */

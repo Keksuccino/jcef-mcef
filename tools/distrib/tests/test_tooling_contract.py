@@ -146,6 +146,37 @@ class PlatformToolingContractTest(unittest.TestCase):
     self.assertIn('distribution: ${{ matrix.java_distribution }}', windows_job_text)
     self.assertIn('java-version: ${{ matrix.java_version }}', windows_job_text)
 
+  def test_windows_ant_download_retries_verified_mirrors(self):
+    workflow = (
+        REPOSITORY_ROOT / '.github' / 'workflows' / 'build-jcef.yml').read_text(
+            encoding='utf-8')
+    windows_job = re.search(
+        r'^  windows:\n(.*?)(?=^  [a-z][a-z0-9_-]*:\n|\Z)', workflow,
+        re.DOTALL | re.MULTILINE)
+    self.assertIsNotNone(windows_job)
+    ant_step = re.search(
+        r'^      - name: Set up Apache Ant 1\.10\.17\n(.*?)(?=^      - (?:name:|uses:)|\Z)',
+        windows_job.group(1), re.DOTALL | re.MULTILINE)
+    self.assertIsNotNone(ant_step)
+    step_text = ant_step.group(1)
+    self.assertIn('https://downloads.apache.org/ant/binaries/', step_text)
+    self.assertIn('https://archive.apache.org/dist/ant/binaries/', step_text)
+    self.assertIn(
+        'for ($attempt = 1; $attempt -le 3 -and -not $downloaded; $attempt++)',
+        step_text)
+    self.assertIn(
+        'Invoke-WebRequest -Uri $downloadUri -OutFile $antArchive -TimeoutSec 120',
+        step_text)
+    self.assertIn('Get-FileHash -Algorithm SHA512 -Path $antArchive', step_text)
+    self.assertIn('if ($actualHash -ne $expectedHash)', step_text)
+    self.assertIn(
+        'Remove-Item -Path $antArchive -Force -ErrorAction SilentlyContinue',
+        step_text)
+    self.assertIn('Start-Sleep -Seconds (5 * $attempt)', step_text)
+    self.assertLess(
+        step_text.index('Get-FileHash -Algorithm SHA512'),
+        step_text.index('$downloaded = $true'))
+
   def test_every_workflow_architecture_builds_and_runs_native_unit_tests(self):
     workflow = (REPOSITORY_ROOT / '.github' / 'workflows' / 'build-jcef.yml').read_text(encoding='utf-8')
     build_command = 'cmake --build jcef_build --config Release --target mouse_wheel_platform_util_test --parallel 4'

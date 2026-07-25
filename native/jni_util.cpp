@@ -10,6 +10,7 @@
 #include <limits>
 #include <string>
 #include <string_view>
+#include <type_traits>
 
 #include "jni_scoped_helpers.h"
 
@@ -20,6 +21,26 @@ namespace {
 JavaVM* g_jvm = nullptr;
 
 jobject g_javaClassLoader = nullptr;
+
+static_assert(CEF_API_VERSION == 15100,
+              "CEF API changed: re-audit the CefRange Java bridge contract");
+static_assert(sizeof(cef_range_t) == 2 * sizeof(uint32_t),
+              "CEF range ABI changed");
+static_assert(std::is_same_v<decltype(cef_range_t::from), uint32_t> &&
+                  std::is_same_v<decltype(cef_range_t::to), uint32_t>,
+              "CEF range endpoints must remain unsigned 32-bit values");
+static_assert(std::numeric_limits<jlong>::max() >=
+                  std::numeric_limits<uint32_t>::max(),
+              "Java long must represent every CEF range endpoint");
+
+bool DescribeAndClearJNIException(JNIEnv* env) {
+  if (!env || !env->ExceptionCheck())
+    return false;
+
+  env->ExceptionDescribe();
+  env->ExceptionClear();
+  return true;
+}
 
 // NewStringUTF consumes JNI modified UTF-8, not the standard UTF-8 emitted by
 // CEF and Chromium. Keep this converter independent of CEF runtime functions:
@@ -1381,6 +1402,24 @@ jobject NewJNIRect(JNIEnv* env, const CefRect& rect) {
   }
 
   return nullptr;
+}
+
+jobject NewJNICefRange(JNIEnv* env, const CefRange& range) {
+  if (!env || DescribeAndClearJNIException(env))
+    return nullptr;
+
+  ScopedJNIClass cls(env, "org/cef/misc/CefRange");
+  if (DescribeAndClearJNIException(env) || !cls)
+    return nullptr;
+
+  jmethodID constructor = env->GetMethodID(cls, "<init>", "(JJ)V");
+  if (DescribeAndClearJNIException(env) || !constructor)
+    return nullptr;
+
+  ScopedJNIObjectLocal result(env, env->NewObject(cls, constructor, static_cast<jlong>(range.from), static_cast<jlong>(range.to)));
+  if (DescribeAndClearJNIException(env) || !result)
+    return nullptr;
+  return result.Release();
 }
 
 CefRect GetJNIRect(JNIEnv* env, jobject obj) {

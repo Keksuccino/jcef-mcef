@@ -8,6 +8,7 @@ import org.cef.browser.CefBrowser;
 import org.cef.browser.CefPaintEvent;
 import org.cef.callback.CefDragData;
 import org.cef.misc.CefCursorInfo;
+import org.cef.misc.CefRange;
 
 import java.awt.Point;
 import java.awt.Rectangle;
@@ -67,6 +68,24 @@ public interface CefRenderHandler {
      */
     public void onPaint(CefBrowser browser, boolean popup, Rectangle[] dirtyRects,
             ByteBuffer buffer, int width, int height);
+
+    /**
+     * Called synchronously on CEF's UI thread when the IME composition range changes.
+     *
+     * <p>{@code selectedRange} preserves CEF's exact unsigned range direction without
+     * normalization. Its endpoints are UTF-16/text offsets, not Unicode code-point indexes.
+     * {@code characterBounds} contains the corresponding character bounds in view coordinates;
+     * no device-scale conversion is applied.
+     *
+     * <p>The range, array, and every rectangle are detached, Java-owned, non-null snapshots that
+     * remain usable after this callback returns. An empty native bounds list is represented by a
+     * non-null, zero-length {@code Rectangle[]}.
+     *
+     * @param browser The browser generating the event.
+     * @param selectedRange The exact selected composition range.
+     * @param characterBounds The character bounds in view coordinates.
+     */
+    public default void onImeCompositionRangeChanged(CefBrowser browser, CefRange selectedRange, Rectangle[] characterBounds) {}
 
     /**
      * Add provided listener.

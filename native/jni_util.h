@@ -234,6 +234,9 @@ CefSize GetJNISize(JNIEnv* env, jobject obj);
 // Create a new java.awt.Rectangle snapshot from a native rectangle.
 jobject NewJNIRect(JNIEnv* env, const CefRect& rect);
 
+// Create a new org.cef.misc.CefRange snapshot without normalizing its unsigned endpoints.
+jobject NewJNICefRange(JNIEnv* env, const CefRange& range);
+
 // Retrieve the CefRect equivalent of a java.awt.Rectangle.
 CefRect GetJNIRect(JNIEnv* env, jobject obj);
 

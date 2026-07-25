@@ -4,7 +4,10 @@
 
 #include "render_handler.h"
 
+#include <limits>
+
 #include "client_handler.h"
+#include "include/base/cef_logging.h"
 #include "jni_util.h"
 
 namespace {
@@ -84,24 +87,47 @@ bool GetJNIScreenInfo(JNIEnv* env, jobject jScreenInfo, CefScreenInfo& dest) {
   }
 }
 
-// create a new array of java.awt.Rectangle.
+bool DescribeAndClearJNIException(JNIEnv* env) {
+  if (!env || !env->ExceptionCheck())
+    return false;
+
+  env->ExceptionDescribe();
+  env->ExceptionClear();
+  return true;
+}
+
+// Create a detached array of java.awt.Rectangle snapshots. This intentionally
+// corrects the historical null result for empty paint lists because both paint
+// and IME callbacks represent an empty native vector as a non-null Java array.
 jobjectArray NewJNIRectArray(JNIEnv* env, const std::vector<CefRect>& vals) {
-  if (vals.empty())
+  if (!env || DescribeAndClearJNIException(env))
     return nullptr;
 
+  if (vals.size() > static_cast<size_t>(std::numeric_limits<jsize>::max())) {
+    LOG(ERROR) << "CEF rectangle list exceeds the maximum Java array length: "
+               << vals.size();
+    return nullptr;
+  }
+
   ScopedJNIClass cls(env, "java/awt/Rectangle");
-  if (!cls)
+  if (DescribeAndClearJNIException(env) || !cls)
     return nullptr;
 
   const jsize size = static_cast<jsize>(vals.size());
-  jobjectArray arr = env->NewObjectArray(size, cls, nullptr);
+  ScopedJNIObjectLocal arr(env, env->NewObjectArray(size, cls, nullptr));
+  if (DescribeAndClearJNIException(env) || !arr)
+    return nullptr;
 
   for (jsize i = 0; i < size; i++) {
     ScopedJNIObjectLocal rect_obj(env, NewJNIRect(env, vals[i]));
-    env->SetObjectArrayElement(arr, i, rect_obj);
+    if (DescribeAndClearJNIException(env) || !rect_obj)
+      return nullptr;
+    env->SetObjectArrayElement(static_cast<jobjectArray>(arr.get()), i, rect_obj.get());
+    if (DescribeAndClearJNIException(env))
+      return nullptr;
   }
 
-  return arr;
+  return static_cast<jobjectArray>(arr.Release());
 }
 
 // Create a new java.awt.Point.
@@ -240,6 +266,8 @@ void RenderHandler::OnPaint(CefRefPtr<CefBrowser> browser,
   ScopedJNIBrowser jbrowser(env, browser);
   jboolean jtype = type == PET_VIEW ? JNI_FALSE : JNI_TRUE;
   ScopedJNIObjectLocal jrectArray(env, NewJNIRectArray(env, dirtyRects));
+  if (!jrectArray)
+    return;
   ScopedJNIObjectLocal jdirectBuffer(
       env,
       env->NewDirectByteBuffer(const_cast<void*>(buffer), width * height * 4));
@@ -248,6 +276,28 @@ void RenderHandler::OnPaint(CefRefPtr<CefBrowser> browser,
                        "Rectangle;Ljava/nio/ByteBuffer;II)V",
                        jbrowser.get(), jtype, jrectArray.get(),
                        jdirectBuffer.get(), width, height);
+}
+
+void RenderHandler::OnImeCompositionRangeChanged(CefRefPtr<CefBrowser> browser, const CefRange& selected_range, const RectList& character_bounds) {
+  REQUIRE_UI_THREAD();
+
+  ScopedJNIEnv env;
+  if (!env)
+    return;
+
+  ScopedJNIBrowser jbrowser(env, browser);
+  if (!jbrowser)
+    return;
+
+  ScopedJNIObjectLocal jselected_range(env, NewJNICefRange(env, selected_range));
+  if (!jselected_range)
+    return;
+
+  ScopedJNIObjectLocal jcharacter_bounds(env, NewJNIRectArray(env, character_bounds));
+  if (!jcharacter_bounds)
+    return;
+
+  JNI_CALL_VOID_METHOD(env, handle_, "onImeCompositionRangeChanged", "(Lorg/cef/browser/CefBrowser;Lorg/cef/misc/CefRange;[Ljava/awt/Rectangle;)V", jbrowser.get(), jselected_range.get(), jcharacter_bounds.get());
 }
 
 bool RenderHandler::StartDragging(CefRefPtr<CefBrowser> browser,

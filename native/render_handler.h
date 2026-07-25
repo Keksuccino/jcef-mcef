@@ -40,6 +40,7 @@ class RenderHandler : public CefRenderHandler {
                        const void* buffer,
                        int width,
                        int height) override;
+  virtual void OnImeCompositionRangeChanged(CefRefPtr<CefBrowser> browser, const CefRange& selected_range, const RectList& character_bounds) override;
   virtual bool StartDragging(CefRefPtr<CefBrowser> browser,
                              CefRefPtr<CefDragData> drag_data,
                              DragOperationsMask allowed_ops,

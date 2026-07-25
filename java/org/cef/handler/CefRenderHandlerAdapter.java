@@ -8,6 +8,7 @@ import org.cef.browser.CefBrowser;
 import org.cef.browser.CefPaintEvent;
 import org.cef.callback.CefDragData;
 import org.cef.misc.CefCursorInfo;
+import org.cef.misc.CefRange;
 
 import java.awt.Point;
 import java.awt.Rectangle;
@@ -44,6 +45,9 @@ public abstract class CefRenderHandlerAdapter implements CefRenderHandler {
     @Override
     public void onPaint(CefBrowser browser, boolean popup, Rectangle[] dirtyRects,
             ByteBuffer buffer, int width, int height) {}
+
+    @Override
+    public void onImeCompositionRangeChanged(CefBrowser browser, CefRange selectedRange, Rectangle[] characterBounds) {}
 
     @Override
     public void addOnPaintListener(Consumer<CefPaintEvent> listener) {}

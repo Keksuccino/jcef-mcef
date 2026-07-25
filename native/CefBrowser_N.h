@@ -621,6 +621,22 @@ JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1SetAudioMuted
 JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1IsAudioMuted
   (JNIEnv *, jobject, jobject);
 
+/*
+ * Class:     org_cef_browser_CefBrowser_N
+ * Method:    N_IsFullscreen
+ * Signature: (Lorg/cef/browser/CefBrowser_N/IntCallback;)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1IsFullscreen
+  (JNIEnv *, jobject, jobject);
+
+/*
+ * Class:     org_cef_browser_CefBrowser_N
+ * Method:    N_ExitFullscreen
+ * Signature: (Z)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1ExitFullscreen
+  (JNIEnv *, jobject, jboolean);
+
 #ifdef __cplusplus
 }
 #endif

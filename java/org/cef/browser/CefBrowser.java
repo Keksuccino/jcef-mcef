@@ -305,7 +305,7 @@ public interface CefBrowser {
      */
     public default CompletableFuture<Boolean> canZoom(CefZoomCommand command) {
         Objects.requireNonNull(command, "command");
-        return unsupportedZoomFuture("canZoom");
+        return unsupportedBrowserFuture("canZoom");
     }
 
     /**
@@ -334,7 +334,7 @@ public interface CefBrowser {
      *         scheduled
      */
     public default CompletableFuture<Double> getDefaultZoomLevel() {
-        return unsupportedZoomFuture("getDefaultZoomLevel");
+        return unsupportedBrowserFuture("getDefaultZoomLevel");
     }
 
     /**
@@ -377,7 +377,7 @@ public interface CefBrowser {
      */
     public void setZoomLevel(double zoomLevel);
 
-    private static <T> CompletableFuture<T> unsupportedZoomFuture(String method) {
+    private static <T> CompletableFuture<T> unsupportedBrowserFuture(String method) {
         return CompletableFuture.failedFuture(new UnsupportedOperationException(method + " is not supported by this browser"));
     }
 
@@ -541,4 +541,32 @@ public interface CefBrowser {
      *         the native browser is unavailable or the UI-thread query cannot be scheduled
      */
     public CompletableFuture<Boolean> isAudioMuted();
+
+    /**
+     * Returns whether the renderer is currently in browser fullscreen entered through the
+     * JavaScript Fullscreen API. Browser fullscreen is distinct from fullscreen state of the
+     * containing native window.
+     *
+     * <p>The native query runs on the CEF UI thread. Code that drives CEF's external message pump
+     * must not block that pump while waiting for the returned future.
+     *
+     * @return a future containing the current browser-fullscreen state; the future completes
+     *         exceptionally if the browser implementation does not support this operation, the
+     *         native browser is unavailable, or the UI-thread query cannot be scheduled
+     */
+    public default CompletableFuture<Boolean> isFullscreen() {
+        return unsupportedBrowserFuture("isFullscreen");
+    }
+
+    /**
+     * Requests that the renderer exit browser fullscreen.
+     *
+     * @param willCauseResize {@code true} if exiting browser fullscreen will resize the browser
+     *        view
+     * @throws UnsupportedOperationException if this browser implementation does not support
+     *         browser-fullscreen control
+     */
+    public default void exitFullscreen(boolean willCauseResize) {
+        throw new UnsupportedOperationException("exitFullscreen is not supported by this browser");
+    }
 }

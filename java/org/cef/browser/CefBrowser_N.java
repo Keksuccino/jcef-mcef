@@ -1239,6 +1239,23 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
         return executeBooleanQuery("audio mute query", this::N_IsAudioMuted);
     }
 
+    @Override
+    public CompletableFuture<Boolean> isFullscreen() {
+        return executeBooleanQuery("fullscreen query", this::N_IsFullscreen);
+    }
+
+    @Override
+    public void exitFullscreen(boolean willCauseResize) {
+        synchronized (this) {
+            if (!isNativeBrowserAvailable()) return;
+        }
+        try {
+            N_ExitFullscreen(willCauseResize);
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+    }
+
     private CompletableFuture<Boolean> executeBooleanQuery(String operation, IntQueryStarter starter) {
         QueryStarter<Boolean> queryStarter = completion -> {
             IntCallback callback = result -> completeBooleanQuery(operation, completion, result);
@@ -1277,27 +1294,29 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
 
     private <T> CompletableFuture<T> executeQuery(String operation, QueryStarter<T> starter) {
         CefBrowserQueryController.Query<T> query;
-        QueryCompletion<T> completion;
         synchronized (this) {
             query = queryController_.begin(operation, isNativeBrowserAvailable());
-            if (!queryController_.isPending(query)) return query.future();
-            completion = new QueryCompletion<T>(queryController_, query);
-            try {
-                // LifeSpanHandler clears the JNI browser handle only after onBeforeClose returns.
-                // Holding this lifecycle monitor until JNI acquires its CefRef prevents native
-                // dispatch from dereferencing a handle that close has already released.
-                starter.start(completion);
-            } catch (UnsatisfiedLinkError ule) {
-                ule.printStackTrace();
-                completion.fail(ule);
-            } catch (RuntimeException | Error exception) {
-                completion.fail(exception);
-            }
         }
-        // A CEF UI-thread query may invoke its callback during starter.start. Publish that result
-        // only after releasing the lifecycle monitor so user continuations cannot reenter close
-        // while admission is locked.
-        completion.finishAdmission();
+        if (!queryController_.isPending(query)) return query.future();
+
+        QueryCompletion<T> completion = new QueryCompletion<T>(queryController_, query);
+        try {
+            // Native admission repeats the lifecycle check while converting the raw JNI handle to
+            // an owning CefRef. Close may win between the Java and native checks; either close or
+            // the native failure callback then claims the query, and the other terminal path is
+            // ignored by the exact-once controller.
+            starter.start(completion);
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+            completion.fail(ule);
+        } catch (RuntimeException | Error exception) {
+            completion.fail(exception);
+        } finally {
+            // A direct CEF UI-thread query can invoke its callback before JNI returns. Defer
+            // publication until the native stack has unwound so user continuations cannot reenter
+            // browser lifecycle code from inside admission.
+            completion.finishAdmission();
+        }
         return query.future();
     }
 
@@ -1453,4 +1472,6 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     private final native void N_GetWindowlessFrameRate(IntCallback frameRateCallback);
     private final native void N_SetAudioMuted(boolean muted);
     private final native void N_IsAudioMuted(IntCallback callback);
+    private final native void N_IsFullscreen(IntCallback callback);
+    private final native void N_ExitFullscreen(boolean willCauseResize);
 }

@@ -31,6 +31,7 @@ class CefBrowserQueryControllerTest {
     private static final Method COMPLETE = getMethod(CONTROLLER_CLASS, "complete", QUERY_CLASS, Object.class);
     private static final Method FAIL = getMethod(CONTROLLER_CLASS, "fail", QUERY_CLASS, Throwable.class);
     private static final Method PREPARE_COMPLETION = getMethod(CONTROLLER_CLASS, "prepareCompletion", QUERY_CLASS, Object.class);
+    private static final Method PREPARE_FAILURE = getMethod(CONTROLLER_CLASS, "prepareFailure", QUERY_CLASS, Throwable.class);
     private static final Method CLOSE = getMethod(CONTROLLER_CLASS, "close");
     private static final Method PENDING_COUNT = getMethod(CONTROLLER_CLASS, "pendingCountForTesting");
     private static final Method IS_CLOSED = getMethod(CONTROLLER_CLASS, "isClosedForTesting");
@@ -87,6 +88,38 @@ class CefBrowserQueryControllerTest {
 
         assertEquals(23, future(completed).get().intValue());
         assertExceptionalFailure(future(pending));
+        assertEquals(0, pendingCount(controller));
+        assertTrue(isClosed(controller));
+    }
+
+    @Test
+    void nativeFailurePreparedBeforeCloseWinsTheAdmissionRaceExactlyOnce() {
+        Object controller = newController();
+        Object query = begin(controller, "admission query");
+        IllegalStateException nativeFailure = new IllegalStateException("native admission failed");
+
+        Runnable terminalAction = prepareFailure(controller, query, nativeFailure);
+        close(controller);
+        fail(controller, query, new AssertionError("late native failure"));
+        terminalAction.run();
+
+        ExecutionException exception = assertThrows(ExecutionException.class, () -> future(query).get());
+        assertEquals(nativeFailure, exception.getCause());
+        assertEquals(0, pendingCount(controller));
+        assertTrue(isClosed(controller));
+    }
+
+    @Test
+    void closeBetweenJavaAndNativeAdmissionWinsOverTheLateNativeFailure() {
+        Object controller = newController();
+        Object query = begin(controller, "admission query");
+
+        close(controller);
+        fail(controller, query, new IllegalStateException("native admission failed"));
+
+        ExecutionException exception = assertThrows(ExecutionException.class, () -> future(query).get());
+        IllegalStateException failure = assertInstanceOf(IllegalStateException.class, exception.getCause());
+        assertEquals("Browser closed before admission query completed", failure.getMessage());
         assertEquals(0, pendingCount(controller));
         assertTrue(isClosed(controller));
     }
@@ -183,6 +216,10 @@ class CefBrowserQueryControllerTest {
 
     private static Runnable prepareCompletion(Object controller, Object query, Object value) {
         return (Runnable) invoke(PREPARE_COMPLETION, controller, query, value);
+    }
+
+    private static Runnable prepareFailure(Object controller, Object query, Throwable failure) {
+        return (Runnable) invoke(PREPARE_FAILURE, controller, query, failure);
     }
 
     private static void close(Object controller) {

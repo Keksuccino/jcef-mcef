@@ -3432,6 +3432,11 @@ enum class ZoomLevelQuery {
   kCurrent,
 };
 
+enum class BrowserBooleanQuery {
+  kAudioMuted,
+  kFullscreen,
+};
+
 // LifeSpanHandler clears the raw N_CefHandle immediately after Java onBeforeClose returns. Older
 // CefBrowser_N bytecode can call retained JNI entries without the Java admission gate, so every
 // affected native entry must take the same Java lifecycle monitor while checking state and
@@ -3528,10 +3533,9 @@ void startZoomLevelQuery(JNIEnv* env, jobject obj, jobject jdoubleCallback, Zoom
     callback->onComplete(false, 0.0);
 }
 
-// CefBrowserHost::IsAudioMuted is UI-thread-only. Keep the browser and Java
-// callback alive across the posted task, then recheck validity because
-// OnBeforeClose may run before this task does.
-void queryAudioMuted(CefRefPtr<CefBrowser> browser, CefRefPtr<IntCallback> callback) {
+// These CefBrowserHost boolean queries are UI-thread-only. Keep the browser and Java callback
+// alive across the posted task, then recheck validity because OnBeforeClose may run first.
+void queryBrowserBooleanState(CefRefPtr<CefBrowser> browser, BrowserBooleanQuery query, CefRefPtr<IntCallback> callback) {
   REQUIRE_UI_THREAD();
   if (!browser.get() || !browser->IsValid()) {
     callback->onComplete(kBooleanQueryFailed);
@@ -3544,7 +3548,37 @@ void queryAudioMuted(CefRefPtr<CefBrowser> browser, CefRefPtr<IntCallback> callb
     return;
   }
 
-  callback->onComplete(host->IsAudioMuted() ? kBooleanQueryTrue : kBooleanQueryFalse);
+  bool value = false;
+  switch (query) {
+    case BrowserBooleanQuery::kAudioMuted:
+      value = host->IsAudioMuted();
+      break;
+    case BrowserBooleanQuery::kFullscreen:
+      value = host->IsFullscreen();
+      break;
+    default:
+      callback->onComplete(kBooleanQueryFailed);
+      return;
+  }
+  callback->onComplete(value ? kBooleanQueryTrue : kBooleanQueryFalse);
+}
+
+void startBrowserBooleanQuery(JNIEnv* env, jobject jbrowser, jobject jintCallback, BrowserBooleanQuery query) {
+  CefRefPtr<IntCallback> callback = new IntCallback(env, jintCallback);
+  CefRefPtr<CefBrowser> browser = GetLifecycleSafeJNIBrowser(env, jbrowser);
+  if (!browser.get() || !browser->IsValid()) {
+    if (!env->ExceptionCheck())
+      callback->onComplete(kBooleanQueryFailed);
+    return;
+  }
+
+  if (CefCurrentlyOn(TID_UI)) {
+    queryBrowserBooleanState(browser, query, callback);
+    return;
+  }
+
+  if (!CefPostTask(TID_UI, base::BindOnce(queryBrowserBooleanState, browser, query, callback)))
+    callback->onComplete(kBooleanQueryFailed);
 }
 
 void executeDevToolsMethod(CefRefPtr<CefBrowserHost> host,
@@ -4598,19 +4632,19 @@ JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1SetAudioMuted(JNIEn
 }
 
 JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1IsAudioMuted(JNIEnv* env, jobject jbrowser, jobject jintCallback) {
-  CefRefPtr<IntCallback> callback = new IntCallback(env, jintCallback);
+  startBrowserBooleanQuery(env, jbrowser, jintCallback, BrowserBooleanQuery::kAudioMuted);
+}
+
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1IsFullscreen(JNIEnv* env, jobject jbrowser, jobject jintCallback) {
+  startBrowserBooleanQuery(env, jbrowser, jintCallback, BrowserBooleanQuery::kFullscreen);
+}
+
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1ExitFullscreen(JNIEnv* env, jobject jbrowser, jboolean willCauseResize) {
   CefRefPtr<CefBrowser> browser = GetLifecycleSafeJNIBrowser(env, jbrowser);
-  if (!browser.get() || !browser->IsValid()) {
-    if (!env->ExceptionCheck())
-      callback->onComplete(kBooleanQueryFailed);
+  if (!browser.get() || !browser->IsValid())
     return;
-  }
 
-  if (CefCurrentlyOn(TID_UI)) {
-    queryAudioMuted(browser, callback);
-    return;
-  }
-
-  if (!CefPostTask(TID_UI, base::BindOnce(queryAudioMuted, browser, callback)))
-    callback->onComplete(kBooleanQueryFailed);
+  CefRefPtr<CefBrowserHost> host = browser->GetHost();
+  if (host.get())
+    host->ExitFullscreen(willCauseResize != JNI_FALSE);
 }

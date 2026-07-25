@@ -144,7 +144,9 @@ captured_gh_host="${GH_HOST-}"
 unset GH_TOKEN GITHUB_TOKEN GH_HOST
 
 artifact_directory="$2"
-directory_mode="$(stat -f '%Lp' "$artifact_directory")"
+if ! directory_mode="$(stat -f '%Lp' "$artifact_directory" 2>/dev/null)"; then
+  directory_mode="$(stat -c '%a' "$artifact_directory")"
+fi
 artifact_paths=("${artifact_directory}"/*)
 {
   printf 'implementation=HEAD\n'

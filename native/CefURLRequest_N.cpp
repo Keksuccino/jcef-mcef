@@ -14,51 +14,35 @@
 #include "url_request_client.h"
 
 namespace {
-class URLRequest : public CefTask {
+class URLRequestOperation;
+
+class URLRequest : public CefBaseRefCounted {
  public:
-  URLRequest(CefThreadId threadId,
-             CefRefPtr<CefRequest> request,
-             CefRefPtr<URLRequestClient> client)
-      : threadId_(threadId),
-        request_(request),
-        client_(client),
-        waitCond_(&lock_) {}
+  URLRequest(CefThreadId thread_id, CefRefPtr<CefRequest> request, CefRefPtr<URLRequestClient> client) : thread_id_(thread_id), request_(request), client_(client) {}
 
-  bool Create() {
-    if (!urlRequest_)
-      Dispatch(REQ_CREATE);
-    return (urlRequest_.get() != nullptr);
-  }
-
-  CefURLRequest::Status GetRequestStatus() {
-    if (!urlRequest_)
-      return UR_UNKNOWN;
-    Dispatch(REQ_STATUS);
-    return status_;
-  }
-
-  CefURLRequest::ErrorCode GetRequestError() {
-    if (!urlRequest_)
-      return ERR_FAILED;
-    Dispatch(REQ_ERROR);
-    return error_;
-  }
-
-  CefRefPtr<CefResponse> GetResponse() {
-    if (!urlRequest_)
-      return nullptr;
-    Dispatch(REQ_RESPONSE);
-    return response_;
-  }
-
-  void Cancel() {
-    if (!urlRequest_)
-      return;
-    Dispatch(REQ_CANCEL);
-  }
+  bool Create();
+  CefURLRequest::Status GetRequestStatus();
+  CefURLRequest::ErrorCode GetRequestError();
+  CefRefPtr<CefResponse> GetResponse();
+  void Cancel();
 
  private:
-  enum URLRequestMode {
+  friend class URLRequestOperation;
+
+  CefThreadId thread_id_;
+  CefRefPtr<CefRequest> request_;
+  CefRefPtr<URLRequestClient> client_;
+  CefRefPtr<CefURLRequest> url_request_;
+
+  IMPLEMENT_REFCOUNTING(URLRequest);
+};
+
+// A URLRequest can be called concurrently from Java and CEF operations may
+// synchronously reenter Java. Each dispatch therefore owns independent mode,
+// result and wait state, and never holds its completion lock across CEF calls.
+class URLRequestOperation : public CefTask {
+ public:
+  enum Mode {
     REQ_CREATE,
     REQ_STATUS,
     REQ_ERROR,
@@ -66,59 +50,102 @@ class URLRequest : public CefTask {
     REQ_CANCEL,
   };
 
-  CefThreadId threadId_;
-  CefRefPtr<CefRequest> request_;
-  CefRefPtr<URLRequestClient> client_;
+  URLRequestOperation(CefRefPtr<URLRequest> owner, Mode mode) : owner_(owner), mode_(mode), wait_condition_(&completion_lock_) {}
 
-  // sync method calls
-  CriticalLock lock_;
-  CriticalWait waitCond_;
-  URLRequestMode mode_;
-
-  // result values
-  CefRefPtr<CefURLRequest> urlRequest_;
-  CefURLRequest::Status status_;
-  CefURLRequest::ErrorCode error_;
-  CefRefPtr<CefResponse> response_;
-
-  void Dispatch(URLRequestMode mode) {
-    mode_ = mode;
-    if (CefCurrentlyOn(threadId_)) {
+  bool Dispatch(CefThreadId thread_id) {
+    if (CefCurrentlyOn(thread_id)) {
       Execute();
-    } else {
-      lock_.Lock();
-      CefPostTask(threadId_, this);
-      waitCond_.Wait();
-      lock_.Unlock();
+      return true;
     }
+
+    completion_lock_.Lock();
+    if (!CefPostTask(thread_id, this)) {
+      completion_lock_.Unlock();
+      return false;
+    }
+    while (!completed_)
+      wait_condition_.Wait();
+    completion_lock_.Unlock();
+    return true;
   }
 
-  virtual void Execute() override {
-    lock_.Lock();
+  bool created() const { return created_; }
+  CefURLRequest::Status status() const { return status_; }
+  CefURLRequest::ErrorCode error() const { return error_; }
+  CefRefPtr<CefResponse> response() const { return response_; }
+
+  void Execute() override {
     switch (mode_) {
       case REQ_CREATE:
         // TODO(JCEF): Add the ability to specify a CefRequestContext.
-        urlRequest_ = CefURLRequest::Create(request_, client_.get(), nullptr);
+        if (!owner_->url_request_)
+          owner_->url_request_ = CefURLRequest::Create(owner_->request_, owner_->client_.get(), nullptr);
+        created_ = owner_->url_request_.get() != nullptr;
         break;
       case REQ_STATUS:
-        status_ = urlRequest_->GetRequestStatus();
+        if (owner_->url_request_)
+          status_ = owner_->url_request_->GetRequestStatus();
         break;
       case REQ_ERROR:
-        error_ = urlRequest_->GetRequestError();
+        if (owner_->url_request_)
+          error_ = owner_->url_request_->GetRequestError();
         break;
       case REQ_RESPONSE:
-        response_ = urlRequest_->GetResponse();
+        if (owner_->url_request_)
+          response_ = owner_->url_request_->GetResponse();
         break;
       case REQ_CANCEL:
-        urlRequest_->Cancel();
+        // Completion may reenter cancel on TID_UI. Only a pending request can
+        // be canceled, preventing a terminal reentrant cancel from recursing.
+        if (owner_->url_request_ && owner_->url_request_->GetRequestStatus() == UR_IO_PENDING)
+          owner_->url_request_->Cancel();
         break;
     }
-    waitCond_.WakeUp();
-    lock_.Unlock();
+
+    completion_lock_.Lock();
+    completed_ = true;
+    wait_condition_.WakeUp();
+    completion_lock_.Unlock();
   }
 
-  IMPLEMENT_REFCOUNTING(URLRequest);
+ private:
+  CefRefPtr<URLRequest> owner_;
+  const Mode mode_;
+  CriticalLock completion_lock_;
+  CriticalWait wait_condition_;
+  bool completed_ = false;
+  bool created_ = false;
+  CefURLRequest::Status status_ = UR_UNKNOWN;
+  CefURLRequest::ErrorCode error_ = ERR_FAILED;
+  CefRefPtr<CefResponse> response_;
+
+  IMPLEMENT_REFCOUNTING(URLRequestOperation);
 };
+
+bool URLRequest::Create() {
+  CefRefPtr<URLRequestOperation> operation = new URLRequestOperation(this, URLRequestOperation::REQ_CREATE);
+  return operation->Dispatch(thread_id_) && operation->created();
+}
+
+CefURLRequest::Status URLRequest::GetRequestStatus() {
+  CefRefPtr<URLRequestOperation> operation = new URLRequestOperation(this, URLRequestOperation::REQ_STATUS);
+  return operation->Dispatch(thread_id_) ? operation->status() : UR_UNKNOWN;
+}
+
+CefURLRequest::ErrorCode URLRequest::GetRequestError() {
+  CefRefPtr<URLRequestOperation> operation = new URLRequestOperation(this, URLRequestOperation::REQ_ERROR);
+  return operation->Dispatch(thread_id_) ? operation->error() : ERR_FAILED;
+}
+
+CefRefPtr<CefResponse> URLRequest::GetResponse() {
+  CefRefPtr<URLRequestOperation> operation = new URLRequestOperation(this, URLRequestOperation::REQ_RESPONSE);
+  return operation->Dispatch(thread_id_) ? operation->response() : nullptr;
+}
+
+void URLRequest::Cancel() {
+  CefRefPtr<URLRequestOperation> operation = new URLRequestOperation(this, URLRequestOperation::REQ_CANCEL);
+  operation->Dispatch(thread_id_);
+}
 
 const char kCefClassName[] = "CefURLRequest";
 
@@ -133,6 +160,9 @@ Java_org_cef_network_CefURLRequest_1N_N_1Create(JNIEnv* env,
                                                 jobject obj,
                                                 jobject jrequest,
                                                 jobject jRequestClient) {
+  if (!jrequest || !jRequestClient)
+    return;
+
   ScopedJNIRequest requestObj(env);
   requestObj.SetHandle(jrequest, false /* should_delete */);
   CefRefPtr<CefRequest> request = requestObj.GetCefObject();

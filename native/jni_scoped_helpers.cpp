@@ -280,8 +280,15 @@ ScopedJNIObjectGlobal::~ScopedJNIObjectGlobal() {
   if (jhandle_) {
     ScopedJNIEnv env;
     if (env)
-      env->DeleteGlobalRef(jhandle_);
+      Clear(env);
   }
+}
+
+void ScopedJNIObjectGlobal::Clear(JNIEnv* env) {
+  DCHECK(env);
+  if (jhandle_)
+    env->DeleteGlobalRef(jhandle_);
+  jhandle_ = nullptr;
 }
 
 jobject ScopedJNIObjectGlobal::get() const {

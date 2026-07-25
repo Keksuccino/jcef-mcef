@@ -7,8 +7,7 @@
 #pragma once
 
 #include <jni.h>
-#include <deque>
-#include <set>
+#include <mutex>
 
 #include "include/cef_urlrequest.h"
 
@@ -20,34 +19,32 @@ class URLRequestClient : public CefURLRequestClient {
   URLRequestClient(JNIEnv* env, jobject jURLRequestClient, jobject jURLRequest);
 
  public:
-  static CefRefPtr<URLRequestClient> Create(JNIEnv* env,
-                                            jobject jRequestClient,
-                                            jobject jURLRequest);
-  virtual ~URLRequestClient();
+  static CefRefPtr<URLRequestClient> Create(JNIEnv* env, jobject jRequestClient, jobject jURLRequest);
+  virtual ~URLRequestClient() = default;
 
   // CefURLRequestClient methods
   virtual void OnRequestComplete(CefRefPtr<CefURLRequest> request) override;
 
-  virtual void OnUploadProgress(CefRefPtr<CefURLRequest> request,
-                                int64_t current,
-                                int64_t total) override;
+  virtual void OnUploadProgress(CefRefPtr<CefURLRequest> request, int64_t current, int64_t total) override;
 
-  virtual void OnDownloadProgress(CefRefPtr<CefURLRequest> request,
-                                  int64_t current,
-                                  int64_t total) override;
+  virtual void OnDownloadProgress(CefRefPtr<CefURLRequest> request, int64_t current, int64_t total) override;
 
-  virtual void OnDownloadData(CefRefPtr<CefURLRequest> request,
-                              const void* data,
-                              size_t data_length) override;
+  virtual void OnDownloadData(CefRefPtr<CefURLRequest> request, const void* data, size_t data_length) override;
 
-  virtual bool GetAuthCredentials(bool isProxy,
-                                  const CefString& host,
-                                  int port,
-                                  const CefString& realm,
-                                  const CefString& scheme,
-                                  CefRefPtr<CefAuthCallback> callback) override;
+  virtual bool GetAuthCredentials(bool isProxy, const CefString& host, int port, const CefString& realm, const CefString& scheme, CefRefPtr<CefAuthCallback> callback) override;
 
- protected:
+ private:
+  bool CreateLocalRefsLocked(JNIEnv* env, jobject* jURLRequestClient, jobject* jURLRequest);
+  bool SnapshotJavaHandles(JNIEnv* env, jobject* jURLRequestClient, jobject* jURLRequest);
+  bool CompleteJavaHandles(JNIEnv* env, jobject* jURLRequestClient, jobject* jURLRequest);
+
+  // CEF may post GetAuthCredentials to IO with a copied client reference while
+  // completion runs on UI. This mutex serializes the terminal transition with
+  // JNI global-to-local snapshots but is never held while calling Java.
+  // Keep it declared before every guarded field so reverse destruction keeps
+  // the mutex alive until both globals have been destroyed.
+  std::mutex java_handles_lock_;
+  bool completed_ = false;
   ScopedJNIObjectGlobal client_handle_;
   ScopedJNIObjectGlobal request_handle_;
 

@@ -498,6 +498,11 @@ class ScopedJNIObjectGlobal {
   ScopedJNIObjectGlobal(JNIEnv* env, jobject handle);
   ~ScopedJNIObjectGlobal();
 
+  // Releases the current global reference on the supplied JNI thread before
+  // this wrapper is destroyed. Repeated calls require externally serialized
+  // access because this wrapper does not provide its own synchronization.
+  void Clear(JNIEnv* env);
+
   // Explicit return.
   jobject get() const;
 

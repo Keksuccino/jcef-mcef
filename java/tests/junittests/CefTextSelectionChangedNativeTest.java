@@ -72,6 +72,15 @@ class CefTextSelectionChangedNativeTest {
                         SelectionBrowser selectionBrowser = (SelectionBrowser) browser;
                         if (PAGE_READY_TITLE.equals(title)) {
                             selectionBrowser.markPageReady();
+                            FocusTransfer transfer = focusTransfer.get();
+                            if (transfer != null) {
+                                transfer.onPageReady(selectionBrowser);
+                            } else {
+                                AssertionError failure = new AssertionError("Renderer acknowledged a text-selection page before the focus-transfer controller was installed");
+                                selectionBrowser.fail(failure);
+                                SelectionBrowser second = secondBrowser.get();
+                                if (second != null) second.fail(failure);
+                            }
                         } else if (FOCUS_RELEASED_TITLE.equals(title)) {
                             FocusTransfer transfer = focusTransfer.get();
                             if (transfer != null) {
@@ -82,8 +91,10 @@ class CefTextSelectionChangedNativeTest {
                                 SelectionBrowser second = secondBrowser.get();
                                 if (second != null) second.fail(failure);
                             }
-                        } else if (SELECTION_CLICK_READY_TITLE.equals(title) || COLLAPSE_CLICK_READY_TITLE.equals(title)) {
-                            selectionBrowser.clickInput();
+                        } else if (SELECTION_CLICK_READY_TITLE.equals(title)) {
+                            selectionBrowser.enqueueSelectionClick();
+                        } else if (COLLAPSE_CLICK_READY_TITLE.equals(title)) {
+                            selectionBrowser.enqueueCollapseClick();
                         }
                     }
                 };
@@ -97,7 +108,6 @@ class CefTextSelectionChangedNativeTest {
                 FocusTransfer transfer = new FocusTransfer(first, second);
                 focusTransfer.set(transfer);
                 first.setAfterCollapse(transfer::begin);
-                first.requestSelectionWhenReady();
                 browser_.createImmediately();
                 second.createImmediately();
                 super.setupTest();
@@ -241,6 +251,9 @@ class CefTextSelectionChangedNativeTest {
     private static final class FocusTransfer {
         private final SelectionBrowser first_;
         private final SelectionBrowser second_;
+        private final AtomicBoolean firstPageReady_ = new AtomicBoolean();
+        private final AtomicBoolean secondPageReady_ = new AtomicBoolean();
+        private final AtomicBoolean initialSelectionRequested_ = new AtomicBoolean();
         private final AtomicBoolean blurQueued_ = new AtomicBoolean();
         private final AtomicBoolean blurDispatched_ = new AtomicBoolean();
         private final AtomicBoolean rendererBlurConfirmed_ = new AtomicBoolean();
@@ -250,6 +263,22 @@ class CefTextSelectionChangedNativeTest {
         FocusTransfer(SelectionBrowser first, SelectionBrowser second) {
             first_ = first;
             second_ = second;
+        }
+
+        void onPageReady(SelectionBrowser browser) {
+            if (browser == first_) {
+                firstPageReady_.set(true);
+            } else if (browser == second_) {
+                secondPageReady_.set(true);
+            } else {
+                fail(new AssertionError("Text-selection readiness was reported by an unknown browser"));
+                return;
+            }
+            if (!firstPageReady_.get() || !secondPageReady_.get() || !initialSelectionRequested_.compareAndSet(false, true)) return;
+            // Every OSR initial navigation requests focus. Wait until both renderer documents have
+            // acknowledged readiness, then explicitly release the second browser immediately
+            // before focusing the first so late navigation focus cannot steal the first click.
+            first_.requestSelectionWhenReady(() -> second_.setFocus(false));
         }
 
         void begin() {
@@ -279,7 +308,7 @@ class CefTextSelectionChangedNativeTest {
         }
 
         String diagnostics() {
-            return "{blurQueued=" + blurQueued_.get() + ", blurDispatched=" + blurDispatched_.get() + ", rendererBlurConfirmed=" + rendererBlurConfirmed_.get() + ", secondSelectionQueued=" + secondSelectionQueued_.get() + ", secondSelectionDispatched=" + secondSelectionDispatched_.get() + "}";
+            return "{firstPageReady=" + firstPageReady_.get() + ", secondPageReady=" + secondPageReady_.get() + ", initialSelectionRequested=" + initialSelectionRequested_.get() + ", blurQueued=" + blurQueued_.get() + ", blurDispatched=" + blurDispatched_.get() + ", rendererBlurConfirmed=" + rendererBlurConfirmed_.get() + ", secondSelectionQueued=" + secondSelectionQueued_.get() + ", secondSelectionDispatched=" + secondSelectionDispatched_.get() + "}";
         }
 
         private void dispatchBlur() {
@@ -314,8 +343,14 @@ class CefTextSelectionChangedNativeTest {
         private final CompletableFuture<CallbackSnapshot> collapse_;
         private final AtomicBoolean pageReady_ = new AtomicBoolean();
         private final AtomicBoolean startRequested_ = new AtomicBoolean();
-        private final AtomicBoolean selectionRequested_ = new AtomicBoolean();
+        private final AtomicBoolean selectionStartQueued_ = new AtomicBoolean();
+        private final AtomicBoolean selectionStartDispatched_ = new AtomicBoolean();
+        private final AtomicBoolean selectionClickQueued_ = new AtomicBoolean();
+        private final AtomicBoolean selectionClickDispatched_ = new AtomicBoolean();
         private final AtomicBoolean collapseRequested_ = new AtomicBoolean();
+        private final AtomicBoolean collapseClickQueued_ = new AtomicBoolean();
+        private final AtomicBoolean collapseClickDispatched_ = new AtomicBoolean();
+        private final AtomicReference<Runnable> beforeSelectionStart_ = new AtomicReference<Runnable>();
         private volatile Runnable afterCollapse_ = () -> {};
 
         SelectionBrowser(CefClient client, String url, CompletableFuture<CallbackSnapshot> selection, CompletableFuture<CallbackSnapshot> collapse) {
@@ -328,19 +363,32 @@ class CefTextSelectionChangedNativeTest {
 
         void markPageReady() {
             pageReady_.set(true);
-            maybeRequestSelection();
+            maybeEnqueueSelectionStart();
         }
 
         void requestSelectionWhenReady() {
+            requestSelectionWhenReady(() -> {});
+        }
+
+        void requestSelectionWhenReady(Runnable beforeSelectionStart) {
+            if (!beforeSelectionStart_.compareAndSet(null, beforeSelectionStart)) return;
             startRequested_.set(true);
-            maybeRequestSelection();
+            maybeEnqueueSelectionStart();
         }
 
         void setAfterCollapse(Runnable afterCollapse) {
             afterCollapse_ = afterCollapse;
         }
 
-        void clickInput() {
+        void enqueueSelectionClick() {
+            enqueueClickInput(selectionClickQueued_, selectionClickDispatched_);
+        }
+
+        void enqueueCollapseClick() {
+            enqueueClickInput(collapseClickQueued_, collapseClickDispatched_);
+        }
+
+        private void clickInput() {
             // CefMouseEvent mirrors GLFW here: action 1 presses, action 0 releases, and button 0 is
             // the left button. Keep the ordered pair because CEF 151 publishes this programmatic
             // textarea selection through its OSR user-input update path.
@@ -348,13 +396,46 @@ class CefTextSelectionChangedNativeTest {
             sendMouseEvent(new CefMouseEvent(0, 40, 40, 1, 0, 0));
         }
 
-        private void maybeRequestSelection() {
+        private void maybeEnqueueSelectionStart() {
             if (!pageReady_.get() || !startRequested_.get()
-                    || !selectionRequested_.compareAndSet(false, true))
+                    || !selectionStartQueued_.compareAndSet(false, true))
                 return;
+            // The first page-ready edge is delivered by OnTitleChange on CEF's UI thread. Always
+            // return from that native callback before crossing back through SetFocus and renderer
+            // JavaScript dispatch. The same hop also keeps the second browser's path identical.
+            enqueue(this::dispatchSelectionStart);
+        }
+
+        private void dispatchSelectionStart() {
             try {
+                selectionStartDispatched_.set(true);
+                beforeSelectionStart_.get().run();
                 setFocus(true);
                 execute(this, "window.beginTextSelection();");
+            } catch (Throwable failure) {
+                fail(failure);
+            }
+        }
+
+        private void enqueueClickInput(AtomicBoolean queued, AtomicBoolean dispatched) {
+            if (!queued.compareAndSet(false, true)) return;
+            // A ready title proves that Blink reached the expected focus/selection phase, but its
+            // OnTitleChange callback must still unwind before browser-process input is injected.
+            enqueue(() -> dispatchClickInput(dispatched));
+        }
+
+        private void dispatchClickInput(AtomicBoolean dispatched) {
+            try {
+                clickInput();
+                dispatched.set(true);
+            } catch (Throwable failure) {
+                fail(failure);
+            }
+        }
+
+        private void enqueue(Runnable operation) {
+            try {
+                SwingUtilities.invokeLater(operation);
             } catch (Throwable failure) {
                 fail(failure);
             }
@@ -366,12 +447,12 @@ class CefTextSelectionChangedNativeTest {
         }
 
         String diagnostics() {
-            return "{url=" + url_ + ", pageReady=" + pageReady_.get() + ", startRequested=" + startRequested_.get() + ", selectionRequested=" + selectionRequested_.get() + ", collapseRequested=" + collapseRequested_.get() + ", selectionDone=" + selection_.isDone() + ", collapseDone=" + collapse_.isDone() + "}";
+            return "{url=" + url_ + ", pageReady=" + pageReady_.get() + ", startRequested=" + startRequested_.get() + ", selectionStartQueued=" + selectionStartQueued_.get() + ", selectionStartDispatched=" + selectionStartDispatched_.get() + ", selectionClickQueued=" + selectionClickQueued_.get() + ", selectionClickDispatched=" + selectionClickDispatched_.get() + ", collapseRequested=" + collapseRequested_.get() + ", collapseClickQueued=" + collapseClickQueued_.get() + ", collapseClickDispatched=" + collapseClickDispatched_.get() + ", selectionDone=" + selection_.isDone() + ", collapseDone=" + collapse_.isDone() + "}";
         }
 
         @Override
         public void onTextSelectionChanged(CefBrowser browser, String selectedText, CefRange selectedRange) {
-            if (!selectionRequested_.get()) return;
+            if (!selectionStartDispatched_.get()) return;
             try {
                 if (browser != this) throw new AssertionError("Text-selection callback crossed browser-specific render handlers");
                 if (selectedText == null || selectedRange == null) throw new AssertionError("Text-selection snapshots must be non-null");

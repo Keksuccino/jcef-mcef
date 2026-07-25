@@ -31,6 +31,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
+import javax.swing.SwingUtilities;
+
 @NativeCefTest
 class CefTouchEventNativeTest {
     private static final int VIEW_WIDTH = 320;
@@ -53,11 +55,20 @@ class CefTouchEventNativeTest {
         AtomicBoolean delivered = new AtomicBoolean();
         AtomicBoolean firstPaint = new AtomicBoolean();
         AtomicBoolean focusReady = new AtomicBoolean();
-        AtomicBoolean inputProbeStarted = new AtomicBoolean();
+        AtomicBoolean focusSetupQueued = new AtomicBoolean();
+        AtomicBoolean focusSetupDispatched = new AtomicBoolean();
+        AtomicBoolean inputProbeQueued = new AtomicBoolean();
+        AtomicBoolean inputProbeDispatched = new AtomicBoolean();
+        AtomicBoolean touchPressQueued = new AtomicBoolean();
+        AtomicBoolean touchPressDispatched = new AtomicBoolean();
+        AtomicBoolean touchMoveQueued = new AtomicBoolean();
+        AtomicBoolean touchMoveDispatched = new AtomicBoolean();
+        AtomicBoolean touchReleaseQueued = new AtomicBoolean();
+        AtomicBoolean touchReleaseDispatched = new AtomicBoolean();
         CountDownLatch inputProbeFinished = new CountDownLatch(1);
         CountDownLatch touchWorkersFinished = new CountDownLatch(3);
         Supplier<TestFrame> frameFactory = () -> new TestFrame() {
-            private Phase phase_ = Phase.READY;
+            private volatile Phase phase_ = Phase.READY;
             private String processedTitle_ = "";
 
             @Override
@@ -71,9 +82,8 @@ class CefTouchEventNativeTest {
                         try {
                             handleTitle(browser, title);
                         } catch (Throwable throwable) {
-                            failure.compareAndSet(null, throwable);
                             phase_ = Phase.COMPLETE;
-                            terminateTest();
+                            recordFailure(throwable);
                         }
                     }
                 });
@@ -97,32 +107,30 @@ class CefTouchEventNativeTest {
                     case READY:
                         assertEquals("jcef-touch:ready", title);
                         phase_ = Phase.FOCUS_READY;
-                        browser.setFocus(true);
-                        awaitRendererFocus(browser);
+                        enqueueFocusSetup(browser);
                         break;
                     case FOCUS_READY:
                         assertEquals("jcef-touch:focus-ready:320:200:target", title);
                         phase_ = Phase.INPUT_READY;
                         focusReady.set(true);
-                        maybeStartInputProbe(browser);
+                        maybeEnqueueInputProbe(browser);
                         break;
                     case INPUT_READY:
                         assertEquals("jcef-touch:input-ready:20:20", title);
                         assertTrue(firstPaint.get());
                         assertTrue(browser.isWindowRenderingDisabled());
-                        assertNativeValidation(browser);
                         phase_ = Phase.DOWN;
-                        sendTouchFromWorker(browser, new CefTouchEvent(TOUCH_ID, 80.0f, 70.0f, 3.0f, 4.0f, 0.25f, 0.35f, CefTouchEventType.PRESSED, EventFlags.EVENTFLAG_SHIFT_DOWN, CefPointerType.PEN), "jcef-touch-press-worker");
+                        enqueueWorker("jcef-touch-press-worker", touchPressQueued, touchPressDispatched, touchWorkersFinished, () -> sendValidatedTouchPress(browser));
                         break;
                     case DOWN:
                         assertEquals("jcef-touch:down:pen:0.350:80:70:shift:touchstart:1:3.000:4.000:14.324", title);
                         phase_ = Phase.MOVE;
-                        sendTouchFromWorker(browser, new CefTouchEvent(TOUCH_ID, 105.0f, 90.0f, 5.0f, 6.0f, 0.5f, 0.75f, CefTouchEventType.MOVED, EventFlags.EVENTFLAG_SHIFT_DOWN, CefPointerType.PEN), "jcef-touch-move-worker");
+                        enqueueWorker("jcef-touch-move-worker", touchMoveQueued, touchMoveDispatched, touchWorkersFinished, () -> browser.sendTouchEvent(new CefTouchEvent(TOUCH_ID, 105.0f, 90.0f, 5.0f, 6.0f, 0.5f, 0.75f, CefTouchEventType.MOVED, EventFlags.EVENTFLAG_SHIFT_DOWN, CefPointerType.PEN)));
                         break;
                     case MOVE:
                         assertEquals("jcef-touch:move:pen:0.750:105:90:shift", title);
                         phase_ = Phase.UP;
-                        sendTouchFromWorker(browser, new CefTouchEvent(TOUCH_ID, 105.0f, 90.0f, 5.0f, 6.0f, 0.5f, 0.0f, CefTouchEventType.RELEASED, EventFlags.EVENTFLAG_SHIFT_DOWN, CefPointerType.PEN), "jcef-touch-release-worker");
+                        enqueueWorker("jcef-touch-release-worker", touchReleaseQueued, touchReleaseDispatched, touchWorkersFinished, () -> browser.sendTouchEvent(new CefTouchEvent(TOUCH_ID, 105.0f, 90.0f, 5.0f, 6.0f, 0.5f, 0.0f, CefTouchEventType.RELEASED, EventFlags.EVENTFLAG_SHIFT_DOWN, CefPointerType.PEN)));
                         break;
                     case UP:
                         assertEquals("jcef-touch:up:pen:105:90:shift", title);
@@ -137,24 +145,27 @@ class CefTouchEventNativeTest {
 
             private void markPainted(CefBrowser browser) {
                 firstPaint.set(true);
-                maybeStartInputProbe(browser);
+                maybeEnqueueInputProbe(browser);
             }
 
-            private void maybeStartInputProbe(CefBrowser browser) {
-                if (!firstPaint.get() || !focusReady.get() || !inputProbeStarted.compareAndSet(false, true)) return;
-                Runnable operation = () -> {
-                    try {
-                        ((TouchBrowser) browser).sendInputProbe();
-                    } catch (Throwable throwable) {
-                        failure.compareAndSet(null, throwable);
-                        terminateTest();
-                    } finally {
-                        inputProbeFinished.countDown();
-                    }
-                };
-                Thread worker = new Thread(operation, "jcef-touch-input-probe-worker");
-                worker.setDaemon(true);
-                worker.start();
+            private void enqueueFocusSetup(CefBrowser browser) {
+                if (!focusSetupQueued.compareAndSet(false, true)) return;
+                enqueueAfterNativeCallback(() -> dispatchFocusSetup(browser));
+            }
+
+            private void dispatchFocusSetup(CefBrowser browser) {
+                try {
+                    focusSetupDispatched.set(true);
+                    browser.setFocus(true);
+                    awaitRendererFocus(browser);
+                } catch (Throwable throwable) {
+                    recordFailure(throwable);
+                }
+            }
+
+            private void maybeEnqueueInputProbe(CefBrowser browser) {
+                if (!firstPaint.get() || !focusReady.get()) return;
+                enqueueWorker("jcef-touch-input-probe-worker", inputProbeQueued, inputProbeDispatched, inputProbeFinished, () -> ((TouchBrowser) browser).sendInputProbe());
             }
 
             private void awaitRendererFocus(CefBrowser browser) {
@@ -167,25 +178,58 @@ class CefTouchEventNativeTest {
                 }
             }
 
-            private void sendTouchFromWorker(CefBrowser browser, CefTouchEvent event, String workerName) {
-                Runnable operation = () -> {
+            private void sendValidatedTouchPress(CefBrowser browser) {
+                assertNativeValidation(browser);
+                browser.sendTouchEvent(new CefTouchEvent(TOUCH_ID, 80.0f, 70.0f, 3.0f, 4.0f, 0.25f, 0.35f, CefTouchEventType.PRESSED, EventFlags.EVENTFLAG_SHIFT_DOWN, CefPointerType.PEN));
+            }
+
+            private void enqueueWorker(String workerName, AtomicBoolean queued, AtomicBoolean dispatched, CountDownLatch finished, Runnable operation) {
+                if (!queued.compareAndSet(false, true)) return;
+                // Title notifications run inside CEF's EDT-driven message-loop callback. Starting
+                // a worker there is not an unwind barrier because the new thread may enter JNI
+                // immediately. A later EDT turn guarantees that the display callback has returned;
+                // paint callbacks use the same path only to coordinate the readiness gate.
+                enqueueAfterNativeCallback(() -> startWorker(workerName, dispatched, finished, operation));
+            }
+
+            private void startWorker(String workerName, AtomicBoolean dispatched, CountDownLatch finished, Runnable operation) {
+                Runnable workerOperation = () -> {
                     try {
-                        browser.sendTouchEvent(event);
+                        dispatched.set(true);
+                        operation.run();
                     } catch (Throwable throwable) {
-                        failure.compareAndSet(null, throwable);
-                        terminateTest();
+                        recordFailure(throwable);
                     } finally {
-                        touchWorkersFinished.countDown();
+                        finished.countDown();
                     }
                 };
-                Thread worker = new Thread(operation, workerName);
-                worker.setDaemon(true);
-                worker.start();
+                try {
+                    Thread worker = new Thread(workerOperation, workerName);
+                    worker.setDaemon(true);
+                    worker.start();
+                } catch (Throwable throwable) {
+                    finished.countDown();
+                    recordFailure(throwable);
+                }
+            }
+
+            private void enqueueAfterNativeCallback(Runnable operation) {
+                try {
+                    SwingUtilities.invokeLater(operation);
+                } catch (Throwable throwable) {
+                    recordFailure(throwable);
+                }
+            }
+
+            private void recordFailure(Throwable throwable) {
+                failure.compareAndSet(null, throwable);
+                phase_ = Phase.COMPLETE;
+                terminateTest();
             }
         };
         TestFrame frame = TestFrame.createOnEventDispatchThread(frameFactory);
 
-        awaitFrameAndAlwaysTerminate(frame, () -> "title=" + lastTitle.get() + ", paint=" + firstPaint.get() + ", focus=" + focusReady.get() + ", inputProbe=" + inputProbeStarted.get() + ", eventWorkersRemaining=" + touchWorkersFinished.getCount());
+        awaitFrameAndAlwaysTerminate(frame, () -> "title=" + lastTitle.get() + ", paint=" + firstPaint.get() + ", focusSetupQueued=" + focusSetupQueued.get() + ", focusSetupDispatched=" + focusSetupDispatched.get() + ", rendererFocusConfirmed=" + focusReady.get() + ", inputProbeQueued=" + inputProbeQueued.get() + ", inputProbeDispatched=" + inputProbeDispatched.get() + ", inputProbeFinished=" + (inputProbeFinished.getCount() == 0) + ", touchPressQueued=" + touchPressQueued.get() + ", touchPressDispatched=" + touchPressDispatched.get() + ", touchMoveQueued=" + touchMoveQueued.get() + ", touchMoveDispatched=" + touchMoveDispatched.get() + ", touchReleaseQueued=" + touchReleaseQueued.get() + ", touchReleaseDispatched=" + touchReleaseDispatched.get() + ", eventWorkersRemaining=" + touchWorkersFinished.getCount());
         assertNull(failure.get(), () -> "OSR touch flow failed at title " + lastTitle.get() + ": " + failure.get());
         assertTrue(await(inputProbeFinished), "Touch input-route probe worker did not finish");
         assertTrue(await(touchWorkersFinished), "Touch event workers did not finish");

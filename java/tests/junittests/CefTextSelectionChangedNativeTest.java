@@ -28,6 +28,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
+import javax.swing.SwingUtilities;
+
 @NativeCefTest
 class CefTextSelectionChangedNativeTest {
     private static final long FUTURE_TIMEOUT_SECONDS = 15;
@@ -78,7 +80,7 @@ class CefTextSelectionChangedNativeTest {
                 browser_ = new SelectionBrowser(client_, FIRST_URL, firstSelection, firstCollapse);
                 SelectionBrowser second = new SelectionBrowser(client_, SECOND_URL, secondSelection, secondCollapse);
                 SelectionBrowser first = (SelectionBrowser) browser_;
-                first.setAfterCollapse(second::requestSelectionWhenReady);
+                first.setAfterCollapse(() -> enqueueFocusTransfer(first, second));
                 secondBrowser.set(second);
                 first.requestSelectionWhenReady();
                 browser_.createImmediately();
@@ -162,6 +164,32 @@ class CefTextSelectionChangedNativeTest {
         if (current == null) return addition;
         current.addSuppressed(addition);
         return current;
+    }
+
+    private static void enqueueFocusTransfer(SelectionBrowser first, SelectionBrowser second) {
+        try {
+            // OnTextSelectionChanged is a native callback on CEF's UI thread. Defer both sides of
+            // the browser focus handoff until that callback has returned instead of reentering CEF
+            // from the first browser's collapsed-selection notification.
+            SwingUtilities.invokeLater(() -> transferFocus(first, second));
+        } catch (Throwable failure) {
+            failFocusTransfer(first, second, failure);
+        }
+    }
+
+    private static void transferFocus(SelectionBrowser first, SelectionBrowser second) {
+        try {
+            first.setFocus(false);
+            second.requestSelectionWhenReady();
+        } catch (Throwable failure) {
+            failFocusTransfer(first, second, failure);
+        }
+    }
+
+    private static void failFocusTransfer(SelectionBrowser first, SelectionBrowser second, Throwable failure) {
+        AssertionError handoffFailure = new AssertionError("Unable to transfer OSR focus between text-selection browsers", failure);
+        first.fail(handoffFailure);
+        second.fail(handoffFailure);
     }
 
     private static void rethrow(Throwable failure) throws Exception {

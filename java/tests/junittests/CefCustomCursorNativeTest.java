@@ -33,10 +33,14 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
+import javax.swing.SwingUtilities;
+
 @NativeCefTest
 class CefCustomCursorNativeTest {
     private static final String TEST_URL = "http://custom-cursor.test/index.html";
     private static final String READY_TITLE = "jcef-custom-cursor:ready";
+    private static final String PRIME_MOVE_TITLE = "jcef-custom-cursor:prime-move";
+    private static final String PROBE_MOVE_TITLE = "jcef-custom-cursor:probe-move";
     private static final String FAILURE_TITLE_PREFIX = "jcef-custom-cursor:failure:";
     private static final String CURSOR_PNG_BASE64 =
             "iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAYAAAC09K7GAAAANklEQVR4nA3IoQEAIAgAQbOZrKAbMARDMAmZxV8v3piycNmkKC3GmLHxUDKMjvOjFC8j69B1ec5sFAtra6Z8AAAAAElFTkSuQmCC";
@@ -46,10 +50,12 @@ class CefCustomCursorNativeTest {
     private static final String SENTINEL_CSS = "rgb(" + SENTINEL_RED + "," + SENTINEL_GREEN + "," + SENTINEL_BLUE + ")";
     private static final long SENTINEL_BGRA = SENTINEL_BLUE | (long) SENTINEL_GREEN << 8 | (long) SENTINEL_RED << 16 | 0xFFL << 24;
     private static final int VIEW_SIZE = 64;
+    private static final int PRIME_X = 8;
+    private static final int PRIME_Y = 48;
     private static final int PROBE_X = 48;
     private static final int PROBE_Y = 48;
     private static final int SENTINEL_SAMPLE_INSET = 8;
-    private static final String TEST_CONTENT = "<!doctype html><html><head><meta charset='utf-8'><style>html,body{margin:0;width:100%;height:100%;background:rgb(1,2,3);cursor:auto}</style></head><body>custom cursor<script>(()=>{" + "const cursorUrl=\"data:image/png;base64," + CURSOR_PNG_BASE64 + "\";" + "const signalFailure=error=>{document.title='" + FAILURE_TITLE_PREFIX + "'+(error&&error.message?error.message:String(error));};" + "const cursorImage=new Image();cursorImage.src=cursorUrl;cursorImage.decode().then(()=>{" + "const cursorValue=\"url('\"+cursorUrl+\"') 2 1, auto\";" + "document.documentElement.style.cursor=cursorValue;document.body.style.cursor=cursorValue;" + "document.documentElement.style.backgroundColor='" + SENTINEL_CSS + "';document.body.style.backgroundColor='" + SENTINEL_CSS + "';" + "requestAnimationFrame(()=>requestAnimationFrame(()=>{document.title='" + READY_TITLE + "';}));" + "}).catch(signalFailure);})();</script></body></html>";
+    private static final String TEST_CONTENT = "<!doctype html><html><head><meta charset='utf-8'><style>html,body{margin:0;width:100%;height:100%;background:rgb(1,2,3);cursor:auto}</style></head><body>custom cursor<script>(()=>{" + "const cursorUrl=\"data:image/png;base64," + CURSOR_PNG_BASE64 + "\";" + "const signalFailure=error=>{document.title='" + FAILURE_TITLE_PREFIX + "'+(error&&error.message?error.message:String(error));};" + "window.addEventListener('mousemove',event=>{if(!event.isTrusted)return;if(event.clientX===" + PRIME_X + "&&event.clientY===" + PRIME_Y + ")document.title='" + PRIME_MOVE_TITLE + "';else if(event.clientX===" + PROBE_X + "&&event.clientY===" + PROBE_Y + ")document.title='" + PROBE_MOVE_TITLE + "';});" + "const cursorImage=new Image();cursorImage.src=cursorUrl;cursorImage.decode().then(()=>{" + "const cursorValue=\"url('\"+cursorUrl+\"') 2 1, auto\";" + "document.documentElement.style.cursor=cursorValue;document.body.style.cursor=cursorValue;" + "document.documentElement.style.backgroundColor='" + SENTINEL_CSS + "';document.body.style.backgroundColor='" + SENTINEL_CSS + "';" + "requestAnimationFrame(()=>requestAnimationFrame(()=>{document.title='" + READY_TITLE + "';}));" + "}).catch(signalFailure);})();</script></body></html>";
     private static final byte[] EXPECTED_BGRA = {30, 20, 10, (byte) 255, 31, 20, 50, (byte) 255, 32,
             20, 90, (byte) 255, 33, 20, (byte) 130, (byte) 255, 31, 70, 10, (byte) 255, 32, 70, 50,
             (byte) 255, 33, 70, 90, (byte) 255, 34, 70, (byte) 130, (byte) 255, 32, 120, 10,
@@ -63,6 +69,9 @@ class CefCustomCursorNativeTest {
         AtomicInteger rawCursorType = new AtomicInteger(-1);
         AtomicBoolean rendererReady = new AtomicBoolean();
         AtomicBoolean inputStarted = new AtomicBoolean();
+        AtomicBoolean primeMoveAcknowledged = new AtomicBoolean();
+        AtomicBoolean probeMoveQueued = new AtomicBoolean();
+        AtomicBoolean probeMoveAcknowledged = new AtomicBoolean();
         AtomicBoolean inputCompleted = new AtomicBoolean();
         AtomicBoolean completionRequested = new AtomicBoolean();
         CursorDiagnostics diagnostics = new CursorDiagnostics();
@@ -73,6 +82,53 @@ class CefCustomCursorNativeTest {
                     diagnostics.recordStage("completion requested after input and custom cursor");
                     terminateTest();
                 }
+            }
+
+            private void enqueuePrimeMove(CursorProbeBrowser browser) {
+                if (!inputStarted.compareAndSet(false, true)) return;
+                try {
+                    // OnPaint is a native render callback. Hand input back to a later EDT turn so
+                    // CEF can finish releasing the frame before JNI reenters browser input.
+                    SwingUtilities.invokeLater(() -> dispatchPrimeMove(browser));
+                    diagnostics.recordStage("prime MOUSE_MOVED queued after sentinel paint");
+                } catch (Throwable throwable) {
+                    failInput("prime MOUSE_MOVED enqueue threw ", throwable);
+                }
+            }
+
+            private void dispatchPrimeMove(CursorProbeBrowser browser) {
+                try {
+                    browser.moveMouse(PRIME_X, PRIME_Y);
+                    diagnostics.recordStage("prime MOUSE_MOVED sent at " + PRIME_X + "," + PRIME_Y);
+                } catch (Throwable throwable) {
+                    failInput("prime MOUSE_MOVED dispatch threw ", throwable);
+                }
+            }
+
+            private void enqueueProbeMove(CursorProbeBrowser browser) {
+                if (!probeMoveQueued.compareAndSet(false, true)) return;
+                try {
+                    // The renderer's trusted priming move is the processing barrier. Queue the
+                    // distinct probe move only after returning from that title callback.
+                    SwingUtilities.invokeLater(() -> dispatchProbeMove(browser));
+                    diagnostics.recordStage("probe MOUSE_MOVED queued after renderer prime acknowledgement");
+                } catch (Throwable throwable) {
+                    failInput("probe MOUSE_MOVED enqueue threw ", throwable);
+                }
+            }
+
+            private void dispatchProbeMove(CursorProbeBrowser browser) {
+                try {
+                    browser.moveMouse(PROBE_X, PROBE_Y);
+                    diagnostics.recordStage("probe MOUSE_MOVED sent at " + PROBE_X + "," + PROBE_Y);
+                } catch (Throwable throwable) {
+                    failInput("probe MOUSE_MOVED dispatch threw ", throwable);
+                }
+            }
+
+            private void failInput(String description, Throwable throwable) {
+                diagnostics.recordFailure(description + throwable);
+                terminateTest();
             }
 
             @Override
@@ -91,6 +147,13 @@ class CefCustomCursorNativeTest {
                                 diagnostics.recordFailure("PET_VIEW invalidation threw " + throwable);
                                 terminateTest();
                             }
+                        } else if (PRIME_MOVE_TITLE.equals(title) && primeMoveAcknowledged.compareAndSet(false, true)) {
+                            diagnostics.recordStage("renderer acknowledged trusted prime mousemove");
+                            enqueueProbeMove((CursorProbeBrowser) browser);
+                        } else if (PROBE_MOVE_TITLE.equals(title) && probeMoveAcknowledged.compareAndSet(false, true)) {
+                            diagnostics.recordStage("renderer acknowledged trusted probe mousemove");
+                            inputCompleted.set(true);
+                            completeIfReady();
                         } else if (title != null && title.startsWith(FAILURE_TITLE_PREFIX)) {
                             diagnostics.recordFailure("renderer readiness JavaScript failed: " + title.substring(FAILURE_TITLE_PREFIX.length()));
                             terminateTest();
@@ -125,20 +188,7 @@ class CefCustomCursorNativeTest {
                     // renderer task as the cursor and makes the accepted OSR frame unambiguous.
                     if (!rendererReady.get() || sampledPixel != SENTINEL_BGRA) return;
                     diagnostics.recordSentinelPaint();
-                    if (!inputStarted.compareAndSet(false, true)) return;
-                    try {
-                        // Force a deterministic re-hit-test after the decoded style is presented.
-                        // Leaving first prevents the same-position move from relying on prior state.
-                        browser.exitMouse(PROBE_X, PROBE_Y);
-                        diagnostics.recordStage("MOUSE_EXIT sent at " + PROBE_X + "," + PROBE_Y);
-                        browser.moveMouse(PROBE_X, PROBE_Y);
-                        diagnostics.recordStage("MOUSE_MOVED sent at " + PROBE_X + "," + PROBE_Y);
-                        inputCompleted.set(true);
-                        completeIfReady();
-                    } catch (Throwable throwable) {
-                        diagnostics.recordFailure("cursor input dispatch threw " + throwable);
-                        terminateTest();
-                    }
+                    enqueuePrimeMove(browser);
                 });
                 browser_ = browser;
                 browser.createImmediately();
@@ -221,10 +271,6 @@ class CefCustomCursorNativeTest {
         CursorProbeBrowser(CefClient client, String url) {
             super(client, url, false, null);
             updateViewGeometry(0, 0, VIEW_SIZE, VIEW_SIZE, new Point(0, 0));
-        }
-
-        void exitMouse(int x, int y) {
-            sendMouseEvent(new CefMouseEvent(CefMouseEvent.MOUSE_EXIT, x, y, 0, 0, 0));
         }
 
         void moveMouse(int x, int y) {

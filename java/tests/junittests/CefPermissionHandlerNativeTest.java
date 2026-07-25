@@ -35,12 +35,15 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
+import javax.swing.SwingUtilities;
+
 @NativeCefTest
 class CefPermissionHandlerNativeTest {
     private static final long FUTURE_TIMEOUT_SECONDS = 15;
     private static final String PROMPT_URL = "https://permission.test/prompt.html";
     private static final String PROMPT_ORIGIN = "https://permission.test/";
     private static final String PROMPT_READY_TITLE = "permission-prompt:ready";
+    private static final String PROMPT_FOCUS_READY_TITLE = "permission-prompt:focus-ready";
     private static final String PROMPT_SUCCESS_TITLE = "permission-prompt:accepted:true";
     private static final String PROMPT_FAILURE_PREFIX = "permission-prompt:failure:";
     private static final String MEDIA_URL = "https://media-permission.test/media.html";
@@ -67,7 +70,13 @@ class CefPermissionHandlerNativeTest {
         AtomicInteger originalDismissCalls = new AtomicInteger();
         AtomicInteger replacementPromptCalls = new AtomicInteger();
         AtomicInteger replacementDismissCalls = new AtomicInteger();
+        AtomicBoolean pageReady = new AtomicBoolean();
+        AtomicBoolean focusRequestQueued = new AtomicBoolean();
+        AtomicBoolean focusRequestDispatched = new AtomicBoolean();
+        AtomicBoolean rendererFocusConfirmed = new AtomicBoolean();
+        AtomicBoolean clickQueued = new AtomicBoolean();
         AtomicBoolean clickDispatched = new AtomicBoolean();
+        AtomicReference<String> lastTitle = new AtomicReference<String>("<none>");
         Supplier<TestFrame> frameSupplier = () -> new TestFrame() {
             private final AtomicBoolean terminationRequested_ = new AtomicBoolean();
             private CefRequestContext requestContext_;
@@ -133,13 +142,13 @@ class CefPermissionHandlerNativeTest {
                     @Override
                     public void onTitleChange(CefBrowser browser, String title) {
                         if (browser != browser_ || title == null) return;
-                        if (PROMPT_READY_TITLE.equals(title) && clickDispatched.compareAndSet(false, true)) {
-                            try {
-                                browser.setFocus(true);
-                                ((PermissionProbeBrowser) browser).clickPermissionButton();
-                            } catch (Throwable throwable) {
-                                recordFailure(throwable);
-                            }
+                        lastTitle.set(title);
+                        if (PROMPT_READY_TITLE.equals(title)) {
+                            pageReady.set(true);
+                            enqueueFocusRequest((PermissionProbeBrowser) browser);
+                        } else if (PROMPT_FOCUS_READY_TITLE.equals(title)) {
+                            rendererFocusConfirmed.set(true);
+                            enqueuePermissionClick((PermissionProbeBrowser) browser);
                         } else if (PROMPT_SUCCESS_TITLE.equals(title)) {
                             pageOutcome.complete(title);
                             maybeTerminate();
@@ -182,6 +191,47 @@ class CefPermissionHandlerNativeTest {
                 if (terminationRequested_.compareAndSet(false, true)) terminateTest();
             }
 
+            private void enqueueFocusRequest(PermissionProbeBrowser browser) {
+                if (!focusRequestQueued.compareAndSet(false, true)) return;
+                try {
+                    // BrowserHost.SetFocus crosses into the renderer asynchronously. Queue the
+                    // request after OnTitleChange and let the page prove document focus before any
+                    // user input is injected.
+                    SwingUtilities.invokeLater(() -> dispatchFocusRequest(browser));
+                } catch (Throwable throwable) {
+                    recordFailure(throwable);
+                }
+            }
+
+            private void dispatchFocusRequest(PermissionProbeBrowser browser) {
+                try {
+                    browser.preparePermissionButtonFocus();
+                    focusRequestDispatched.set(true);
+                } catch (Throwable throwable) {
+                    recordFailure(throwable);
+                }
+            }
+
+            private void enqueuePermissionClick(PermissionProbeBrowser browser) {
+                if (!clickQueued.compareAndSet(false, true)) return;
+                try {
+                    // Return from the renderer's focus-ready title callback before crossing back
+                    // into native input dispatch.
+                    SwingUtilities.invokeLater(() -> dispatchPermissionClick(browser));
+                } catch (Throwable throwable) {
+                    recordFailure(throwable);
+                }
+            }
+
+            private void dispatchPermissionClick(PermissionProbeBrowser browser) {
+                try {
+                    browser.clickPermissionButton();
+                    clickDispatched.set(true);
+                } catch (Throwable throwable) {
+                    recordFailure(throwable);
+                }
+            }
+
             private void maybeTerminate() {
                 if (pageOutcome.isDone() && dismissal.isDone() && continuation.isDone() && terminationRequested_.compareAndSet(false, true))
                     terminateTest();
@@ -189,7 +239,7 @@ class CefPermissionHandlerNativeTest {
         };
         TestFrame frame = TestFrame.createOnEventDispatchThread(frameSupplier);
 
-        Supplier<String> diagnostics = () -> "clickDispatched=" + clickDispatched.get() + ", promptDone=" + prompt.isDone() + ", continuationDone=" + continuation.isDone() + ", dismissalDone=" + dismissal.isDone() + ", pageDone=" + pageOutcome.isDone() + ", failure=" + failure.get();
+        Supplier<String> diagnostics = () -> "pageReady=" + pageReady.get() + ", focusRequestQueued=" + focusRequestQueued.get() + ", focusRequestDispatched=" + focusRequestDispatched.get() + ", rendererFocusConfirmed=" + rendererFocusConfirmed.get() + ", clickQueued=" + clickQueued.get() + ", clickDispatched=" + clickDispatched.get() + ", lastTitle=" + lastTitle.get() + ", promptDone=" + prompt.isDone() + ", continuationDone=" + continuation.isDone() + ", dismissalDone=" + dismissal.isDone() + ", pageDone=" + pageOutcome.isDone() + ", failure=" + failure.get();
         awaitFrameAndAlwaysTerminate(frame, diagnostics);
         throwIfFailed(failure, "Live window-management permission bridge failed");
         PromptSnapshot shown = await(prompt);
@@ -340,7 +390,7 @@ class CefPermissionHandlerNativeTest {
     private static String promptPage() {
         return "<!doctype html><html><head><meta charset='utf-8'><title>permission-prompt:loading</title></head>"
                 + "<body><button id='request' style='position:absolute;left:0;top:0;width:200px;height:100px'>Request screen details</button>"
-                + "<script>document.getElementById('request').addEventListener('click',async event=>{event.preventDefault();try{const details=await window.getScreenDetails();document.title='permission-prompt:accepted:'+(details.screens.length>0);}catch(error){document.title='permission-prompt:failure:'+String(error);}});requestAnimationFrame(()=>requestAnimationFrame(()=>{document.title='permission-prompt:ready';}));</script></body></html>";
+                + "<script>const request=document.getElementById('request');request.addEventListener('click',async event=>{event.preventDefault();try{const details=await window.getScreenDetails();document.title='permission-prompt:accepted:'+(details.screens.length>0);}catch(error){document.title='permission-prompt:failure:'+String(error);}});window.preparePermissionClick=()=>{const awaitFocus=()=>{request.focus();if(document.hasFocus()&&document.activeElement===request){requestAnimationFrame(()=>requestAnimationFrame(()=>{document.title='permission-prompt:focus-ready';}));return;}requestAnimationFrame(awaitFocus);};awaitFocus();};requestAnimationFrame(()=>requestAnimationFrame(()=>{document.title='permission-prompt:ready';}));</script></body></html>";
     }
 
     private static String mediaPage() {
@@ -381,6 +431,17 @@ class CefPermissionHandlerNativeTest {
         private PermissionProbeBrowser(CefClient client, String url, CefRequestContext requestContext) {
             super(client, url, false, requestContext);
             updateViewGeometry(0, 0, 800, 600, new Point(0, 0));
+        }
+
+        private void preparePermissionButtonFocus() {
+            setFocus(true);
+            CefFrame mainFrame = getMainFrame();
+            if (mainFrame == null) throw new AssertionError("OSR browser has no main frame during permission focus setup");
+            try {
+                mainFrame.executeJavaScript("window.preparePermissionClick();", getURL(), 1);
+            } finally {
+                mainFrame.dispose();
+            }
         }
 
         private void clickPermissionButton() {

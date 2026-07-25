@@ -45,6 +45,12 @@ HEADER_CLASSES = (
     'org.cef.network.CefPostDataElement_N', 'org.cef.network.CefRequest_N',
     'org.cef.network.CefResponse_N', 'org.cef.network.CefURLRequest_N',)
 
+# OpenJDK 17's JNIWriter emits MSVC's i64 suffix on Windows and LL on other
+# platforms. Restrict normalization to its complete decimal constant macro
+# form so declarations and all other generated content remain byte-exact.
+JAVAC_WINDOWS_LONG_CONSTANT_PATTERN = re.compile(
+    rb'^(#define [A-Za-z_][A-Za-z0-9_]* -?[0-9]+)i64$', re.MULTILINE)
+
 
 def parse_args():
   parser = argparse.ArgumentParser(
@@ -88,6 +94,11 @@ def argfile_path(path):
 
 def normalized_header(path):
   return path.read_bytes().replace(b'\r\n', b'\n')
+
+
+def normalized_generated_header(path):
+  content = normalized_header(path)
+  return JAVAC_WINDOWS_LONG_CONSTANT_PATTERN.sub(rb'\g<1>LL', content)
 
 
 def generate_headers(javac, temporary_dir):
@@ -148,7 +159,7 @@ def process_headers(headers_dir, class_name, verify):
   for selected_class in selected_classes:
     generated_path = headers_dir / (selected_class.replace('.', '_') + '.h')
     tracked_path = NATIVE_DIR / (selected_class.rsplit('.', 1)[-1] + '.h')
-    generated_content = normalized_header(generated_path)
+    generated_content = normalized_generated_header(generated_path)
 
     if verify:
       if not tracked_path.is_file() or normalized_header(

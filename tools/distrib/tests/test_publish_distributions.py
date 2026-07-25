@@ -238,6 +238,7 @@ elif operation == 'publish-release':
 '''
 
 
+@unittest.skipUnless(os.name == 'posix' and Path('/bin/bash').is_file(), 'publisher integration tests require POSIX /bin/bash')
 class PublishDistributionsTest(unittest.TestCase):
 
   def setUp(self):

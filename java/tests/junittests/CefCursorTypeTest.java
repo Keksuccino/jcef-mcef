@@ -161,8 +161,10 @@ class CefCursorTypeTest {
 
         String callback = sourceBetween(source, "bool DisplayHandler::OnCursorChange(", "return (jreturn != JNI_FALSE);\n}");
         assertTrue(callback.contains("const int cursorId = (int) type;"));
-        assertTrue(callback.contains("(Lorg/cef/browser/CefBrowser;I)Z"));
-        assertTrue(callback.contains("jbrowser.get(), cursorId"));
+        assertTrue(callback.contains("type == CT_CUSTOM ? NewJNICursorInfo(env, custom_cursor_info)"));
+        assertTrue(callback.contains("(Lorg/cef/browser/CefBrowser;ILorg/cef/misc/CefCursorInfo;)Z"));
+        assertTrue(callback.contains("jbrowser.get(), cursorId, jcustom_cursor_info.get()"));
+        assertFalse(callback.contains("(Lorg/cef/browser/CefBrowser;I)Z"));
     }
 
     @Test

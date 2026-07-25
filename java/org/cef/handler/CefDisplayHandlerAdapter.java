@@ -7,6 +7,7 @@ package org.cef.handler;
 import org.cef.CefSettings;
 import org.cef.browser.CefBrowser;
 import org.cef.browser.CefFrame;
+import org.cef.misc.CefCursorInfo;
 
 import java.util.List;
 
@@ -60,5 +61,10 @@ public abstract class CefDisplayHandlerAdapter implements CefDisplayHandler {
     @Override
     public boolean onCursorChange(CefBrowser browser, int cursorType) {
         return false;
+    }
+
+    @Override
+    public boolean onCursorChange(CefBrowser browser, int cursorType, CefCursorInfo customCursorInfo) {
+        return onCursorChange(browser, cursorType);
     }
 }

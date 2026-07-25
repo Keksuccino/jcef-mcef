@@ -16,11 +16,15 @@ import org.cef.callback.CefCallback;
 import org.cef.callback.CefDownloadItem;
 import org.cef.callback.CefDownloadItemCallback;
 import org.cef.handler.CefDisplayHandler;
+import org.cef.handler.CefDisplayHandlerAdapter;
 import org.cef.handler.CefDownloadHandler;
 import org.cef.handler.CefDownloadHandlerAdapter;
+import org.cef.handler.CefRenderHandler;
+import org.cef.handler.CefRenderHandlerAdapter;
 import org.cef.handler.CefResourceHandler;
 import org.cef.handler.CefResourceHandlerAdapter;
 import org.cef.misc.BoolRef;
+import org.cef.misc.CefCursorInfo;
 import org.cef.misc.IntRef;
 import org.cef.misc.LongRef;
 import org.cef.misc.StringRef;
@@ -112,6 +116,37 @@ class CefHandlerCompatibilityTest {
         handler.onFaviconURLChange(null, List.of("https://example.test/icon.svg"));
         handler.onFullscreenModeChange(null, true);
         handler.onLoadingProgressChange(null, 0.5);
+        assertFalse(handler.onCursorChange(null, 45, cursorInfo()));
+    }
+
+    @Test
+    void customCursorOverloadsDelegateToLegacyHandlerAndAdapterMethods() {
+        AtomicBoolean displayCalled = new AtomicBoolean();
+        CefDisplayHandler displayHandler = new CefDisplayHandlerAdapter() {
+            @Override
+            public boolean onCursorChange(CefBrowser browser, int cursorType) {
+                displayCalled.set(true);
+                return cursorType == 45;
+            }
+        };
+        AtomicBoolean renderCalled = new AtomicBoolean();
+        CefRenderHandler renderHandler = new CefRenderHandlerAdapter() {
+            @Override
+            public boolean onCursorChange(CefBrowser browser, int cursorType) {
+                renderCalled.set(true);
+                return cursorType == 45;
+            }
+        };
+
+        CefCursorInfo cursorInfo = cursorInfo();
+        assertTrue(displayHandler.onCursorChange(null, 45, cursorInfo));
+        assertTrue(renderHandler.onCursorChange(null, 45, cursorInfo));
+        assertTrue(displayCalled.get());
+        assertTrue(renderCalled.get());
+    }
+
+    private static CefCursorInfo cursorInfo() {
+        return new CefCursorInfo(0, 0, 1.0f, 1, 1, new byte[] {1, 2, 3, 4});
     }
 
     private static final class LegacyResourceHandler implements CefResourceHandler {

@@ -7,6 +7,7 @@ package org.cef.handler;
 import org.cef.CefSettings;
 import org.cef.browser.CefBrowser;
 import org.cef.browser.CefFrame;
+import org.cef.misc.CefCursorInfo;
 
 import java.util.List;
 
@@ -86,4 +87,22 @@ public interface CefDisplayHandler {
      * @return true if the cursor change was handled.
      */
     public boolean onCursorChange(CefBrowser browser, int cursorType);
+
+    /**
+     * Handle cursor changes with an owned snapshot of any custom cursor image.
+     *
+     * <p>The default implementation delegates to the legacy two-argument callback so existing
+     * implementations continue to receive the unchanged raw {@code cursorType}. CEF's
+     * platform-specific cursor handle is not exposed because its representation is not portable
+     * and its lifetime ends when the native callback returns.
+     * @param browser The browser generating the event.
+     * @param cursorType The raw numeric {@code cef_cursor_type_t} value from CEF.
+     * @param customCursorInfo The custom cursor snapshot when {@code cursorType} is
+     *        {@link org.cef.misc.CefCursorType#CUSTOM}, or {@code null} for non-custom cursors and
+     *        invalid or unavailable native custom-cursor data.
+     * @return true if the cursor change was handled.
+     */
+    public default boolean onCursorChange(CefBrowser browser, int cursorType, CefCursorInfo customCursorInfo) {
+        return onCursorChange(browser, cursorType);
+    }
 }

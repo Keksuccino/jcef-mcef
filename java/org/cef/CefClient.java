@@ -418,17 +418,26 @@ public class CefClient extends CefClientHandler
 
     @Override
     public boolean onCursorChange(CefBrowser browser, int cursorType) {
+        return dispatchCursorChange(browser, cursorType, null);
+    }
+
+    @Override
+    public boolean onCursorChange(CefBrowser browser, int cursorType, CefCursorInfo customCursorInfo) {
+        return dispatchCursorChange(browser, cursorType, customCursorInfo);
+    }
+
+    private boolean dispatchCursorChange(CefBrowser browser, int cursorType, CefCursorInfo customCursorInfo) {
         if (browser == null) {
             return false;
         }
 
-        if (displayHandler_ != null && displayHandler_.onCursorChange(browser, cursorType)) {
+        if (displayHandler_ != null && displayHandler_.onCursorChange(browser, cursorType, customCursorInfo)) {
             return true;
         }
 
         CefRenderHandler realHandler = browser.getRenderHandler();
         if (realHandler != null) {
-            return realHandler.onCursorChange(browser, cursorType);
+            return realHandler.onCursorChange(browser, cursorType, customCursorInfo);
         }
 
         return false;

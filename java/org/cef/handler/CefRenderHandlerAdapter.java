@@ -7,6 +7,7 @@ package org.cef.handler;
 import org.cef.browser.CefBrowser;
 import org.cef.browser.CefPaintEvent;
 import org.cef.callback.CefDragData;
+import org.cef.misc.CefCursorInfo;
 
 import java.awt.Point;
 import java.awt.Rectangle;
@@ -56,6 +57,11 @@ public abstract class CefRenderHandlerAdapter implements CefRenderHandler {
     @Override
     public boolean onCursorChange(CefBrowser browser, int cursorType) {
         return false;
+    }
+
+    @Override
+    public boolean onCursorChange(CefBrowser browser, int cursorType, CefCursorInfo customCursorInfo) {
+        return onCursorChange(browser, cursorType);
     }
 
     @Override

@@ -109,8 +109,16 @@ class CefTextSelectionChangedNativeTest {
                 focusTransfer.set(transfer);
                 first.setAfterCollapse(transfer::begin);
                 browser_.createImmediately();
-                second.createImmediately();
                 super.setupTest();
+            }
+
+            @Override
+            public void onAfterCreated(CefBrowser browser) {
+                if (browser == secondBrowser.get()) {
+                    FocusTransfer transfer = focusTransfer.get();
+                    if (transfer != null) transfer.onSecondCreated(browser);
+                }
+                super.onAfterCreated(browser);
             }
 
             @Override
@@ -139,11 +147,8 @@ class CefTextSelectionChangedNativeTest {
             failure = caught;
         }
         try {
-            SelectionBrowser second = secondBrowser.get();
-            if (second != null) {
-                second.close(true);
-                await(secondClosed);
-            }
+            FocusTransfer transfer = focusTransfer.get();
+            if (transfer != null && await(transfer.cancelPendingSecondCreationAndCloseStartedBrowser(), "second-browser cleanup handoff", diagnostics).booleanValue()) await(secondClosed);
         } catch (Throwable cleanupFailure) {
             failure = collectFailure(failure, cleanupFailure);
         }
@@ -253,10 +258,18 @@ class CefTextSelectionChangedNativeTest {
         private final SelectionBrowser second_;
         private final AtomicBoolean firstPageReady_ = new AtomicBoolean();
         private final AtomicBoolean secondPageReady_ = new AtomicBoolean();
-        private final AtomicBoolean initialSelectionRequested_ = new AtomicBoolean();
+        private final AtomicBoolean firstSelectionQueued_ = new AtomicBoolean();
+        private final AtomicBoolean firstSelectionDispatched_ = new AtomicBoolean();
         private final AtomicBoolean blurQueued_ = new AtomicBoolean();
         private final AtomicBoolean blurDispatched_ = new AtomicBoolean();
         private final AtomicBoolean rendererBlurConfirmed_ = new AtomicBoolean();
+        private final AtomicBoolean secondCreationQueued_ = new AtomicBoolean();
+        private final AtomicBoolean secondCreationDispatched_ = new AtomicBoolean();
+        private final AtomicBoolean secondCreationReturned_ = new AtomicBoolean();
+        private final AtomicBoolean secondCreationCancelled_ = new AtomicBoolean();
+        private final AtomicBoolean secondCreated_ = new AtomicBoolean();
+        private final AtomicBoolean secondCloseQueued_ = new AtomicBoolean();
+        private final AtomicBoolean secondCloseDispatched_ = new AtomicBoolean();
         private final AtomicBoolean secondSelectionQueued_ = new AtomicBoolean();
         private final AtomicBoolean secondSelectionDispatched_ = new AtomicBoolean();
 
@@ -268,17 +281,27 @@ class CefTextSelectionChangedNativeTest {
         void onPageReady(SelectionBrowser browser) {
             if (browser == first_) {
                 firstPageReady_.set(true);
+                if (!firstSelectionQueued_.compareAndSet(false, true)) return;
+                try {
+                    SwingUtilities.invokeLater(this::dispatchFirstSelection);
+                } catch (Throwable failure) {
+                    fail(failure);
+                }
             } else if (browser == second_) {
                 secondPageReady_.set(true);
+                if (!secondCreationDispatched_.get()) {
+                    fail(new AssertionError("The second text-selection renderer became ready before its sequenced creation"));
+                    return;
+                }
+                if (!secondSelectionQueued_.compareAndSet(false, true)) return;
+                try {
+                    SwingUtilities.invokeLater(this::dispatchSecondSelection);
+                } catch (Throwable failure) {
+                    fail(failure);
+                }
             } else {
                 fail(new AssertionError("Text-selection readiness was reported by an unknown browser"));
-                return;
             }
-            if (!firstPageReady_.get() || !secondPageReady_.get() || !initialSelectionRequested_.compareAndSet(false, true)) return;
-            // Every OSR initial navigation requests focus. Wait until both renderer documents have
-            // acknowledged readiness, then explicitly release the second browser immediately
-            // before focusing the first so late navigation focus cannot steal the first click.
-            first_.requestSelectionWhenReady(() -> second_.setFocus(false));
         }
 
         void begin() {
@@ -297,18 +320,56 @@ class CefTextSelectionChangedNativeTest {
                 fail(new AssertionError("Text-selection focus release was reported by the wrong browser"));
                 return;
             }
-            if (!rendererBlurConfirmed_.compareAndSet(false, true) || !secondSelectionQueued_.compareAndSet(false, true)) return;
+            if (!rendererBlurConfirmed_.compareAndSet(false, true) || !secondCreationQueued_.compareAndSet(false, true)) return;
             try {
-                // The title proves Blink consumed the first browser's focus loss. Defer once more
-                // so the second browser cannot reenter CEF from this title callback.
-                SwingUtilities.invokeLater(this::dispatchSecondSelection);
+                // The title proves Blink consumed the first browser's focus loss. Only now create
+                // the second OSR browser, after returning from this native title callback, so its
+                // initial focus request cannot race the first browser's selection input.
+                SwingUtilities.invokeLater(this::dispatchSecondCreation);
             } catch (Throwable failure) {
                 fail(failure);
             }
         }
 
+        void onSecondCreated(CefBrowser browser) {
+            if (browser != second_) {
+                fail(new AssertionError("Text-selection creation was reported by the wrong second browser"));
+                return;
+            }
+            secondCreated_.set(true);
+            if (!secondCreationCancelled_.get()) return;
+            try {
+                enqueueSecondClose();
+            } catch (Throwable failure) {
+                fail(failure);
+            }
+        }
+
+        CompletableFuture<Boolean> cancelPendingSecondCreationAndCloseStartedBrowser() {
+            CompletableFuture<Boolean> completion = new CompletableFuture<Boolean>();
+            if (SwingUtilities.isEventDispatchThread()) {
+                cancelPendingSecondCreationAndCloseStartedBrowserOnEdt(completion);
+                return completion;
+            }
+            try {
+                SwingUtilities.invokeLater(() -> cancelPendingSecondCreationAndCloseStartedBrowserOnEdt(completion));
+            } catch (Throwable failure) {
+                completion.completeExceptionally(failure);
+            }
+            return completion;
+        }
+
         String diagnostics() {
-            return "{firstPageReady=" + firstPageReady_.get() + ", secondPageReady=" + secondPageReady_.get() + ", initialSelectionRequested=" + initialSelectionRequested_.get() + ", blurQueued=" + blurQueued_.get() + ", blurDispatched=" + blurDispatched_.get() + ", rendererBlurConfirmed=" + rendererBlurConfirmed_.get() + ", secondSelectionQueued=" + secondSelectionQueued_.get() + ", secondSelectionDispatched=" + secondSelectionDispatched_.get() + "}";
+            return "{firstPageReady=" + firstPageReady_.get() + ", secondPageReady=" + secondPageReady_.get() + ", firstSelectionQueued=" + firstSelectionQueued_.get() + ", firstSelectionDispatched=" + firstSelectionDispatched_.get() + ", blurQueued=" + blurQueued_.get() + ", blurDispatched=" + blurDispatched_.get() + ", rendererBlurConfirmed=" + rendererBlurConfirmed_.get() + ", secondCreationQueued=" + secondCreationQueued_.get() + ", secondCreationDispatched=" + secondCreationDispatched_.get() + ", secondCreationReturned=" + secondCreationReturned_.get() + ", secondCreationCancelled=" + secondCreationCancelled_.get() + ", secondCreated=" + secondCreated_.get() + ", secondCloseQueued=" + secondCloseQueued_.get() + ", secondCloseDispatched=" + secondCloseDispatched_.get() + ", secondSelectionQueued=" + secondSelectionQueued_.get() + ", secondSelectionDispatched=" + secondSelectionDispatched_.get() + "}";
+        }
+
+        private void dispatchFirstSelection() {
+            try {
+                firstSelectionDispatched_.set(true);
+                first_.requestSelectionWhenReady();
+            } catch (Throwable failure) {
+                fail(failure);
+            }
         }
 
         private void dispatchBlur() {
@@ -316,6 +377,51 @@ class CefTextSelectionChangedNativeTest {
                 first_.setFocus(false);
                 blurDispatched_.set(true);
                 execute(first_, "window.prepareTextSelectionBlur();");
+            } catch (Throwable failure) {
+                fail(failure);
+            }
+        }
+
+        private void dispatchSecondCreation() {
+            try {
+                if (secondCreationCancelled_.get()) return;
+                secondCreationDispatched_.set(true);
+                second_.createImmediately();
+                secondCreationReturned_.set(true);
+            } catch (Throwable failure) {
+                fail(failure);
+            }
+        }
+
+        private void cancelPendingSecondCreationAndCloseStartedBrowserOnEdt(CompletableFuture<Boolean> completion) {
+            try {
+                // Creation and cancellation are serialized on the EDT. A queued creation observes
+                // cancellation, while an accepted request is closed on a later EDT turn.
+                secondCreationCancelled_.set(true);
+                if (secondCreationReturned_.get() || secondCreated_.get()) enqueueSecondClose();
+                completion.complete(Boolean.valueOf(secondCreated_.get()));
+            } catch (Throwable failure) {
+                completion.completeExceptionally(failure);
+                fail(failure);
+            }
+        }
+
+        private void enqueueSecondClose() {
+            if (!secondCloseQueued_.compareAndSet(false, true)) return;
+            try {
+                // onAfterCreated is a native callback. Always close from a later EDT turn so CEF's
+                // creation callback can release its native ownership before close re-enters CEF.
+                SwingUtilities.invokeLater(this::dispatchSecondClose);
+            } catch (RuntimeException | Error failure) {
+                secondCloseQueued_.set(false);
+                throw failure;
+            }
+        }
+
+        private void dispatchSecondClose() {
+            try {
+                secondCloseDispatched_.set(true);
+                second_.close(true);
             } catch (Throwable failure) {
                 fail(failure);
             }

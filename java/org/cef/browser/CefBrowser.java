@@ -583,6 +583,27 @@ public interface CefBrowser {
     public void closeDevTools();
 
     /**
+     * Returns a snapshot of whether this browser currently has an associated DevTools frontend
+     * browser. The association may change after the future completes.
+     *
+     * <p>This reports an associated DevTools frontend browser, such as one opened by {@link
+     * #openDevTools()}. It does not report DevTools Protocol clients created by {@link
+     * #getDevToolsClient()}, other Chrome DevTools Protocol clients, or remote-debugging
+     * connections.
+     *
+     * <p>The native query runs on the CEF UI thread. Code that drives CEF's external message pump
+     * must not block that pump while waiting for the returned future.
+     *
+     * @return a future containing whether an associated DevTools frontend currently exists; the
+     *         future completes exceptionally if the browser implementation does not support this
+     *         operation, the native browser is unavailable, or the UI-thread query cannot be
+     *         scheduled
+     */
+    public default CompletableFuture<Boolean> hasDevTools() {
+        return unsupportedBrowserFuture("hasDevTools");
+    }
+
+    /**
      * Get an instance of a client that can be used to leverage the DevTools
      * protocol. Only one instance per browser is available.
      *

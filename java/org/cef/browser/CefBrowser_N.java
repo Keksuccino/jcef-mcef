@@ -1337,6 +1337,11 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     }
 
     @Override
+    public CompletableFuture<Boolean> hasDevTools() {
+        return executeBooleanQuery("DevTools association query", this::N_HasDevTools);
+    }
+
+    @Override
     public CompletableFuture<Boolean> isFullscreen() {
         return executeBooleanQuery("fullscreen query", this::N_IsFullscreen);
     }
@@ -1562,6 +1567,7 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     private final native void N_StopFinding(boolean clearSelection);
     private final native void N_ShowDevTools(Point inspectAt);
     private final native void N_CloseDevTools();
+    private final native void N_HasDevTools(IntCallback callback);
     private final native void N_ReplaceMisspelling(String word);
     private final native void N_WasResized(int width, int height);
     private final native void N_Invalidate();

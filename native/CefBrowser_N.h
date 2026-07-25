@@ -495,6 +495,14 @@ JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1CloseDevTools
 
 /*
  * Class:     org_cef_browser_CefBrowser_N
+ * Method:    N_HasDevTools
+ * Signature: (Lorg/cef/browser/CefBrowser_N/IntCallback;)V
+ */
+JNIEXPORT void JNICALL Java_org_cef_browser_CefBrowser_1N_N_1HasDevTools
+  (JNIEnv *, jobject, jobject);
+
+/*
+ * Class:     org_cef_browser_CefBrowser_N
  * Method:    N_ReplaceMisspelling
  * Signature: (Ljava/lang/String;)V
  */

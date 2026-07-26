@@ -14,6 +14,8 @@ import org.cef.browser.CefBrowser;
 import org.cef.browser.CefBrowserOsr;
 import org.cef.browser.CefBrowser_N;
 import org.cef.browser.CefFrame;
+import org.cef.browser.CefPaintElementType;
+import org.cef.browser.CefPaintEvent;
 import org.cef.event.CefMouseEvent;
 import org.cef.handler.CefDisplayHandlerAdapter;
 import org.cef.misc.CefRange;
@@ -22,10 +24,13 @@ import org.junit.jupiter.api.Test;
 import java.awt.Point;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.nio.ByteBuffer;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
@@ -39,16 +44,59 @@ class CefTextSelectionChangedNativeTest {
     private static final String FIRST_URL = "http://text-selection.test/first.html";
     private static final String SECOND_URL = "http://text-selection.test/second.html";
     private static final String PAGE_READY_TITLE = "jcef-text-selection:page-ready";
-    private static final String SELECTION_CLICK_READY_TITLE = "jcef-text-selection:selection-click-ready";
-    private static final String COLLAPSE_CLICK_READY_TITLE = "jcef-text-selection:collapse-click-ready";
+    private static final String SELECTION_PAINT_READY_TITLE =
+            "jcef-text-selection:selection-paint-ready";
+    private static final String SELECTION_MOVE_ACK_TITLE = "jcef-text-selection:selection-move-ack";
+    private static final String SELECTION_CLICK_APPLIED_TITLE =
+            "jcef-text-selection:selection-click-applied";
+    private static final String COLLAPSE_PAINT_READY_TITLE =
+            "jcef-text-selection:collapse-paint-ready";
+    private static final String COLLAPSE_MOVE_ACK_TITLE = "jcef-text-selection:collapse-move-ack";
+    private static final String COLLAPSE_CLICK_APPLIED_TITLE =
+            "jcef-text-selection:collapse-click-applied";
     private static final String FOCUS_RELEASED_TITLE = "jcef-text-selection:focus-released";
+    private static final int SELECTION_INPUT_X = 40;
+    private static final int COLLAPSE_INPUT_X = 56;
+    private static final int INPUT_Y = 40;
+    private static final int SENTINEL_SAMPLE_INSET = 8;
+    private static final int SELECTION_SENTINEL_RED = 17;
+    private static final int SELECTION_SENTINEL_GREEN = 34;
+    private static final int SELECTION_SENTINEL_BLUE = 51;
+    private static final int COLLAPSE_SENTINEL_RED = 68;
+    private static final int COLLAPSE_SENTINEL_GREEN = 85;
+    private static final int COLLAPSE_SENTINEL_BLUE = 102;
+    private static final String SELECTION_SENTINEL_CSS = "rgb(" + SELECTION_SENTINEL_RED + ","
+            + SELECTION_SENTINEL_GREEN + "," + SELECTION_SENTINEL_BLUE + ")";
+    private static final String COLLAPSE_SENTINEL_CSS = "rgb(" + COLLAPSE_SENTINEL_RED + ","
+            + COLLAPSE_SENTINEL_GREEN + "," + COLLAPSE_SENTINEL_BLUE + ")";
+    private static final long SELECTION_SENTINEL_BGRA =
+            toBgra(SELECTION_SENTINEL_RED, SELECTION_SENTINEL_GREEN, SELECTION_SENTINEL_BLUE);
+    private static final long COLLAPSE_SENTINEL_BGRA =
+            toBgra(COLLAPSE_SENTINEL_RED, COLLAPSE_SENTINEL_GREEN, COLLAPSE_SENTINEL_BLUE);
     private static final String EXPECTED_TEXT = "\uD83D\uDE00\0\u00E9";
     private static final CefRange EXPECTED_RANGE = new CefRange(1, 5);
     private static final CefRange COLLAPSED_RANGE = new CefRange(5, 5);
     private static final String TEST_CONTENT =
-            "<!doctype html><html><head><meta charset='utf-8'><style>html,body{margin:0;width:100%;height:100%}textarea{margin:24px;width:360px;height:60px;font:24px sans-serif}</style></head><body><textarea id='selection'></textarea><script>(()=>{const input=document.getElementById('selection');input.value=String.fromCharCode(65,0xD83D,0xDE00,0,0xE9,90);input.addEventListener('click',()=>input.dataset.collapse==='true'?input.setSelectionRange(5,5,'none'):input.setSelectionRange(1,5,'forward'));window.beginTextSelection=()=>{const awaitFocus=()=>{input.focus();if(document.hasFocus()&&document.activeElement===input){requestAnimationFrame(()=>requestAnimationFrame(()=>{document.title='"
-            + SELECTION_CLICK_READY_TITLE + "';}));return;}requestAnimationFrame(awaitFocus);};awaitFocus();};window.prepareTextSelectionCollapse=()=>{input.dataset.collapse='true';document.title='" + COLLAPSE_CLICK_READY_TITLE + "';};window.prepareTextSelectionBlur=()=>{const awaitBlur=()=>{if(!document.hasFocus()){document.title='"
-            + FOCUS_RELEASED_TITLE + "';return;}requestAnimationFrame(awaitBlur);};awaitBlur();};document.title='" + PAGE_READY_TITLE + "';})();</script></body></html>";
+            "<!doctype html><html><head><meta charset='utf-8'><style>html,body{margin:0;width:100%;height:100%;background:rgb(1,2,3)}textarea{margin:24px;width:360px;height:60px;font:24px sans-serif}</style></head><body><textarea id='selection'></textarea><script>(()=>{const input=document.getElementById('selection');const selectionPhase='selection',collapsePhase='collapse';input.value=String.fromCharCode(65,0xD83D,0xDE00,0,0xE9,90);const armPhase=(phase,color,title)=>{input.dataset.phase=phase;document.body.style.backgroundColor=color;requestAnimationFrame(()=>requestAnimationFrame(()=>{document.title=title;}));};input.addEventListener('mousemove',event=>{if(!event.isTrusted)return;const phase=input.dataset.phase;if(phase===selectionPhase&&event.clientX==="
+            + SELECTION_INPUT_X + "&&event.clientY===" + INPUT_Y + ")document.title='"
+            + SELECTION_MOVE_ACK_TITLE
+            + "';else if(phase===collapsePhase&&event.clientX===" + COLLAPSE_INPUT_X
+            + "&&event.clientY===" + INPUT_Y + ")document.title='" + COLLAPSE_MOVE_ACK_TITLE
+            + "';});input.addEventListener('click',event=>{if(!event.isTrusted||event.button!==0)return;const phase=input.dataset.phase;if(phase===selectionPhase&&event.clientX==="
+            + SELECTION_INPUT_X + "&&event.clientY===" + INPUT_Y
+            + "){input.setSelectionRange(1,5,'forward');document.title='"
+            + SELECTION_CLICK_APPLIED_TITLE + "';}else if(phase===collapsePhase&&event.clientX==="
+            + COLLAPSE_INPUT_X + "&&event.clientY===" + INPUT_Y
+            + "){input.setSelectionRange(5,5,'none');document.title='"
+            + COLLAPSE_CLICK_APPLIED_TITLE
+            + "';}});window.beginTextSelection=()=>{const awaitFocus=()=>{input.focus();if(document.hasFocus()&&document.activeElement===input){armPhase(selectionPhase,'"
+            + SELECTION_SENTINEL_CSS + "','" + SELECTION_PAINT_READY_TITLE
+            + "');return;}requestAnimationFrame(awaitFocus);};awaitFocus();};window.prepareTextSelectionCollapse=()=>{armPhase(collapsePhase,'"
+            + COLLAPSE_SENTINEL_CSS + "','" + COLLAPSE_PAINT_READY_TITLE
+            + "');};window.prepareTextSelectionBlur=()=>{const awaitBlur=()=>{if(!document.hasFocus()){document.title='"
+            + FOCUS_RELEASED_TITLE
+            + "';return;}requestAnimationFrame(awaitBlur);};awaitBlur();};document.title='"
+            + PAGE_READY_TITLE + "';})();</script></body></html>";
     private static final Method IS_ON_CEF_UI_THREAD = getCefUiThreadMethod();
 
     private record CallbackSnapshot(CefBrowser browser, String selectedText, CefRange selectedRange, boolean cefUiThread) {}
@@ -91,10 +139,8 @@ class CefTextSelectionChangedNativeTest {
                                 SelectionBrowser second = secondBrowser.get();
                                 if (second != null) second.fail(failure);
                             }
-                        } else if (SELECTION_CLICK_READY_TITLE.equals(title)) {
-                            selectionBrowser.enqueueSelectionClick();
-                        } else if (COLLAPSE_CLICK_READY_TITLE.equals(title)) {
-                            selectionBrowser.enqueueCollapseClick();
+                        } else {
+                            selectionBrowser.handleInputTitle(title);
                         }
                     }
                 };
@@ -230,6 +276,35 @@ class CefTextSelectionChangedNativeTest {
         }
     }
 
+    private static long toBgra(int red, int green, int blue) {
+        return blue | (long) green << 8 | (long) red << 16 | 0xFFL << 24;
+    }
+
+    private static long sampleSentinelPixel(CefPaintEvent event) {
+        int sampleX = event.getWidth() - SENTINEL_SAMPLE_INSET;
+        int sampleY = event.getHeight() - SENTINEL_SAMPLE_INSET;
+        if (sampleX < 0 || sampleY < 0) return -1;
+        ByteBuffer frame = event.getRenderedFrame();
+        if (frame == null) return -1;
+        // Sample relative to the actual backing frame so this remains below the textarea even if
+        // OSR pixel density changes. The opaque body makes the exact BGRA value deterministic.
+        long offset = ((long) sampleY * event.getWidth() + sampleX) * 4;
+        if (offset < 0 || offset + 4 > frame.limit()) return -1;
+        int index = (int) offset;
+        return Byte.toUnsignedLong(frame.get(index)) | Byte.toUnsignedLong(frame.get(index + 1)) << 8 | Byte.toUnsignedLong(frame.get(index + 2)) << 16 | Byte.toUnsignedLong(frame.get(index + 3)) << 24;
+    }
+
+    private static String formatPixel(long pixel) {
+        if (pixel < 0) return "<unavailable>";
+        String hex = Long.toHexString(pixel).toUpperCase();
+        return "0x" + "0".repeat(8 - hex.length()) + hex;
+    }
+
+    private static String formatText(String text) {
+        String escaped = text.replace("\\", "\\\\").replace("\0", "\\0").replace("\r", "\\r").replace("\n", "\\n");
+        return "{utf16Length=" + text.length() + ", value=\"" + escaped + "\"}";
+    }
+
     private static boolean isOnCefUiThread() {
         try {
             return ((Boolean) IS_ON_CEF_UI_THREAD.invoke(null)).booleanValue();
@@ -307,8 +382,8 @@ class CefTextSelectionChangedNativeTest {
         void begin() {
             if (!blurQueued_.compareAndSet(false, true)) return;
             try {
-                // OnTextSelectionChanged is a native callback on CEF's UI thread. Return from it
-                // before requesting the first browser's asynchronous renderer focus release.
+                // Phase completion is already deferred beyond both native acknowledgements. Keep
+                // the focus release on a further EDT turn so completion and blur never reenter CEF.
                 SwingUtilities.invokeLater(this::dispatchBlur);
             } catch (Throwable failure) {
                 fail(failure);
@@ -443,20 +518,100 @@ class CefTextSelectionChangedNativeTest {
         }
     }
 
+    private static final class InputPhase {
+        private final String name_;
+        private final String paintReadyTitle_;
+        private final String moveAckTitle_;
+        private final String clickAppliedTitle_;
+        private final long sentinelBgra_;
+        private final int inputX_;
+        private final int inputY_;
+        private final String expectedText_;
+        private final CefRange expectedRange_;
+        private final CompletableFuture<CallbackSnapshot> completion_;
+        private final AtomicBoolean rendererPaintReady_ = new AtomicBoolean();
+        private final AtomicBoolean invalidationQueued_ = new AtomicBoolean();
+        private final AtomicBoolean invalidationDispatched_ = new AtomicBoolean();
+        private final AtomicBoolean sentinelPaintAcknowledged_ = new AtomicBoolean();
+        private final AtomicBoolean moveQueued_ = new AtomicBoolean();
+        private final AtomicBoolean moveDispatched_ = new AtomicBoolean();
+        private final AtomicBoolean moveAcknowledged_ = new AtomicBoolean();
+        private final AtomicBoolean clickQueued_ = new AtomicBoolean();
+        private final AtomicBoolean clickDispatched_ = new AtomicBoolean();
+        private final AtomicBoolean clickAcknowledged_ = new AtomicBoolean();
+        private final AtomicBoolean expectedCallbackReceived_ = new AtomicBoolean();
+        private final AtomicBoolean completionQueued_ = new AtomicBoolean();
+        private final AtomicBoolean completionDispatched_ = new AtomicBoolean();
+        private final AtomicInteger candidatePaints_ = new AtomicInteger();
+        private final AtomicReference<String> lastPaintSize_ =
+                new AtomicReference<String>("<none>");
+        private final AtomicLong lastPaintPixel_ = new AtomicLong(-1);
+        private final AtomicReference<CallbackSnapshot> expectedCallback_ =
+                new AtomicReference<CallbackSnapshot>();
+
+        InputPhase(String name, String paintReadyTitle, String moveAckTitle, String clickAppliedTitle, long sentinelBgra, int inputX, int inputY, String expectedText, CefRange expectedRange, CompletableFuture<CallbackSnapshot> completion) {
+            name_ = name;
+            paintReadyTitle_ = paintReadyTitle;
+            moveAckTitle_ = moveAckTitle;
+            clickAppliedTitle_ = clickAppliedTitle;
+            sentinelBgra_ = sentinelBgra;
+            inputX_ = inputX;
+            inputY_ = inputY;
+            expectedText_ = expectedText;
+            expectedRange_ = expectedRange;
+            completion_ = completion;
+        }
+
+        boolean acknowledgeSentinelPaint(CefPaintEvent event, long sampledPixel) {
+            if (!rendererPaintReady_.get() || sentinelPaintAcknowledged_.get()) return false;
+            candidatePaints_.incrementAndGet();
+            lastPaintSize_.set(event.getWidth() + "x" + event.getHeight());
+            lastPaintPixel_.set(sampledPixel);
+            return sampledPixel == sentinelBgra_
+                    && sentinelPaintAcknowledged_.compareAndSet(false, true);
+        }
+
+        boolean accepts(String selectedText, CefRange selectedRange) {
+            return expectedText_.equals(selectedText) && expectedRange_.equals(selectedRange);
+        }
+
+        String diagnostics() {
+            return "{name=" + name_ + ", rendererPaintReady=" + rendererPaintReady_.get()
+                    + ", invalidationQueued=" + invalidationQueued_.get()
+                    + ", invalidationDispatched=" + invalidationDispatched_.get()
+                    + ", sentinelPaintAcknowledged=" + sentinelPaintAcknowledged_.get()
+                    + ", candidatePaints=" + candidatePaints_.get() + ", lastPaint="
+                    + lastPaintSize_.get() + "/" + formatPixel(lastPaintPixel_.get())
+                    + ", expectedSentinel=" + formatPixel(sentinelBgra_) + ", moveQueued="
+                    + moveQueued_.get() + ", moveDispatched=" + moveDispatched_.get()
+                    + ", moveAcknowledged=" + moveAcknowledged_.get() + ", clickQueued="
+                    + clickQueued_.get() + ", clickDispatched=" + clickDispatched_.get()
+                    + ", clickAcknowledged=" + clickAcknowledged_.get()
+                    + ", expectedCallbackReceived=" + expectedCallbackReceived_.get()
+                    + ", completionQueued=" + completionQueued_.get() + ", completionDispatched="
+                    + completionDispatched_.get() + ", done=" + completion_.isDone() + "}";
+        }
+    }
+
     private static final class SelectionBrowser extends CefBrowserOsr {
         private final String url_;
         private final CompletableFuture<CallbackSnapshot> selection_;
         private final CompletableFuture<CallbackSnapshot> collapse_;
+        private final InputPhase selectionPhase_;
+        private final InputPhase collapsePhase_;
         private final AtomicBoolean pageReady_ = new AtomicBoolean();
         private final AtomicBoolean startRequested_ = new AtomicBoolean();
         private final AtomicBoolean selectionStartQueued_ = new AtomicBoolean();
         private final AtomicBoolean selectionStartDispatched_ = new AtomicBoolean();
-        private final AtomicBoolean selectionClickQueued_ = new AtomicBoolean();
-        private final AtomicBoolean selectionClickDispatched_ = new AtomicBoolean();
         private final AtomicBoolean collapseRequested_ = new AtomicBoolean();
-        private final AtomicBoolean collapseClickQueued_ = new AtomicBoolean();
-        private final AtomicBoolean collapseClickDispatched_ = new AtomicBoolean();
-        private final AtomicReference<Runnable> beforeSelectionStart_ = new AtomicReference<Runnable>();
+        private final AtomicInteger popupPaints_ = new AtomicInteger();
+        private final AtomicInteger callbackCount_ = new AtomicInteger();
+        private final AtomicReference<String> lastCallbackText_ =
+                new AtomicReference<String>("<none>");
+        private final AtomicReference<String> lastCallbackRange_ =
+                new AtomicReference<String>("<none>");
+        private final AtomicReference<Runnable> beforeSelectionStart_ =
+                new AtomicReference<Runnable>();
         private volatile Runnable afterCollapse_ = () -> {};
 
         SelectionBrowser(CefClient client, String url, CompletableFuture<CallbackSnapshot> selection, CompletableFuture<CallbackSnapshot> collapse) {
@@ -464,7 +619,10 @@ class CefTextSelectionChangedNativeTest {
             url_ = url;
             selection_ = selection;
             collapse_ = collapse;
+            selectionPhase_ = new InputPhase("selection", SELECTION_PAINT_READY_TITLE, SELECTION_MOVE_ACK_TITLE, SELECTION_CLICK_APPLIED_TITLE, SELECTION_SENTINEL_BGRA, SELECTION_INPUT_X, INPUT_Y, EXPECTED_TEXT, EXPECTED_RANGE, selection);
+            collapsePhase_ = new InputPhase("collapse", COLLAPSE_PAINT_READY_TITLE, COLLAPSE_MOVE_ACK_TITLE, COLLAPSE_CLICK_APPLIED_TITLE, COLLAPSE_SENTINEL_BGRA, COLLAPSE_INPUT_X, INPUT_Y, "", COLLAPSED_RANGE, collapse);
             updateViewGeometry(0, 0, VIEW_WIDTH, VIEW_HEIGHT, new Point(0, 0));
+            addOnPaintListener(this::handlePaint);
         }
 
         void markPageReady() {
@@ -486,20 +644,104 @@ class CefTextSelectionChangedNativeTest {
             afterCollapse_ = afterCollapse;
         }
 
-        void enqueueSelectionClick() {
-            enqueueClickInput(selectionClickQueued_, selectionClickDispatched_);
+        void handleInputTitle(String title) {
+            try {
+                if (selectionPhase_.paintReadyTitle_.equals(title))
+                    acknowledgePaintReady(selectionPhase_);
+                else if (collapsePhase_.paintReadyTitle_.equals(title))
+                    acknowledgePaintReady(collapsePhase_);
+                else if (selectionPhase_.moveAckTitle_.equals(title))
+                    acknowledgeMove(selectionPhase_);
+                else if (collapsePhase_.moveAckTitle_.equals(title))
+                    acknowledgeMove(collapsePhase_);
+                else if (selectionPhase_.clickAppliedTitle_.equals(title))
+                    acknowledgeClick(selectionPhase_);
+                else if (collapsePhase_.clickAppliedTitle_.equals(title))
+                    acknowledgeClick(collapsePhase_);
+            } catch (Throwable failure) {
+                fail(failure);
+            }
         }
 
-        void enqueueCollapseClick() {
-            enqueueClickInput(collapseClickQueued_, collapseClickDispatched_);
+        private void acknowledgePaintReady(InputPhase phase) {
+            if (!phase.rendererPaintReady_.compareAndSet(false, true)
+                    || !phase.invalidationQueued_.compareAndSet(false, true))
+                return;
+            // A renderer title can precede compositor presentation. Force a later view paint only
+            // after this native title callback has returned, then accept only the exact phase
+            // color.
+            enqueue(() -> dispatchInvalidation(phase));
         }
 
-        private void clickInput() {
-            // CefMouseEvent mirrors GLFW here: action 1 presses, action 0 releases, and button 0 is
-            // the left button. Keep the ordered pair because CEF 151 publishes this programmatic
-            // textarea selection through its OSR user-input update path.
-            sendMouseEvent(new CefMouseEvent(1, 40, 40, 1, 0, CefMouseEvent.BUTTON1_MASK));
-            sendMouseEvent(new CefMouseEvent(0, 40, 40, 1, 0, 0));
+        private void dispatchInvalidation(InputPhase phase) {
+            try {
+                phase.invalidationDispatched_.set(true);
+                invalidate(CefPaintElementType.PET_VIEW);
+            } catch (Throwable failure) {
+                fail(failure);
+            }
+        }
+
+        private void handlePaint(CefPaintEvent event) {
+            try {
+                if (event.getBrowser() != this) throw new AssertionError("Text-selection paint crossed browser-specific render handlers");
+                if (event.getPopup()) {
+                    popupPaints_.incrementAndGet();
+                    return;
+                }
+                // The frame is CEF-owned and valid only during this callback. Sample it here, but
+                // defer all browser input until a later EDT turn after the native callback unwinds.
+                long sampledPixel = sampleSentinelPixel(event);
+                if (selectionPhase_.acknowledgeSentinelPaint(event, sampledPixel))
+                    enqueueMove(selectionPhase_);
+                if (collapsePhase_.acknowledgeSentinelPaint(event, sampledPixel))
+                    enqueueMove(collapsePhase_);
+            } catch (Throwable failure) {
+                fail(failure);
+            }
+        }
+
+        private void enqueueMove(InputPhase phase) {
+            if (!phase.moveQueued_.compareAndSet(false, true)) return;
+            enqueue(() -> dispatchMove(phase));
+        }
+
+        private void dispatchMove(InputPhase phase) {
+            try {
+                phase.moveDispatched_.set(true);
+                sendMouseEvent(new CefMouseEvent(CefMouseEvent.MOUSE_MOVED, phase.inputX_, phase.inputY_, 0, 0, 0));
+            } catch (Throwable failure) {
+                fail(failure);
+            }
+        }
+
+        private void acknowledgeMove(InputPhase phase) {
+            if (!phase.sentinelPaintAcknowledged_.get()) throw new AssertionError("Renderer acknowledged " + phase.name_ + " mouse movement before the exact sentinel paint");
+            if (!phase.moveAcknowledged_.compareAndSet(false, true)
+                    || !phase.clickQueued_.compareAndSet(false, true))
+                return;
+            // The trusted renderer mousemove is the input-routing barrier. Return from its title
+            // callback before injecting the ordered press/release pair on a later EDT turn.
+            enqueue(() -> dispatchClick(phase));
+        }
+
+        private void dispatchClick(InputPhase phase) {
+            try {
+                phase.clickDispatched_.set(true);
+                // CefMouseEvent mirrors GLFW here: action 1 presses, action 0 releases, and button
+                // 0 is left. CEF 151 publishes this selection through its OSR user-input update
+                // path.
+                sendMouseEvent(new CefMouseEvent(1, phase.inputX_, phase.inputY_, 1, 0, CefMouseEvent.BUTTON1_MASK));
+                sendMouseEvent(new CefMouseEvent(0, phase.inputX_, phase.inputY_, 1, 0, 0));
+            } catch (Throwable failure) {
+                fail(failure);
+            }
+        }
+
+        private void acknowledgeClick(InputPhase phase) {
+            if (!phase.moveAcknowledged_.get()) throw new AssertionError("Renderer acknowledged " + phase.name_ + " click before its trusted mousemove");
+            phase.clickAcknowledged_.compareAndSet(false, true);
+            maybeEnqueuePhaseCompletion(phase);
         }
 
         private void maybeEnqueueSelectionStart() {
@@ -507,8 +749,7 @@ class CefTextSelectionChangedNativeTest {
                     || !selectionStartQueued_.compareAndSet(false, true))
                 return;
             // The first page-ready edge is delivered by OnTitleChange on CEF's UI thread. Always
-            // return from that native callback before crossing back through SetFocus and renderer
-            // JavaScript dispatch. The same hop also keeps the second browser's path identical.
+            // return before crossing back through SetFocus and renderer JavaScript dispatch.
             enqueue(this::dispatchSelectionStart);
         }
 
@@ -523,17 +764,30 @@ class CefTextSelectionChangedNativeTest {
             }
         }
 
-        private void enqueueClickInput(AtomicBoolean queued, AtomicBoolean dispatched) {
-            if (!queued.compareAndSet(false, true)) return;
-            // A ready title proves that Blink reached the expected focus/selection phase, but its
-            // OnTitleChange callback must still unwind before browser-process input is injected.
-            enqueue(() -> dispatchClickInput(dispatched));
+        private void maybeEnqueuePhaseCompletion(InputPhase phase) {
+            if (!phase.clickAcknowledged_.get() || phase.expectedCallback_.get() == null
+                    || !phase.completionQueued_.compareAndSet(false, true))
+                return;
+            // The renderer title and selection callback are independent native callbacks. Advancing
+            // only after both, on a later EDT turn, prevents the next phase title from coalescing.
+            enqueue(() -> dispatchPhaseCompletion(phase));
         }
 
-        private void dispatchClickInput(AtomicBoolean dispatched) {
+        private void dispatchPhaseCompletion(InputPhase phase) {
             try {
-                clickInput();
-                dispatched.set(true);
+                CallbackSnapshot snapshot = phase.expectedCallback_.get();
+                if (snapshot == null || !phase.clickAcknowledged_.get()) throw new AssertionError("Text-selection phase completion lost its renderer or CEF acknowledgement");
+                if (phase.completion_.isDone()) return;
+                if (phase == selectionPhase_) {
+                    collapseRequested_.set(true);
+                    execute(this, "window.prepareTextSelectionCollapse();");
+                } else if (phase == collapsePhase_) {
+                    afterCollapse_.run();
+                } else {
+                    throw new AssertionError("Unknown text-selection input phase");
+                }
+                phase.completionDispatched_.set(true);
+                phase.completion_.complete(snapshot);
             } catch (Throwable failure) {
                 fail(failure);
             }
@@ -553,26 +807,34 @@ class CefTextSelectionChangedNativeTest {
         }
 
         String diagnostics() {
-            return "{url=" + url_ + ", pageReady=" + pageReady_.get() + ", startRequested=" + startRequested_.get() + ", selectionStartQueued=" + selectionStartQueued_.get() + ", selectionStartDispatched=" + selectionStartDispatched_.get() + ", selectionClickQueued=" + selectionClickQueued_.get() + ", selectionClickDispatched=" + selectionClickDispatched_.get() + ", collapseRequested=" + collapseRequested_.get() + ", collapseClickQueued=" + collapseClickQueued_.get() + ", collapseClickDispatched=" + collapseClickDispatched_.get() + ", selectionDone=" + selection_.isDone() + ", collapseDone=" + collapse_.isDone() + "}";
+            return "{url=" + url_ + ", pageReady=" + pageReady_.get()
+                    + ", startRequested=" + startRequested_.get()
+                    + ", selectionStartQueued=" + selectionStartQueued_.get()
+                    + ", selectionStartDispatched=" + selectionStartDispatched_.get()
+                    + ", collapseRequested=" + collapseRequested_.get() + ", popupPaints="
+                    + popupPaints_.get() + ", callbackCount=" + callbackCount_.get()
+                    + ", lastCallbackText=" + lastCallbackText_.get() + ", lastCallbackRange="
+                    + lastCallbackRange_.get() + ", selection=" + selectionPhase_.diagnostics()
+                    + ", collapse=" + collapsePhase_.diagnostics() + "}";
         }
 
         @Override
         public void onTextSelectionChanged(CefBrowser browser, String selectedText, CefRange selectedRange) {
-            if (!selectionStartDispatched_.get()) return;
             try {
                 if (browser != this) throw new AssertionError("Text-selection callback crossed browser-specific render handlers");
-                if (selectedText == null || selectedRange == null) throw new AssertionError("Text-selection snapshots must be non-null");
-                if (!selection_.isDone() && EXPECTED_TEXT.equals(selectedText)
-                        && EXPECTED_RANGE.equals(selectedRange)) {
-                    selection_.complete(new CallbackSnapshot(browser, selectedText, selectedRange, isOnCefUiThread()));
-                    collapseRequested_.set(true);
-                    execute(this, "window.prepareTextSelectionCollapse();");
-                    return;
-                }
-                if (collapseRequested_.get() && !collapse_.isDone() && selectedText.isEmpty()
-                        && COLLAPSED_RANGE.equals(selectedRange)) {
-                    if (collapse_.complete(new CallbackSnapshot(browser, selectedText, selectedRange, isOnCefUiThread()))) afterCollapse_.run();
-                }
+                if (selectedText == null || selectedRange == null)
+                    throw new AssertionError("Text-selection snapshots must be non-null");
+                callbackCount_.incrementAndGet();
+                lastCallbackText_.set(formatText(selectedText));
+                lastCallbackRange_.set(selectedRange.toString());
+                if (!selectionStartDispatched_.get()) return;
+                CallbackSnapshot snapshot = new CallbackSnapshot(browser, selectedText, selectedRange, isOnCefUiThread());
+                InputPhase phase = null;
+                if (!collapseRequested_.get() && selectionPhase_.accepts(selectedText, selectedRange)) phase = selectionPhase_;
+                else if (collapseRequested_.get() && collapsePhase_.accepts(selectedText, selectedRange)) phase = collapsePhase_;
+                if (phase == null || !phase.expectedCallback_.compareAndSet(null, snapshot)) return;
+                phase.expectedCallbackReceived_.set(true);
+                maybeEnqueuePhaseCompletion(phase);
             } catch (Throwable failure) {
                 fail(failure);
             }

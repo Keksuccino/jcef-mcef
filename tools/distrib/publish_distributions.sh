@@ -622,7 +622,7 @@ reconcile_release_before_creation() {
 }
 
 create_empty_draft() {
-  local created_release_id
+  local created_release_id=''
   local mutation_status
   local reconciliation_status
   if [ "$TAG_CREATED" = false ] && [ "$RELEASE_ABSENCE_RECONCILED" = false ]; then

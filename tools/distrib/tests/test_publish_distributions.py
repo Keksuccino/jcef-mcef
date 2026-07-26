@@ -377,7 +377,7 @@ elif operation == 'create-release':
   target = field_value(arguments, '-f', 'target_commitish')
   title = field_value(arguments, '-f', 'name')
   body = field_value(arguments, '-f', 'body')
-  if tag != os.environ['FAKE_EXPECTED_TAG'] or field_value(arguments, '-F', 'draft') != 'true' or field_value(arguments, '-F', 'prerelease') != 'false' or field_value(arguments, '-f', 'make_latest') != 'false':
+  if tag != os.environ['FAKE_EXPECTED_TAG'] or field_value(arguments, '-F', 'draft') != 'true' or field_value(arguments, '-F', 'prerelease') != 'false' or field_value(arguments, '-f', 'make_latest') != 'true':
     fail('draft safety field missing')
   release = {'id': state['next_id'], 'tag': tag, 'target': target, 'draft': True, 'immutable': False, 'prerelease': False, 'title': title, 'body': body, 'author': state.get('authenticated_login', 'github-actions[bot]'), 'assets': {}}
   state['next_id'] += 1
@@ -458,7 +458,7 @@ elif operation == 'publish-release':
   requested_id = requested_release_id(endpoint)
   if release is None or release.get('id') != requested_id or not release['draft']:
     fail('only the exact draft can be published')
-  if field_value(arguments, '-f', 'tag_name') != release['tag'] or field_value(arguments, '-F', 'draft') != 'false' or field_value(arguments, '-F', 'prerelease') != 'false' or field_value(arguments, '-f', 'make_latest') != 'false':
+  if field_value(arguments, '-f', 'tag_name') != release['tag'] or field_value(arguments, '-F', 'draft') != 'false' or field_value(arguments, '-F', 'prerelease') != 'false' or field_value(arguments, '-f', 'make_latest') != 'true':
     fail('publish safety field missing')
   if field_value(arguments, '-f', 'target_commitish') != release['target']:
     fail('publish target mismatch')
@@ -467,7 +467,7 @@ elif operation == 'publish-release':
   state['prepublish_release'] = dict(release)
   release['draft'] = False
   release['immutable'] = state.get('immutable_after_publish', True)
-  if state.get('latest_after_publish') or state.get('latest_status', 'null') == 'null':
+  if not state.get('ignore_make_latest_after_publish'):
     state['latest_status'] = 'tag|' + release['tag']
   state['release'] = release
   state['publish_get_stale_remaining'] = state.get('publish_get_stale_calls', 0)
@@ -758,12 +758,12 @@ class PublishDistributionsTest(unittest.TestCase):
                             if record['operation'] == 'create-release')
     publish_arguments = next(record['arguments'] for record in records
                              if record['operation'] == 'publish-release')
-    self.assertEqual('false',
+    self.assertEqual('true',
                      field_argument(create_arguments, '-f', 'make_latest'))
     self.assertEqual('true', field_argument(create_arguments, '-F', 'draft'))
     self.assertEqual('false',
                      field_argument(create_arguments, '-F', 'prerelease'))
-    self.assertEqual('false',
+    self.assertEqual('true',
                      field_argument(publish_arguments, '-f', 'make_latest'))
     self.assertEqual('false', field_argument(publish_arguments, '-F', 'draft'))
     self.assertEqual('false',
@@ -1001,7 +1001,7 @@ class PublishDistributionsTest(unittest.TestCase):
     self.assertEqual(before, self.state_path.read_bytes())
     self.assert_no_modifying_calls()
 
-  def test_sole_published_release_may_be_returned_as_latest(self):
+  def test_published_release_is_confirmed_as_latest(self):
     self.set_release(
         False, ASSET_NAMES, latest_status='tag|{}'.format(TAG_NAME))
     before = self.state_path.read_bytes()
@@ -1011,7 +1011,7 @@ class PublishDistributionsTest(unittest.TestCase):
     self.assert_no_modifying_calls()
     self.assertIn('list-full-releases', self.operations())
 
-  def test_published_release_marked_latest_is_rejected_when_not_sole(self):
+  def test_published_release_is_latest_with_other_full_releases(self):
     self.set_release(
         False, ASSET_NAMES, latest_status='tag|{}'.format(TAG_NAME))
     state = self.read_state()
@@ -1019,14 +1019,12 @@ class PublishDistributionsTest(unittest.TestCase):
     self.write_state(state)
     before = self.state_path.read_bytes()
     result = self.run_publisher()
-    self.assertNotEqual(0, result.returncode)
-    self.assertIn('unexpectedly marked as latest despite another published full release existing',
-                  result.stderr)
+    self.assertEqual(0, result.returncode, result.stderr)
     self.assertEqual(before, self.state_path.read_bytes())
     self.assert_no_modifying_calls()
     self.assertEqual([], self.sleep_delays())
 
-  def test_stale_null_latest_converges_to_sole_target(self):
+  def test_stale_null_latest_converges_to_target(self):
     self.set_release(False, ASSET_NAMES)
     state = self.read_state()
     state['latest_visibility_delay_remaining'] = 2
@@ -1038,35 +1036,34 @@ class PublishDistributionsTest(unittest.TestCase):
     self.assertEqual(3, self.operations().count('inspect-latest'))
     self.assert_no_modifying_calls()
 
-  def test_stale_prior_latest_cannot_hide_target_becoming_latest(self):
+  def test_stale_prior_latest_converges_to_target(self):
     self.set_release(False, ASSET_NAMES)
     state = self.read_state()
     state['full_release_status'] = 'tag|{}\ntag|other'.format(TAG_NAME)
     state['latest_visibility_delay_remaining'] = 2
     state['stale_latest_status'] = 'tag|other'
     self.write_state(state)
-    before = self.state_path.read_bytes()
     result = self.run_publisher()
-    self.assertNotEqual(0, result.returncode)
-    self.assertIn('unexpectedly marked as latest despite another published full release existing',
-                  result.stderr)
-    self.assertNotEqual(before, self.state_path.read_bytes())
+    self.assertEqual(0, result.returncode, result.stderr)
     self.assertEqual(['1', '2'], self.sleep_delays())
     self.assertEqual(3, self.operations().count('inspect-latest'))
     self.assert_no_modifying_calls()
 
-  def test_stable_prior_latest_is_observed_through_visibility_window(self):
+  def test_stable_prior_latest_is_rejected_after_visibility_window(self):
     self.set_release(False, ASSET_NAMES, latest_status='tag|other')
     state = self.read_state()
     state['full_release_status'] = 'tag|{}\ntag|other'.format(TAG_NAME)
     self.write_state(state)
     result = self.run_publisher()
-    self.assertEqual(0, result.returncode, result.stderr)
+    self.assertNotEqual(0, result.returncode)
+    self.assertIn(
+        'Unable to confirm {} as the latest published full release'.format(
+            TAG_NAME), result.stderr)
     self.assertEqual(['1', '2', '4', '8', '16'], self.sleep_delays())
     self.assertEqual(6, self.operations().count('inspect-latest'))
     self.assert_no_modifying_calls()
 
-  def test_sole_release_inspection_failure_is_non_mutating(self):
+  def test_full_release_inspection_failure_is_non_mutating(self):
     self.set_release(
         False, ASSET_NAMES, latest_status='tag|{}'.format(TAG_NAME))
     before = self.state_path.read_bytes()
@@ -1077,7 +1074,7 @@ class PublishDistributionsTest(unittest.TestCase):
     self.assertEqual(before, self.state_path.read_bytes())
     self.assert_no_modifying_calls()
 
-  def test_malformed_sole_release_state_is_non_mutating(self):
+  def test_malformed_full_release_state_is_non_mutating(self):
     for full_release_status in ('invalid', 'tag|', 'tag|other'):
       with self.subTest(full_release_status=repr(full_release_status)):
         self.set_release(
@@ -1740,23 +1737,26 @@ class PublishDistributionsTest(unittest.TestCase):
     self.assertFalse(self.read_state()['release']['immutable'])
     self.assertIn('publish-release', self.operations())
 
-  def test_post_publish_latest_state_is_detected(self):
+  def test_post_publish_prior_latest_state_is_detected(self):
     state = self.read_state()
-    state['latest_after_publish'] = True
+    state['latest_status'] = 'tag|other'
+    state['ignore_make_latest_after_publish'] = True
     state['full_release_status'] = 'tag|{}\ntag|other'.format(TAG_NAME)
     self.write_state(state)
     result = self.run_publisher()
     self.assertNotEqual(0, result.returncode)
-    self.assertIn('unexpectedly marked as latest despite another published full release existing',
-                  result.stderr)
+    self.assertIn(
+        'Unable to confirm {} as the latest published full release'.format(
+            TAG_NAME), result.stderr)
     self.assertFalse(self.read_state()['release']['draft'])
     self.assertTrue(self.read_state()['release']['immutable'])
     self.assertLess(self.operations().index('publish-release'),
                     self.operations().index('inspect-latest'))
 
-  def test_first_full_release_may_be_returned_as_latest_after_publish(self):
+  def test_published_release_becomes_latest_with_other_full_releases(self):
     state = self.read_state()
-    state['latest_after_publish'] = True
+    state['latest_status'] = 'tag|other'
+    state['full_release_status'] = 'tag|{}\ntag|other'.format(TAG_NAME)
     self.write_state(state)
     result = self.run_publisher()
     self.assertEqual(0, result.returncode, result.stderr)
@@ -1764,9 +1764,8 @@ class PublishDistributionsTest(unittest.TestCase):
     self.assertLess(self.operations().index('publish-release'),
                     self.operations().index('list-full-releases'))
 
-  def test_first_full_release_list_visibility_is_retried(self):
+  def test_published_release_list_visibility_is_retried(self):
     state = self.read_state()
-    state['latest_after_publish'] = True
     state['full_release_visibility_delay_remaining'] = 2
     self.write_state(state)
     result = self.run_publisher()

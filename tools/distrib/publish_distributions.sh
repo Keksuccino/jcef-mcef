@@ -206,22 +206,17 @@ ensure_release_latest_policy() {
   local latest_status
   local latest_tag=''
   local published_release_tags
-  local published_release_count=0
   local target_release_count=0
-  local latest_release_count=0
   local kind
   local tag
   local extra
   local attempt=1
   local delay_seconds=1
-  # GitHub's latest-release lookup always returns the newest published full
-  # release. Consequently, the repository's first and only published full
-  # release is returned as latest even when publication explicitly sends
-  # make_latest=false. Accept only that unavoidable state; drafts and
-  # prereleases do not affect latest-release selection. When another full
-  # release exists, poll the complete combined state through GitHub's bounded
-  # visibility window so a stale null or prior latest value cannot hide the
-  # target becoming latest after publication.
+  # Publication explicitly requests make_latest=true, but the immutable
+  # release and GitHub's latest-release indexes can become visible at different
+  # times. Poll both views through a bounded visibility window. Success requires
+  # the exact target to be the latest release and to occur exactly once in the
+  # complete collection of published, non-prerelease releases.
   while [ "$attempt" -le "$RELEASE_VISIBILITY_MAX_ATTEMPTS" ]; do
     if ! latest_status="$(gh_command api graphql -f "query=${LATEST_RELEASE_QUERY}" -F "owner=${REPOSITORY_OWNER}" -F "name=${REPOSITORY_NAME}" --jq 'if (.errors != null or (.data.repository | type) != "object" or (.data.repository | has("latestRelease") | not)) then "invalid" elif .data.repository.latestRelease == null then "null" elif ((.data.repository.latestRelease | type) == "object" and (.data.repository.latestRelease.tagName | type) == "string" and (.data.repository.latestRelease.tagName | length) > 0 and (.data.repository.latestRelease.tagName | contains("\r") | not) and (.data.repository.latestRelease.tagName | contains("\n") | not) and (.data.repository.latestRelease.tagName | contains("|") | not)) then "tag|" + .data.repository.latestRelease.tagName else "invalid" end')"; then
       die "Unable to inspect the latest release for ${REPOSITORY}"
@@ -234,40 +229,28 @@ ensure_release_latest_policy() {
     if ! published_release_tags="$(gh_command api --paginate "repos/${REPOSITORY}/releases?per_page=100" --jq 'def line_safe_string: (type == "string") and (length > 0) and (contains("\r") | not) and (contains("\n") | not) and (contains("|") | not); def valid_release: (type == "object") and (.tag_name | line_safe_string) and ((.draft | type) == "boolean") and ((.prerelease | type) == "boolean"); if ((type != "array") or any(.[]; (valid_release | not))) then "invalid" else .[] | select(.draft == false and .prerelease == false) | "tag|" + .tag_name end')"; then
       die "Unable to inspect published full releases for ${REPOSITORY}"
     fi
-    published_release_count=0
     target_release_count=0
-    latest_release_count=0
     if [ -n "$published_release_tags" ]; then
       while IFS='|' read -r kind tag extra; do
         if [ "$kind" != tag ] || [ -z "$tag" ] || [ -n "$extra" ]; then
           die "Published-release query returned malformed state for ${REPOSITORY}: ${published_release_tags}"
         fi
-        published_release_count=$((published_release_count + 1))
         if [ "$tag" = "$TAG_NAME" ]; then
           target_release_count=$((target_release_count + 1))
         fi
-        if [ -n "$latest_tag" ] && [ "$tag" = "$latest_tag" ]; then
-          latest_release_count=$((latest_release_count + 1))
-        fi
       done <<< "$published_release_tags"
     fi
-    if [ "$latest_tag" = "$TAG_NAME" ] && [ "$published_release_count" -eq 1 ] && [ "$target_release_count" -eq 1 ]; then
+    if [ "$latest_tag" = "$TAG_NAME" ] && [ "$target_release_count" -eq 1 ]; then
       return 0
     fi
-    if [ "$latest_tag" = "$TAG_NAME" ] && [ "$target_release_count" -eq 1 ] && [ "$published_release_count" -gt 1 ]; then
-      die "Release ${TAG_NAME} is unexpectedly marked as latest despite another published full release existing"
-    fi
     if [ "$attempt" -eq "$RELEASE_VISIBILITY_MAX_ATTEMPTS" ]; then
-      if [ -n "$latest_tag" ] && [ "$latest_tag" != "$TAG_NAME" ] && [ "$target_release_count" -eq 1 ] && [ "$latest_release_count" -eq 1 ]; then
-        return 0
-      fi
       break
     fi
     sleep_before_release_retry "$delay_seconds"
     delay_seconds=$((delay_seconds * 2))
     attempt=$((attempt + 1))
   done
-  die "Unable to confirm stable latest-release policy for ${TAG_NAME}"
+  die "Unable to confirm ${TAG_NAME} as the latest published full release"
 }
 
 try_query_release_ids() {
@@ -686,7 +669,7 @@ create_empty_draft() {
     fi
   fi
   if [ -z "$created_release_id" ]; then
-    if created_release_id="$(gh_command api --method POST "repos/${REPOSITORY}/releases" -f "tag_name=${TAG_NAME}" -f "target_commitish=${COMMIT_SHA}" -f "name=${RELEASE_TITLE}" -f "body=${RELEASE_BODY}" -F draft=true -F prerelease=false -f make_latest=false --jq 'if ((.id | type) == "number" and .id > 0) then (.id | tostring) else "invalid" end')"; then
+    if created_release_id="$(gh_command api --method POST "repos/${REPOSITORY}/releases" -f "tag_name=${TAG_NAME}" -f "target_commitish=${COMMIT_SHA}" -f "name=${RELEASE_TITLE}" -f "body=${RELEASE_BODY}" -F draft=true -F prerelease=false -f make_latest=true --jq 'if ((.id | type) == "number" and .id > 0) then (.id | tostring) else "invalid" end')"; then
       :
     else
       mutation_status=$?
@@ -794,7 +777,7 @@ publish_verified_draft() {
     die "Draft release asset validation failed for ${TAG_NAME}"
   fi
   local published_release_id
-  if published_release_id="$(gh_command api --method PATCH "repos/${REPOSITORY}/releases/${DRAFT_RELEASE_ID}" -f "tag_name=${TAG_NAME}" -f "target_commitish=${COMMIT_SHA}" -f "name=${RELEASE_TITLE}" -f "body=${RELEASE_BODY}" -F draft=false -F prerelease=false -f make_latest=false --jq 'if ((.id | type) == "number" and .id > 0) then (.id | tostring) else "invalid" end')"; then
+  if published_release_id="$(gh_command api --method PATCH "repos/${REPOSITORY}/releases/${DRAFT_RELEASE_ID}" -f "tag_name=${TAG_NAME}" -f "target_commitish=${COMMIT_SHA}" -f "name=${RELEASE_TITLE}" -f "body=${RELEASE_BODY}" -F draft=false -F prerelease=false -f make_latest=true --jq 'if ((.id | type) == "number" and .id > 0) then (.id | tostring) else "invalid" end')"; then
     if [ "$published_release_id" != "$DRAFT_RELEASE_ID" ]; then
       die "Published release identity changed for ${TAG_NAME}"
     fi

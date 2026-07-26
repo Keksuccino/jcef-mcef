@@ -202,22 +202,72 @@ resolve_release_author() {
   RELEASE_AUTHOR="$authenticated_login"
 }
 
-ensure_release_is_not_latest() {
+ensure_release_latest_policy() {
   local latest_status
-  local latest_tag
-  if ! latest_status="$(gh_command api graphql -f "query=${LATEST_RELEASE_QUERY}" -F "owner=${REPOSITORY_OWNER}" -F "name=${REPOSITORY_NAME}" --jq 'if (.errors != null or (.data.repository | type) != "object" or (.data.repository | has("latestRelease") | not)) then "invalid" elif .data.repository.latestRelease == null then "null" elif ((.data.repository.latestRelease | type) == "object" and (.data.repository.latestRelease.tagName | type) == "string") then "tag|" + .data.repository.latestRelease.tagName else "invalid" end')"; then
-    die "Unable to inspect the latest release for ${REPOSITORY}"
-  fi
-  if [ "$latest_status" = null ]; then
-    return 0
-  fi
-  case "$latest_status" in
-    tag\|?*) latest_tag="${latest_status#tag|}" ;;
-    *) die "Latest-release query returned malformed state for ${REPOSITORY}: ${latest_status:-no valid state}" ;;
-  esac
-  if [ "$latest_tag" = "$TAG_NAME" ]; then
-    die "Release ${TAG_NAME} is unexpectedly marked as latest"
-  fi
+  local latest_tag=''
+  local published_release_tags
+  local published_release_count=0
+  local target_release_count=0
+  local latest_release_count=0
+  local kind
+  local tag
+  local extra
+  local attempt=1
+  local delay_seconds=1
+  # GitHub's latest-release lookup always returns the newest published full
+  # release. Consequently, the repository's first and only published full
+  # release is returned as latest even when publication explicitly sends
+  # make_latest=false. Accept only that unavoidable state; drafts and
+  # prereleases do not affect latest-release selection. When another full
+  # release exists, poll the complete combined state through GitHub's bounded
+  # visibility window so a stale null or prior latest value cannot hide the
+  # target becoming latest after publication.
+  while [ "$attempt" -le "$RELEASE_VISIBILITY_MAX_ATTEMPTS" ]; do
+    if ! latest_status="$(gh_command api graphql -f "query=${LATEST_RELEASE_QUERY}" -F "owner=${REPOSITORY_OWNER}" -F "name=${REPOSITORY_NAME}" --jq 'if (.errors != null or (.data.repository | type) != "object" or (.data.repository | has("latestRelease") | not)) then "invalid" elif .data.repository.latestRelease == null then "null" elif ((.data.repository.latestRelease | type) == "object" and (.data.repository.latestRelease.tagName | type) == "string" and (.data.repository.latestRelease.tagName | length) > 0 and (.data.repository.latestRelease.tagName | contains("\r") | not) and (.data.repository.latestRelease.tagName | contains("\n") | not) and (.data.repository.latestRelease.tagName | contains("|") | not)) then "tag|" + .data.repository.latestRelease.tagName else "invalid" end')"; then
+      die "Unable to inspect the latest release for ${REPOSITORY}"
+    fi
+    case "$latest_status" in
+      null) latest_tag='' ;;
+      tag\|?*) latest_tag="${latest_status#tag|}" ;;
+      *) die "Latest-release query returned malformed state for ${REPOSITORY}: ${latest_status:-no valid state}" ;;
+    esac
+    if ! published_release_tags="$(gh_command api --paginate "repos/${REPOSITORY}/releases?per_page=100" --jq 'def line_safe_string: (type == "string") and (length > 0) and (contains("\r") | not) and (contains("\n") | not) and (contains("|") | not); def valid_release: (type == "object") and (.tag_name | line_safe_string) and ((.draft | type) == "boolean") and ((.prerelease | type) == "boolean"); if ((type != "array") or any(.[]; (valid_release | not))) then "invalid" else .[] | select(.draft == false and .prerelease == false) | "tag|" + .tag_name end')"; then
+      die "Unable to inspect published full releases for ${REPOSITORY}"
+    fi
+    published_release_count=0
+    target_release_count=0
+    latest_release_count=0
+    if [ -n "$published_release_tags" ]; then
+      while IFS='|' read -r kind tag extra; do
+        if [ "$kind" != tag ] || [ -z "$tag" ] || [ -n "$extra" ]; then
+          die "Published-release query returned malformed state for ${REPOSITORY}: ${published_release_tags}"
+        fi
+        published_release_count=$((published_release_count + 1))
+        if [ "$tag" = "$TAG_NAME" ]; then
+          target_release_count=$((target_release_count + 1))
+        fi
+        if [ -n "$latest_tag" ] && [ "$tag" = "$latest_tag" ]; then
+          latest_release_count=$((latest_release_count + 1))
+        fi
+      done <<< "$published_release_tags"
+    fi
+    if [ "$latest_tag" = "$TAG_NAME" ] && [ "$published_release_count" -eq 1 ] && [ "$target_release_count" -eq 1 ]; then
+      return 0
+    fi
+    if [ "$latest_tag" = "$TAG_NAME" ] && [ "$target_release_count" -eq 1 ] && [ "$published_release_count" -gt 1 ]; then
+      die "Release ${TAG_NAME} is unexpectedly marked as latest despite another published full release existing"
+    fi
+    if [ "$attempt" -eq "$RELEASE_VISIBILITY_MAX_ATTEMPTS" ]; then
+      if [ -n "$latest_tag" ] && [ "$latest_tag" != "$TAG_NAME" ] && [ "$target_release_count" -eq 1 ] && [ "$latest_release_count" -eq 1 ]; then
+        return 0
+      fi
+      break
+    fi
+    sleep_before_release_retry "$delay_seconds"
+    delay_seconds=$((delay_seconds * 2))
+    attempt=$((attempt + 1))
+  done
+  die "Unable to confirm stable latest-release policy for ${TAG_NAME}"
 }
 
 try_query_release_ids() {
@@ -598,7 +648,7 @@ reconcile_release_before_creation() {
               die "Published release does not exactly match local assets: ${TAG_NAME}"
             fi
             ensure_exact_tag false
-            ensure_release_is_not_latest
+            ensure_release_latest_policy
             echo "GitHub Release ${TAG_NAME} is already published and matches exactly"
             exit 0
           fi
@@ -709,7 +759,7 @@ verify_published_release() {
   if ! release_assets_match; then
     die "Published release asset validation failed for ${TAG_NAME}"
   fi
-  ensure_release_is_not_latest
+  ensure_release_latest_policy
 }
 
 publish_verified_draft() {
@@ -878,7 +928,7 @@ if [ -n "$RELEASE_IDS" ]; then
     if ! release_assets_match; then
       die "Published release does not exactly match local assets: ${TAG_NAME}"
     fi
-    ensure_release_is_not_latest
+    ensure_release_latest_policy
     echo "GitHub Release ${TAG_NAME} is already published and matches exactly"
     exit 0
   fi

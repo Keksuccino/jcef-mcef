@@ -174,13 +174,18 @@ endpoint = ''
 upload_name = ''
 if arguments[0] == 'api':
   if len(arguments) > 1 and arguments[1] == 'graphql':
-    operation = 'inspect-latest'
     owner = field_value(arguments, '-F', 'owner')
     name = field_value(arguments, '-F', 'name')
     if owner + '/' + name != os.environ['FAKE_EXPECTED_REPOSITORY']:
       fail('unexpected GraphQL repository')
-    if 'latestRelease{tagName}' not in field_value(arguments, '-f', 'query') or '--jq' not in arguments:
-      fail('malformed latest-release query')
+    query = field_value(arguments, '-f', 'query')
+    jq_filter = flag_value(arguments, '--jq')
+    if 'latestRelease{tagName}' in query:
+      operation = 'inspect-latest'
+      if '--jq' not in arguments:
+        fail('malformed latest-release query')
+    else:
+      fail('unexpected GraphQL query')
   elif len(arguments) > 1 and arguments[1] == 'user':
     operation = 'inspect-authenticated-user'
     jq_filter = flag_value(arguments, '--jq')
@@ -211,11 +216,17 @@ if arguments[0] == 'api':
         if '.enabled | type' not in jq_filter or '.enabled | tostring' not in jq_filter:
           fail('immutable-release inspection must preserve JSON type')
       elif '/releases?' in endpoint:
-        operation = 'list-releases'
         jq_filter = flag_value(arguments, '--jq')
-        required_shape_checks = ('type != "array"', 'valid_release', '.tag_name | type', '.id | type', '.id > 0', '.id | floor', '.id | tostring', '"invalid"')
-        if not all(fragment in jq_filter for fragment in required_shape_checks):
-          fail('release list query must validate page, element and ID types')
+        if '.draft | type' in jq_filter:
+          operation = 'list-full-releases'
+          required_full_release_checks = ('type != "array"', 'valid_release', '.tag_name | line_safe_string', '.draft | type', '.prerelease | type', '.draft == false', '.prerelease == false', '"tag|" + .tag_name', '"invalid"')
+          if not all(fragment in jq_filter for fragment in required_full_release_checks):
+            fail('full-release list query must validate every response field')
+        else:
+          operation = 'list-releases'
+          required_shape_checks = ('type != "array"', 'valid_release', '.tag_name | type', '.id | type', '.id > 0', '.id | floor', '.id | tostring', '"invalid"')
+          if not all(fragment in jq_filter for fragment in required_shape_checks):
+            fail('release list query must validate page, element and ID types')
       elif '/git/matching-refs/tags/' in endpoint:
         operation = 'list-tag-refs'
       elif '/commits/' in endpoint:
@@ -248,7 +259,7 @@ else:
   fail('unsupported gh arguments: ' + repr(arguments))
 if not operation:
   fail('unsupported gh arguments: ' + repr(arguments))
-if operation in ('list-releases', 'list-tag-refs') and '--paginate' not in arguments:
+if operation in ('list-releases', 'list-full-releases', 'list-tag-refs') and '--paginate' not in arguments:
   fail('inspection query must be paginated')
 
 record = {'arguments': arguments, 'operation': operation, 'github_token_present': 'GITHUB_TOKEN' in os.environ, 'gh_token_matches': (os.environ.get('GH_TOKEN') == expected_token if expected_token else 'GH_TOKEN' not in os.environ)}
@@ -263,7 +274,23 @@ if operation == 'inspect-immutability':
 elif operation == 'inspect-authenticated-user':
   print(state.get('authenticated_login', 'github-actions[bot]'))
 elif operation == 'inspect-latest':
-  print(state.get('latest_status', 'null'))
+  if state.get('latest_visibility_delay_remaining', 0) > 0:
+    state['latest_visibility_delay_remaining'] -= 1
+    save_state(state)
+    print(state.get('stale_latest_status', 'null'))
+  else:
+    print(state.get('latest_status', 'null'))
+elif operation == 'list-full-releases':
+  if state.get('malformed_full_release_list_response'):
+    print('invalid')
+  elif state.get('full_release_visibility_delay_remaining', 0) > 0:
+    state['full_release_visibility_delay_remaining'] -= 1
+    save_state(state)
+    print(state.get('stale_full_release_status', ''))
+  elif 'full_release_status' in state:
+    print(state['full_release_status'])
+  elif release is not None and not release['draft'] and not release['prerelease']:
+    print('tag|' + release['tag'])
 elif operation == 'list-releases':
   if state.get('malformed_release_list_response'):
     print('invalid')
@@ -440,7 +467,7 @@ elif operation == 'publish-release':
   state['prepublish_release'] = dict(release)
   release['draft'] = False
   release['immutable'] = state.get('immutable_after_publish', True)
-  if state.get('latest_after_publish'):
+  if state.get('latest_after_publish') or state.get('latest_status', 'null') == 'null':
     state['latest_status'] = 'tag|' + release['tag']
   state['release'] = release
   state['publish_get_stale_remaining'] = state.get('publish_get_stale_calls', 0)
@@ -653,12 +680,14 @@ class PublishDistributionsTest(unittest.TestCase):
                   author='github-actions[bot]',
                   immutable=None,
                   immutable_status='boolean|true',
-                  latest_status='null',
+                  latest_status=None,
                   overrides=None):
     assets = {name: self.canonical_assets()[name] for name in asset_names}
     for name, contents in (overrides or {}).items():
       assets[name] = base64.b64encode(contents).decode('ascii')
     immutable = not draft if immutable is None else immutable
+    if latest_status is None:
+      latest_status = ('null' if draft else 'tag|{}'.format(TAG_NAME))
     release = {
         'id': 1,
         'tag': TAG_NAME,
@@ -972,16 +1001,97 @@ class PublishDistributionsTest(unittest.TestCase):
     self.assertEqual(before, self.state_path.read_bytes())
     self.assert_no_modifying_calls()
 
-  def test_published_release_marked_latest_is_rejected_without_modification(
-      self):
+  def test_sole_published_release_may_be_returned_as_latest(self):
     self.set_release(
         False, ASSET_NAMES, latest_status='tag|{}'.format(TAG_NAME))
     before = self.state_path.read_bytes()
     result = self.run_publisher()
-    self.assertNotEqual(0, result.returncode)
-    self.assertIn('unexpectedly marked as latest', result.stderr)
+    self.assertEqual(0, result.returncode, result.stderr)
     self.assertEqual(before, self.state_path.read_bytes())
     self.assert_no_modifying_calls()
+    self.assertIn('list-full-releases', self.operations())
+
+  def test_published_release_marked_latest_is_rejected_when_not_sole(self):
+    self.set_release(
+        False, ASSET_NAMES, latest_status='tag|{}'.format(TAG_NAME))
+    state = self.read_state()
+    state['full_release_status'] = 'tag|{}\ntag|other'.format(TAG_NAME)
+    self.write_state(state)
+    before = self.state_path.read_bytes()
+    result = self.run_publisher()
+    self.assertNotEqual(0, result.returncode)
+    self.assertIn('unexpectedly marked as latest despite another published full release existing',
+                  result.stderr)
+    self.assertEqual(before, self.state_path.read_bytes())
+    self.assert_no_modifying_calls()
+    self.assertEqual([], self.sleep_delays())
+
+  def test_stale_null_latest_converges_to_sole_target(self):
+    self.set_release(False, ASSET_NAMES)
+    state = self.read_state()
+    state['latest_visibility_delay_remaining'] = 2
+    state['stale_latest_status'] = 'null'
+    self.write_state(state)
+    result = self.run_publisher()
+    self.assertEqual(0, result.returncode, result.stderr)
+    self.assertEqual(['1', '2'], self.sleep_delays())
+    self.assertEqual(3, self.operations().count('inspect-latest'))
+    self.assert_no_modifying_calls()
+
+  def test_stale_prior_latest_cannot_hide_target_becoming_latest(self):
+    self.set_release(False, ASSET_NAMES)
+    state = self.read_state()
+    state['full_release_status'] = 'tag|{}\ntag|other'.format(TAG_NAME)
+    state['latest_visibility_delay_remaining'] = 2
+    state['stale_latest_status'] = 'tag|other'
+    self.write_state(state)
+    before = self.state_path.read_bytes()
+    result = self.run_publisher()
+    self.assertNotEqual(0, result.returncode)
+    self.assertIn('unexpectedly marked as latest despite another published full release existing',
+                  result.stderr)
+    self.assertNotEqual(before, self.state_path.read_bytes())
+    self.assertEqual(['1', '2'], self.sleep_delays())
+    self.assertEqual(3, self.operations().count('inspect-latest'))
+    self.assert_no_modifying_calls()
+
+  def test_stable_prior_latest_is_observed_through_visibility_window(self):
+    self.set_release(False, ASSET_NAMES, latest_status='tag|other')
+    state = self.read_state()
+    state['full_release_status'] = 'tag|{}\ntag|other'.format(TAG_NAME)
+    self.write_state(state)
+    result = self.run_publisher()
+    self.assertEqual(0, result.returncode, result.stderr)
+    self.assertEqual(['1', '2', '4', '8', '16'], self.sleep_delays())
+    self.assertEqual(6, self.operations().count('inspect-latest'))
+    self.assert_no_modifying_calls()
+
+  def test_sole_release_inspection_failure_is_non_mutating(self):
+    self.set_release(
+        False, ASSET_NAMES, latest_status='tag|{}'.format(TAG_NAME))
+    before = self.state_path.read_bytes()
+    result = self.run_publisher(environment=self.environment(
+        FAKE_GH_FAIL_OPERATION='list-full-releases'))
+    self.assertNotEqual(0, result.returncode)
+    self.assertIn('Unable to inspect published full releases', result.stderr)
+    self.assertEqual(before, self.state_path.read_bytes())
+    self.assert_no_modifying_calls()
+
+  def test_malformed_sole_release_state_is_non_mutating(self):
+    for full_release_status in ('invalid', 'tag|', 'tag|other'):
+      with self.subTest(full_release_status=repr(full_release_status)):
+        self.set_release(
+            False, ASSET_NAMES, latest_status='tag|{}'.format(TAG_NAME))
+        state = self.read_state()
+        state['full_release_status'] = full_release_status
+        self.write_state(state)
+        before = self.state_path.read_bytes()
+        if self.log_path.exists():
+          self.log_path.unlink()
+        result = self.run_publisher()
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual(before, self.state_path.read_bytes())
+        self.assert_no_modifying_calls()
 
   def test_latest_release_inspection_failure_is_non_mutating(self):
     self.set_release(False, ASSET_NAMES)
@@ -1278,12 +1388,45 @@ class PublishDistributionsTest(unittest.TestCase):
     self.assertEqual(0, result.returncode, result.stderr)
     filters = {}
     for record in self.read_log():
-      if record['operation'] in ('list-releases', 'view-assets'):
+      if record['operation'] in ('inspect-latest', 'list-releases',
+                                 'list-full-releases', 'view-assets'):
         filters.setdefault(record['operation'],
                            flag_argument(record['arguments'], '--jq'))
-    self.assertEqual({'list-releases', 'view-assets'}, set(filters))
+    self.assertEqual({
+        'inspect-latest', 'list-releases', 'list-full-releases', 'view-assets'
+    }, set(filters))
 
     fixtures = {
+        'inspect-latest': ({}, {
+            'errors': [{
+                'message': 'failure'
+            }],
+            'data': {
+                'repository': {
+                    'latestRelease': None
+                }
+            }
+        }, {
+            'data': {
+                'repository': {}
+            }
+        }, {
+            'data': {
+                'repository': {
+                    'latestRelease': {
+                        'tagName': 7
+                    }
+                }
+            }
+        }, {
+            'data': {
+                'repository': {
+                    'latestRelease': {
+                        'tagName': TAG_NAME + '|injected'
+                    }
+                }
+            }
+        }),
         'list-releases': ({}, [{
             'tag_name': TAG_NAME,
             'id': '1'
@@ -1295,6 +1438,22 @@ class PublishDistributionsTest(unittest.TestCase):
             'id': 1.5
         }], [{
             'id': 1
+        }]),
+        'list-full-releases': ({}, [{
+            'tag_name': TAG_NAME,
+            'draft': 'false',
+            'prerelease': False
+        }], [{
+            'tag_name': TAG_NAME,
+            'draft': False,
+            'prerelease': 0
+        }], [{
+            'tag_name': TAG_NAME + '|injected',
+            'draft': False,
+            'prerelease': False
+        }], [{
+            'draft': False,
+            'prerelease': False
         }]),
         'view-assets': ({}, {
             'assets': {}
@@ -1335,10 +1494,32 @@ class PublishDistributionsTest(unittest.TestCase):
           self.assertEqual('invalid', jq_result.stdout.rstrip('\n'))
 
     valid_payloads = {
+        'inspect-latest': ({
+            'data': {
+                'repository': {
+                    'latestRelease': {
+                        'tagName': TAG_NAME
+                    }
+                }
+            }
+        }, 'tag|' + TAG_NAME),
         'list-releases': ([{
             'tag_name': TAG_NAME,
             'id': 7
         }], '7'),
+        'list-full-releases': ([{
+            'tag_name': TAG_NAME,
+            'draft': False,
+            'prerelease': False
+        }, {
+            'tag_name': 'draft-release',
+            'draft': True,
+            'prerelease': False
+        }, {
+            'tag_name': 'prerelease',
+            'draft': False,
+            'prerelease': True
+        }], 'tag|' + TAG_NAME),
         'view-assets': ({
             'assets': [{
                 'name': ARCHIVE_NAMES[0],
@@ -1358,6 +1539,20 @@ class PublishDistributionsTest(unittest.TestCase):
             input=json.dumps(payload))
         self.assertEqual(0, jq_result.returncode, jq_result.stderr)
         self.assertEqual(expected_output, jq_result.stdout.rstrip('\n'))
+
+    latest_null_result = subprocess.run(
+        [jq_path, '-r', filters['inspect-latest']],
+        check=False,
+        capture_output=True,
+        text=True,
+        input=json.dumps({'data': {
+            'repository': {
+                'latestRelease': None
+            }
+        }}))
+    self.assertEqual(0, latest_null_result.returncode,
+                     latest_null_result.stderr)
+    self.assertEqual('null', latest_null_result.stdout.rstrip('\n'))
 
   def test_archive_upload_failure_leaves_invisible_draft_without_checksums(
       self):
@@ -1548,14 +1743,37 @@ class PublishDistributionsTest(unittest.TestCase):
   def test_post_publish_latest_state_is_detected(self):
     state = self.read_state()
     state['latest_after_publish'] = True
+    state['full_release_status'] = 'tag|{}\ntag|other'.format(TAG_NAME)
     self.write_state(state)
     result = self.run_publisher()
     self.assertNotEqual(0, result.returncode)
-    self.assertIn('unexpectedly marked as latest', result.stderr)
+    self.assertIn('unexpectedly marked as latest despite another published full release existing',
+                  result.stderr)
     self.assertFalse(self.read_state()['release']['draft'])
     self.assertTrue(self.read_state()['release']['immutable'])
     self.assertLess(self.operations().index('publish-release'),
                     self.operations().index('inspect-latest'))
+
+  def test_first_full_release_may_be_returned_as_latest_after_publish(self):
+    state = self.read_state()
+    state['latest_after_publish'] = True
+    self.write_state(state)
+    result = self.run_publisher()
+    self.assertEqual(0, result.returncode, result.stderr)
+    self.assert_exact_published_release()
+    self.assertLess(self.operations().index('publish-release'),
+                    self.operations().index('list-full-releases'))
+
+  def test_first_full_release_list_visibility_is_retried(self):
+    state = self.read_state()
+    state['latest_after_publish'] = True
+    state['full_release_visibility_delay_remaining'] = 2
+    self.write_state(state)
+    result = self.run_publisher()
+    self.assertEqual(0, result.returncode, result.stderr)
+    self.assert_exact_published_release()
+    self.assertEqual(['1', '2'], self.sleep_delays())
+    self.assertEqual(3, self.operations().count('list-full-releases'))
 
   def test_mutating_api_interruption_statuses_are_terminal(self):
     operations = ('create-ref', 'create-release', 'upload-release',

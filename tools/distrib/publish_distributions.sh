@@ -20,7 +20,13 @@ readonly REPOSITORY_NAME='jcef-mcef'
 readonly REPOSITORY="${REPOSITORY_OWNER}/${REPOSITORY_NAME}"
 readonly RELEASE_MARKER='managed-by=tools/distrib/publish_distributions.sh;schema=1'
 readonly SYSTEM_ENV_PATH='/usr/bin/env'
+# Release assets use a different GitHub origin. A relative `gh api` endpoint
+# targets api.github.com, while `--hostname uploads.github.com` would construct
+# the invalid api.uploads.github.com host. Keep this absolute URL: gh still
+# applies GitHub.com authentication through its subdomain normalization.
+readonly RELEASE_UPLOAD_BASE_URL="https://uploads.github.com/repos/${REPOSITORY}"
 readonly LATEST_RELEASE_QUERY="query(\$owner:String!,\$name:String!){repository(owner:\$owner,name:\$name){latestRelease{tagName}}}"
+readonly RELEASE_VISIBILITY_MAX_ATTEMPTS=6
 readonly -a TARGETS=(
   linux_amd64
   linux_arm64
@@ -53,6 +59,7 @@ CMP_PATH=''
 WC_PATH=''
 TR_PATH=''
 PYTHON_PATH=''
+SLEEP_PATH=''
 SCRIPT_DIRECTORY=''
 VERIFIER_PATH=''
 COMMIT_SHA=''
@@ -65,6 +72,7 @@ DRAFT_RELEASE_ID=''
 TAG_REFS=''
 RELEASE_ASSETS=''
 METADATA_TAG=''
+METADATA_ID=''
 METADATA_TARGET=''
 METADATA_DRAFT=''
 METADATA_IMMUTABLE=''
@@ -73,6 +81,8 @@ METADATA_TITLE=''
 METADATA_BODY=''
 METADATA_AUTHOR=''
 RELEASE_AUTHOR=''
+TAG_CREATED=false
+RELEASE_ABSENCE_RECONCILED=false
 
 ASSET_NAMES=()
 ASSET_SIZES=()
@@ -119,6 +129,13 @@ gh_command() {
   else
     GH_HOST=github.com GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 "$SYSTEM_ENV_PATH" "${SANITIZED_ENV_ARGS[@]}" "$GH_PATH" "$@"
   fi
+}
+
+preserve_mutation_interruption_status() {
+  local status="$1"
+  case "$status" in
+    129|130|143) exit "$status" ;;
+  esac
 }
 
 hash_file() {
@@ -203,31 +220,65 @@ ensure_release_is_not_latest() {
   fi
 }
 
-query_release_ids() {
+try_query_release_ids() {
+  local release_ids
   # A successful, paginated list query is required to prove absence. A failed
   # tag lookup must never be mistaken for permission or network-safe absence.
-  if ! RELEASE_IDS="$(gh_command api --paginate "repos/${REPOSITORY}/releases?per_page=100" --jq ".[] | select(.tag_name == \"${TAG_NAME}\") | .id")"; then
-    die "Unable to inspect releases for ${TAG_NAME}"
+  if ! release_ids="$(gh_command api --paginate "repos/${REPOSITORY}/releases?per_page=100" --jq "def valid_release: (type == \"object\") and ((.tag_name | type) == \"string\") and ((.id | type) == \"number\") and (.id > 0) and (.id == (.id | floor)); if ((type != \"array\") or any(.[]; (valid_release | not))) then \"invalid\" else .[] | select(.tag_name == \"${TAG_NAME}\") | (.id | tostring) end")"; then
+    return 1
   fi
-  if [[ "$RELEASE_IDS" == *$'\n'* ]]; then
+  if [[ "$release_ids" == *$'\n'* ]]; then
     die "Multiple releases unexpectedly use tag ${TAG_NAME}"
   fi
-  if [ -n "$RELEASE_IDS" ]; then
-    case "$RELEASE_IDS" in
-      *[!0-9]*) die "Release query returned an invalid identifier for ${TAG_NAME}" ;;
+  if [ -n "$release_ids" ]; then
+    case "$release_ids" in
+      0|*[!0-9]*) die "Release query returned an invalid identifier for ${TAG_NAME}" ;;
     esac
+  fi
+  RELEASE_IDS="$release_ids"
+}
+
+query_release_ids() {
+  if ! try_query_release_ids; then
+    die "Unable to inspect releases for ${TAG_NAME}"
+  fi
+}
+
+try_refresh_release_metadata() {
+  local release_id="$1"
+  local metadata
+  local metadata_extra
+  METADATA_ID=''
+  METADATA_TAG=''
+  METADATA_TARGET=''
+  METADATA_DRAFT=''
+  METADATA_IMMUTABLE=''
+  METADATA_PRERELEASE=''
+  METADATA_TITLE=''
+  METADATA_BODY=''
+  METADATA_AUTHOR=''
+  # The single-quoted program is evaluated by jq; $strings is not a shell variable.
+  # shellcheck disable=SC2016
+  if ! metadata="$(gh_command api "repos/${REPOSITORY}/releases/${release_id}" --jq 'if ((.id | type) == "number" and .id > 0 and (.tag_name | type) == "string" and (.target_commitish | type) == "string" and (.draft | type) == "boolean" and (.immutable | type) == "boolean" and (.prerelease | type) == "boolean" and (.name | type) == "string" and (.body | type) == "string" and (.author.login | type) == "string") then [.tag_name, .target_commitish, .name, .body, .author.login] as $strings | if (($strings | map(select(contains("|") or contains("\r") or contains("\n"))) | length) == 0) then [(.id | tostring), .tag_name, .target_commitish, (.draft | tostring), (.immutable | tostring), (.prerelease | tostring), .name, .body, .author.login] | join("|") else "invalid" end else "invalid" end')"; then
+    return 1
+  fi
+  IFS='|' read -r METADATA_ID METADATA_TAG METADATA_TARGET METADATA_DRAFT METADATA_IMMUTABLE METADATA_PRERELEASE METADATA_TITLE METADATA_BODY METADATA_AUTHOR metadata_extra <<< "$metadata"
+  if [ -n "$metadata_extra" ]; then
+    die "Release metadata query returned malformed state for ${TAG_NAME}"
   fi
 }
 
 refresh_release_metadata() {
-  local metadata
-  if ! metadata="$(gh_command release view "$TAG_NAME" --repo "$REPOSITORY" --json tagName,targetCommitish,isDraft,isImmutable,isPrerelease,name,body,author --jq '[.tagName, .targetCommitish, (.isDraft | tostring), (.isImmutable | tostring), (.isPrerelease | tostring), .name, .body, .author.login] | join("|")')"; then
+  if ! try_refresh_release_metadata "$1"; then
     die "Unable to inspect release metadata for ${TAG_NAME}"
   fi
-  IFS='|' read -r METADATA_TAG METADATA_TARGET METADATA_DRAFT METADATA_IMMUTABLE METADATA_PRERELEASE METADATA_TITLE METADATA_BODY METADATA_AUTHOR <<< "$metadata"
 }
 
 validate_release_identity() {
+  local expected_id="$1"
+  if [ "$METADATA_ID" != "$expected_id" ]; then
+    die "Release identifier mismatch for ${TAG_NAME}"
+  fi
   if [ "$METADATA_TAG" != "$TAG_NAME" ]; then
     die "Release tag mismatch for ${TAG_NAME}"
   fi
@@ -249,6 +300,101 @@ validate_release_identity() {
   if [ "$METADATA_IMMUTABLE" != true ] && [ "$METADATA_IMMUTABLE" != false ]; then
     die "Release immutable state is invalid for ${TAG_NAME}"
   fi
+}
+
+sleep_before_release_retry() {
+  local delay_seconds="$1"
+  if ! "$SLEEP_PATH" "$delay_seconds"; then
+    die "Unable to wait before retrying release inspection for ${TAG_NAME}"
+  fi
+}
+
+resolve_initial_release_state() {
+  local attempt=1
+  local delay_seconds=1
+  local unresolved_release_id=''
+  while [ "$attempt" -le "$RELEASE_VISIBILITY_MAX_ATTEMPTS" ]; do
+    query_release_ids
+    if [ -n "$RELEASE_IDS" ]; then
+      unresolved_release_id="$RELEASE_IDS"
+      if try_refresh_release_metadata "$RELEASE_IDS"; then
+        return 0
+      fi
+      # A visible collection entry can precede a readable exact resource after
+      # POST, or outlive it after DELETE. Observe both directions without
+      # assuming which mutation won.
+      release_id_is_absent "$unresolved_release_id" || true
+    elif [ -z "$unresolved_release_id" ]; then
+      return 0
+    elif release_id_is_absent "$unresolved_release_id"; then
+      RELEASE_ABSENCE_RECONCILED=true
+      return 0
+    fi
+    if [ "$attempt" -eq "$RELEASE_VISIBILITY_MAX_ATTEMPTS" ]; then
+      break
+    fi
+    sleep_before_release_retry "$delay_seconds"
+    delay_seconds=$((delay_seconds * 2))
+    attempt=$((attempt + 1))
+  done
+  die "Release list and exact metadata did not converge for ${TAG_NAME}"
+}
+
+wait_for_release_state() {
+  local expected_id="$1"
+  local expected_draft="$2"
+  local expected_immutable="$3"
+  local attempt=1
+  local delay_seconds=1
+  while [ "$attempt" -le "$RELEASE_VISIBILITY_MAX_ATTEMPTS" ]; do
+    if try_refresh_release_metadata "$expected_id"; then
+      validate_release_identity "$expected_id"
+      if [ "$METADATA_DRAFT" = "$expected_draft" ] && [ "$METADATA_IMMUTABLE" = "$expected_immutable" ] && try_query_release_ids && [ "$RELEASE_IDS" = "$expected_id" ]; then
+        return 0
+      fi
+    fi
+    if [ "$attempt" -eq "$RELEASE_VISIBILITY_MAX_ATTEMPTS" ]; then
+      break
+    fi
+    sleep_before_release_retry "$delay_seconds"
+    delay_seconds=$((delay_seconds * 2))
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
+release_id_is_absent() {
+  local release_id="$1"
+  local response_headers
+  local status_line
+  if response_headers="$(gh_command api --include --silent "repos/${REPOSITORY}/releases/${release_id}" 2>/dev/null)"; then
+    return 1
+  fi
+  status_line="${response_headers%%$'\n'*}"
+  case "$status_line" in
+    HTTP/*' 404 '*) return 0 ;;
+  esac
+  return 1
+}
+
+wait_for_release_absence() {
+  local release_id="$1"
+  local failure_message="$2"
+  local attempt=1
+  local delay_seconds=1
+  while [ "$attempt" -le "$RELEASE_VISIBILITY_MAX_ATTEMPTS" ]; do
+    if release_id_is_absent "$release_id" && try_query_release_ids && [ -z "$RELEASE_IDS" ]; then
+      RELEASE_ABSENCE_RECONCILED=true
+      return 0
+    fi
+    if [ "$attempt" -eq "$RELEASE_VISIBILITY_MAX_ATTEMPTS" ]; then
+      break
+    fi
+    sleep_before_release_retry "$delay_seconds"
+    delay_seconds=$((delay_seconds * 2))
+    attempt=$((attempt + 1))
+  done
+  die "${failure_message}: ${TAG_NAME}"
 }
 
 require_mutable_draft() {
@@ -280,6 +426,7 @@ query_tag_refs() {
 
 ensure_exact_tag() {
   local allow_create="$1"
+  local mutation_status
   local resolved_sha
   query_tag_refs
   if [ -z "$TAG_REFS" ]; then
@@ -288,9 +435,14 @@ ensure_exact_tag() {
     fi
     # Create a lightweight tag explicitly so gh can never infer the default
     # branch tip. Existing refs are only validated and are never retargeted.
-    if ! gh_command api --method POST "repos/${REPOSITORY}/git/refs" -f "ref=refs/tags/${TAG_NAME}" -f "sha=${COMMIT_SHA}" >/dev/null; then
+    if gh_command api --method POST "repos/${REPOSITORY}/git/refs" -f "ref=refs/tags/${TAG_NAME}" -f "sha=${COMMIT_SHA}" >/dev/null; then
+      :
+    else
+      mutation_status=$?
+      preserve_mutation_interruption_status "$mutation_status"
       die "Unable to create exact tag ${TAG_NAME}"
     fi
+    TAG_CREATED=true
     query_tag_refs
   fi
   if [ "$TAG_REFS" != "refs/tags/${TAG_NAME}" ]; then
@@ -305,7 +457,8 @@ ensure_exact_tag() {
 }
 
 refresh_release_assets() {
-  if ! RELEASE_ASSETS="$(gh_command release view "$TAG_NAME" --repo "$REPOSITORY" --json assets --jq '.assets[] | [.name, (.size | tostring), .state, (.digest // "")] | join("|")')"; then
+  local release_id="$1"
+  if ! RELEASE_ASSETS="$(gh_command api "repos/${REPOSITORY}/releases/${release_id}" --jq 'def line_safe_string: (type == "string") and ((contains("|") or contains("\r") or contains("\n")) | not); def valid_asset: (type == "object") and (.name | line_safe_string) and ((.size | type) == "number") and (.size >= 0) and (.size == (.size | floor)) and (.state | line_safe_string) and ((.digest == null) or (.digest | line_safe_string)); if (((.assets | type) != "array") or any(.assets[]; (valid_asset | not))) then "invalid" else .assets[] | [.name, (.size | tostring), .state, (.digest // "")] | join("|") end')"; then
     die "Unable to inspect release assets for ${TAG_NAME}"
   fi
 }
@@ -374,26 +527,193 @@ release_assets_match() {
   return 0
 }
 
-create_empty_draft() {
-  if ! gh_command release create "$TAG_NAME" --repo "$REPOSITORY" --draft --verify-tag --target "$COMMIT_SHA" --title "$RELEASE_TITLE" --notes "$RELEASE_BODY" --latest=false; then
-    die "Unable to create draft release ${TAG_NAME}"
+upload_release_asset() {
+  local asset_name="$1"
+  local asset_path="$2"
+  local expected_size="$3"
+  local expected_digest="$4"
+  local upload_metadata
+  local upload_status
+  if [ -z "$DRAFT_RELEASE_ID" ] || [[ ! "$DRAFT_RELEASE_ID" =~ ^[1-9][0-9]*$ ]]; then
+    die 'Validated draft release ID is unavailable for asset upload'
   fi
-  query_release_ids
-  if [ -z "$RELEASE_IDS" ]; then
+  if ! asset_name_is_expected "$asset_name" || [ "${asset_path##*/}" != "$asset_name" ]; then
+    die "Refusing noncanonical release asset upload: ${asset_name}"
+  fi
+  if upload_metadata="$(gh_command api --method POST "${RELEASE_UPLOAD_BASE_URL}/releases/${DRAFT_RELEASE_ID}/assets?name=${asset_name}" -H 'Content-Type: application/octet-stream' --input "$asset_path" --jq 'if ((.name | type) == "string" and (.size | type) == "number" and .size > 0 and (.state | type) == "string" and (.digest | type) == "string") then [.name, (.size | tostring), .state, .digest] | join("|") else "invalid" end')"; then
+    :
+  else
+    upload_status=$?
+    preserve_mutation_interruption_status "$upload_status"
+    return 1
+  fi
+  if [ "$upload_metadata" != "${asset_name}|${expected_size}|uploaded|sha256:${expected_digest}" ]; then
+    return 1
+  fi
+}
+
+upload_release_assets() {
+  local index
+  local asset_index
+  for ((index = 0; index < ${#ARCHIVE_PATHS[@]}; index++)); do
+    asset_index=$((index * 2))
+    if ! upload_release_asset "${ASSET_NAMES[$asset_index]}" "${ARCHIVE_PATHS[$index]}" "${ASSET_SIZES[$asset_index]}" "${ASSET_DIGESTS[$asset_index]}"; then
+      die "Archive upload failed for draft ${TAG_NAME}"
+    fi
+  done
+  for ((index = 0; index < ${#CHECKSUM_PATHS[@]}; index++)); do
+    asset_index=$((index * 2 + 1))
+    if ! upload_release_asset "${ASSET_NAMES[$asset_index]}" "${CHECKSUM_PATHS[$index]}" "${ASSET_SIZES[$asset_index]}" "${ASSET_DIGESTS[$asset_index]}"; then
+      die "Checksum upload failed for draft ${TAG_NAME}"
+    fi
+  done
+}
+
+reconcile_release_before_creation() {
+  local attempt=1
+  local delay_seconds=1
+  local all_queries_succeeded=true
+  local release_observed=false
+  while [ "$attempt" -le "$RELEASE_VISIBILITY_MAX_ATTEMPTS" ]; do
+    if try_query_release_ids; then
+      if [ -n "$RELEASE_IDS" ]; then
+        release_observed=true
+        if try_refresh_release_metadata "$RELEASE_IDS"; then
+          validate_release_identity "$RELEASE_IDS"
+          if [ "$METADATA_DRAFT" = true ] && [ "$METADATA_IMMUTABLE" = false ]; then
+            refresh_release_assets "$RELEASE_IDS"
+            if [ -z "$RELEASE_ASSETS" ]; then
+              # The create response can be lost after GitHub commits the draft.
+              # An exact, empty, owned draft is the only mutable state safe to
+              # adopt without another mutation.
+              DRAFT_RELEASE_ID="$RELEASE_IDS"
+              ensure_exact_tag false
+              return 0
+            fi
+          elif [ "$METADATA_DRAFT" = false ] && [ "$METADATA_IMMUTABLE" = true ]; then
+            # A prior PATCH may also have committed while its response was lost.
+            # A matching immutable release makes the rerun idempotently complete.
+            refresh_release_assets "$RELEASE_IDS"
+            if ! release_assets_match; then
+              die "Published release does not exactly match local assets: ${TAG_NAME}"
+            fi
+            ensure_exact_tag false
+            ensure_release_is_not_latest
+            echo "GitHub Release ${TAG_NAME} is already published and matches exactly"
+            exit 0
+          fi
+        fi
+      fi
+    else
+      all_queries_succeeded=false
+    fi
+    if [ "$attempt" -eq "$RELEASE_VISIBILITY_MAX_ATTEMPTS" ]; then
+      break
+    fi
+    sleep_before_release_retry "$delay_seconds"
+    delay_seconds=$((delay_seconds * 2))
+    attempt=$((attempt + 1))
+  done
+  if [ "$all_queries_succeeded" = true ] && [ "$release_observed" = false ]; then
+    RELEASE_ABSENCE_RECONCILED=true
+    return 1
+  fi
+  return 2
+}
+
+create_empty_draft() {
+  local created_release_id
+  local mutation_status
+  local reconciliation_status
+  if [ "$TAG_CREATED" = false ] && [ "$RELEASE_ABSENCE_RECONCILED" = false ]; then
+    if reconcile_release_before_creation; then
+      created_release_id="$DRAFT_RELEASE_ID"
+    else
+      reconciliation_status=$?
+      if [ "$reconciliation_status" -ne 1 ]; then
+        die "Unable to reconcile release state before creation: ${TAG_NAME}"
+      fi
+    fi
+  fi
+  if [ -z "$created_release_id" ]; then
+    if created_release_id="$(gh_command api --method POST "repos/${REPOSITORY}/releases" -f "tag_name=${TAG_NAME}" -f "target_commitish=${COMMIT_SHA}" -f "name=${RELEASE_TITLE}" -f "body=${RELEASE_BODY}" -F draft=true -F prerelease=false -f make_latest=false --jq 'if ((.id | type) == "number" and .id > 0) then (.id | tostring) else "invalid" end')"; then
+      :
+    else
+      mutation_status=$?
+      preserve_mutation_interruption_status "$mutation_status"
+      if reconcile_release_before_creation; then
+        created_release_id="$DRAFT_RELEASE_ID"
+      else
+        die "Unable to create draft release ${TAG_NAME}"
+      fi
+    fi
+  fi
+  case "$created_release_id" in
+    ''|0|invalid|*[!0-9]*) die "Draft creation returned an invalid release identifier for ${TAG_NAME}" ;;
+  esac
+  DRAFT_RELEASE_ID="$created_release_id"
+  if ! wait_for_release_state "$DRAFT_RELEASE_ID" true false; then
+    if [ "$METADATA_ID" = "$DRAFT_RELEASE_ID" ]; then
+      require_mutable_draft
+    fi
     die "Draft release was not visible after creation: ${TAG_NAME}"
   fi
-  refresh_release_metadata
-  validate_release_identity
   require_mutable_draft
-  DRAFT_RELEASE_ID="$RELEASE_IDS"
   ensure_exact_tag false
-  refresh_release_assets
+  refresh_release_assets "$DRAFT_RELEASE_ID"
   if [ -n "$RELEASE_ASSETS" ]; then
     die "New draft release unexpectedly contains assets: ${TAG_NAME}"
   fi
 }
 
+delete_incomplete_owned_draft() {
+  local mutation_status
+  # The earlier recovery inspection is not deletion authority. Resolve the
+  # collection again, then revalidate ownership, mutability, tag and assets by
+  # the same stable ID immediately before deleting exactly that ID.
+  require_immutable_releases
+  resolve_release_author
+  query_release_ids
+  if [ -z "$DRAFT_RELEASE_ID" ] || [ "$RELEASE_IDS" != "$DRAFT_RELEASE_ID" ]; then
+    die "Draft release identity changed before deletion: ${TAG_NAME}"
+  fi
+  refresh_release_metadata "$DRAFT_RELEASE_ID"
+  validate_release_identity "$DRAFT_RELEASE_ID"
+  require_mutable_draft
+  ensure_exact_tag false
+  refresh_release_assets "$DRAFT_RELEASE_ID"
+  if ! release_assets_are_canonical_subset; then
+    die "Draft release contains an unexpected asset; refusing deletion: ${TAG_NAME}"
+  fi
+  if release_assets_match; then
+    die "Draft release became complete before deletion: ${TAG_NAME}"
+  fi
+  if gh_command api --method DELETE "repos/${REPOSITORY}/releases/${DRAFT_RELEASE_ID}" >/dev/null; then
+    :
+  else
+    mutation_status=$?
+    preserve_mutation_interruption_status "$mutation_status"
+    # A transport failure does not reveal whether GitHub committed the DELETE.
+    # The same exact-ID plus collection proof below resolves that ambiguity.
+    :
+  fi
+  wait_for_release_absence "$DRAFT_RELEASE_ID" 'Unable to confirm removal of incomplete owned draft'
+  ensure_exact_tag false
+}
+
+verify_published_release() {
+  local release_id="$1"
+  require_immutable_published_release
+  ensure_exact_tag false
+  refresh_release_assets "$release_id"
+  if ! release_assets_match; then
+    die "Published release asset validation failed for ${TAG_NAME}"
+  fi
+  ensure_release_is_not_latest
+}
+
 publish_verified_draft() {
+  local mutation_status
   # Uploads can take long enough for repository settings or draft ownership to
   # change. Repeat every mutable trust check at the final publication boundary.
   require_immutable_releases
@@ -405,30 +725,42 @@ publish_verified_draft() {
   if [ -z "$DRAFT_RELEASE_ID" ] || [ "$RELEASE_IDS" != "$DRAFT_RELEASE_ID" ]; then
     die "Draft release identity changed before publication: ${TAG_NAME}"
   fi
-  refresh_release_metadata
-  validate_release_identity
+  refresh_release_metadata "$DRAFT_RELEASE_ID"
+  validate_release_identity "$DRAFT_RELEASE_ID"
+  if [ "$METADATA_DRAFT" = false ]; then
+    if ! wait_for_release_state "$DRAFT_RELEASE_ID" false true; then
+      if [ "$METADATA_ID" = "$DRAFT_RELEASE_ID" ]; then
+        require_immutable_published_release
+      fi
+      die "Published release was not visible after publication: ${TAG_NAME}"
+    fi
+    verify_published_release "$DRAFT_RELEASE_ID"
+    return 0
+  fi
   require_mutable_draft
   ensure_exact_tag false
-  refresh_release_assets
+  refresh_release_assets "$DRAFT_RELEASE_ID"
   if ! release_assets_match; then
     die "Draft release asset validation failed for ${TAG_NAME}"
   fi
-  if ! gh_command release edit "$TAG_NAME" --repo "$REPOSITORY" --draft=false --prerelease=false --verify-tag --target "$COMMIT_SHA" --title "$RELEASE_TITLE" --notes "$RELEASE_BODY" --latest=false; then
-    die "Unable to publish verified draft release ${TAG_NAME}"
+  local published_release_id
+  if published_release_id="$(gh_command api --method PATCH "repos/${REPOSITORY}/releases/${DRAFT_RELEASE_ID}" -f "tag_name=${TAG_NAME}" -f "target_commitish=${COMMIT_SHA}" -f "name=${RELEASE_TITLE}" -f "body=${RELEASE_BODY}" -F draft=false -F prerelease=false -f make_latest=false --jq 'if ((.id | type) == "number" and .id > 0) then (.id | tostring) else "invalid" end')"; then
+    if [ "$published_release_id" != "$DRAFT_RELEASE_ID" ]; then
+      die "Published release identity changed for ${TAG_NAME}"
+    fi
+  else
+    mutation_status=$?
+    preserve_mutation_interruption_status "$mutation_status"
   fi
-  query_release_ids
-  if [ -z "$RELEASE_IDS" ]; then
+  # A failed response is ambiguous: the PATCH may already be committed. Resolve
+  # the known ID to the immutable state before deciding publication failed.
+  if ! wait_for_release_state "$DRAFT_RELEASE_ID" false true; then
+    if [ "$METADATA_ID" = "$DRAFT_RELEASE_ID" ]; then
+      require_immutable_published_release
+    fi
     die "Published release was not visible after publication: ${TAG_NAME}"
   fi
-  refresh_release_metadata
-  validate_release_identity
-  require_immutable_published_release
-  ensure_exact_tag false
-  refresh_release_assets
-  if ! release_assets_match; then
-    die "Published release asset validation failed for ${TAG_NAME}"
-  fi
-  ensure_release_is_not_latest
+  verify_published_release "$DRAFT_RELEASE_ID"
 }
 
 trap 'exit 129' HUP
@@ -485,8 +817,9 @@ CMP_PATH="$(resolve_executable cmp || true)"
 WC_PATH="$(resolve_executable wc || true)"
 TR_PATH="$(resolve_executable tr || true)"
 PYTHON_PATH="$(resolve_executable python3 || true)"
-if [ -z "$CMP_PATH" ] || [ -z "$WC_PATH" ] || [ -z "$TR_PATH" ] || [ -z "$PYTHON_PATH" ]; then
-  die 'cmp, wc, tr and Python 3.9+ are required to validate distribution artifacts'
+SLEEP_PATH="$(resolve_executable sleep || true)"
+if [ -z "$CMP_PATH" ] || [ -z "$WC_PATH" ] || [ -z "$TR_PATH" ] || [ -z "$PYTHON_PATH" ] || [ -z "$SLEEP_PATH" ]; then
+  die 'cmp, sleep, wc, tr and Python 3.9+ are required to validate distribution artifacts'
 fi
 if ! "$SYSTEM_ENV_PATH" "${SANITIZED_ENV_ARGS[@]}" "$PYTHON_PATH" -I -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)'; then
   die 'Python 3.9 or newer is required to validate distribution artifacts'
@@ -535,14 +868,13 @@ fi
 
 require_immutable_releases
 resolve_release_author
-query_release_ids
+resolve_initial_release_state
 if [ -n "$RELEASE_IDS" ]; then
-  refresh_release_metadata
-  validate_release_identity
+  validate_release_identity "$RELEASE_IDS"
   if [ "$METADATA_DRAFT" = false ]; then
     require_immutable_published_release
     ensure_exact_tag false
-    refresh_release_assets
+    refresh_release_assets "$RELEASE_IDS"
     if ! release_assets_match; then
       die "Published release does not exactly match local assets: ${TAG_NAME}"
     fi
@@ -555,7 +887,7 @@ if [ -n "$RELEASE_IDS" ]; then
 
   # Validate ownership and the canonical asset-name subset before mutating
   # even the tag. Only this script's exact bot-authored draft is recoverable.
-  refresh_release_assets
+  refresh_release_assets "$DRAFT_RELEASE_ID"
   if ! release_assets_are_canonical_subset; then
     die "Draft release contains an unexpected asset; refusing recovery: ${TAG_NAME}"
   fi
@@ -565,28 +897,18 @@ if [ -n "$RELEASE_IDS" ]; then
     echo "Published recovered GitHub Release ${TAG_NAME}"
     exit 0
   fi
-  if ! gh_command release delete "$TAG_NAME" --repo "$REPOSITORY" --yes; then
-    die "Unable to remove incomplete owned draft ${TAG_NAME}"
-  fi
-  query_release_ids
-  if [ -n "$RELEASE_IDS" ]; then
-    die "Incomplete draft still exists after deletion: ${TAG_NAME}"
-  fi
-  ensure_exact_tag false
+  delete_incomplete_owned_draft
 else
   ensure_exact_tag true
 fi
 
 create_empty_draft
 
-# Checksums are uploaded only after the complete archive upload succeeds. The
-# release remains an invisible, recoverable draft until all 12 assets verify.
-if ! gh_command release upload "$TAG_NAME" "${ARCHIVE_PATHS[@]}" --repo "$REPOSITORY"; then
-  die "Archive upload failed for draft ${TAG_NAME}"
-fi
-if ! gh_command release upload "$TAG_NAME" "${CHECKSUM_PATHS[@]}" --repo "$REPOSITORY"; then
-  die "Checksum upload failed for draft ${TAG_NAME}"
-fi
+# Checksums are uploaded only after the complete archive upload succeeds. Each
+# raw-byte request targets the validated draft ID, so tag replacement cannot
+# redirect an upload. The release remains a recoverable draft until all assets
+# verify and the final publication boundary succeeds.
+upload_release_assets
 
 publish_verified_draft
 echo "Published all six JCEF distributions in GitHub Release ${TAG_NAME}"

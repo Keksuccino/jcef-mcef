@@ -45,6 +45,26 @@ MODIFYING_OPERATIONS = frozenset(
     ('create-ref', 'create-release', 'delete-release', 'upload-release',
      'publish-release'))
 
+
+def field_argument(arguments, flag, field):
+  prefix = field + '='
+  for index, argument in enumerate(arguments):
+    if argument == flag and index + 1 < len(
+        arguments) and arguments[index + 1].startswith(prefix):
+      return arguments[index + 1][len(prefix):]
+  raise AssertionError('missing {} field: {}'.format(flag, field))
+
+
+def flag_argument(arguments, flag):
+  try:
+    index = arguments.index(flag)
+  except ValueError as error:
+    raise AssertionError('missing flag: {}'.format(flag)) from error
+  if index + 1 >= len(arguments):
+    raise AssertionError('missing value for flag: {}'.format(flag))
+  return arguments[index + 1]
+
+
 FAKE_GH = r'''#!/usr/bin/env python3
 import base64
 import hashlib
@@ -53,6 +73,8 @@ import os
 from pathlib import Path
 import signal
 import sys
+from urllib.parse import parse_qs
+from urllib.parse import urlsplit
 
 
 def fail(message, status=90):
@@ -77,21 +99,55 @@ def flag_value(arguments, flag):
   return arguments[index + 1]
 
 
-def field_value(arguments, field):
+def field_value(arguments, flag, field):
   prefix = field + '='
   for index, argument in enumerate(arguments):
-    if argument in ('-f', '-F') and index + 1 < len(arguments) and arguments[index + 1].startswith(prefix):
+    if argument == flag and index + 1 < len(arguments) and arguments[index + 1].startswith(prefix):
       return arguments[index + 1][len(prefix):]
-  fail('missing field: ' + field)
+  fail('missing {} field: {}'.format(flag, field))
 
 
-def require_repository(arguments):
-  if flag_value(arguments, '--repo') != os.environ['FAKE_EXPECTED_REPOSITORY']:
-    fail('unexpected repository')
+def require_positive_id_jq(arguments):
+  jq_filter = flag_value(arguments, '--jq')
+  required = ('.id | type', '"number"', '.id > 0', '.id | tostring', '"invalid"')
+  if not all(fragment in jq_filter for fragment in required):
+    fail('release mutation must validate and extract a positive numeric ID')
+
+
+def requested_release_id(endpoint):
+  path = urlsplit(endpoint).path if endpoint.startswith('https://') else endpoint.split('?', 1)[0]
+  try:
+    return int(path.split('/releases/', 1)[1].split('/', 1)[0])
+  except (IndexError, ValueError):
+    fail('invalid release ID endpoint')
 
 
 def asset_bytes(encoded):
   return base64.b64decode(encoded.encode('ascii'))
+
+
+def release_metadata_is_valid(release):
+  if type(release.get('id')) is not int or release['id'] <= 0:
+    return False
+  string_fields = ('tag', 'target', 'title', 'body', 'author')
+  if any(type(release.get(name)) is not str for name in string_fields):
+    return False
+  if any(type(release.get(name)) is not bool for name in ('draft', 'immutable', 'prerelease')):
+    return False
+  return not any(separator in release[name] for name in string_fields for separator in ('|', '\r', '\n'))
+
+
+def print_release_metadata(release):
+  if not release_metadata_is_valid(release):
+    print('invalid')
+    return
+  values = (str(release['id']), release['tag'], release['target'], str(release['draft']).lower(), str(release['immutable']).lower(), str(release['prerelease']).lower(), release['title'], release['body'], release['author'])
+  print('|'.join(values))
+
+
+def fail_after_server_write(operation):
+  if operation == os.environ.get('FAKE_GH_FAIL_AFTER_WRITE_OPERATION'):
+    fail('injected failure after server write', 74)
 
 
 arguments = sys.argv[1:]
@@ -115,12 +171,15 @@ elif 'GH_TOKEN' in os.environ:
 state = load_state()
 operation = ''
 endpoint = ''
+upload_name = ''
 if arguments[0] == 'api':
   if len(arguments) > 1 and arguments[1] == 'graphql':
     operation = 'inspect-latest'
-    if field_value(arguments, 'owner') + '/' + field_value(arguments, 'name') != os.environ['FAKE_EXPECTED_REPOSITORY']:
+    owner = field_value(arguments, '-F', 'owner')
+    name = field_value(arguments, '-F', 'name')
+    if owner + '/' + name != os.environ['FAKE_EXPECTED_REPOSITORY']:
       fail('unexpected GraphQL repository')
-    if 'latestRelease{tagName}' not in field_value(arguments, 'query') or '--jq' not in arguments:
+    if 'latestRelease{tagName}' not in field_value(arguments, '-f', 'query') or '--jq' not in arguments:
       fail('malformed latest-release query')
   elif len(arguments) > 1 and arguments[1] == 'user':
     operation = 'inspect-authenticated-user'
@@ -128,43 +187,63 @@ if arguments[0] == 'api':
     if '.login | type' not in jq_filter:
       fail('authenticated-login inspection must preserve JSON type')
   else:
-    endpoint = next((argument for argument in arguments if argument.startswith('repos/')), '')
-    if not endpoint.startswith('repos/' + os.environ['FAKE_EXPECTED_REPOSITORY'] + '/'):
-      fail('unexpected API repository')
-    if endpoint.endswith('/immutable-releases'):
-      operation = 'inspect-immutability'
-      jq_filter = flag_value(arguments, '--jq')
-      if '.enabled | type' not in jq_filter or '.enabled | tostring' not in jq_filter:
-        fail('immutable-release inspection must preserve JSON type')
-    elif '/releases?' in endpoint:
-      operation = 'list-releases'
-    elif '/git/matching-refs/tags/' in endpoint:
-      operation = 'list-tag-refs'
-    elif '/commits/' in endpoint:
-      operation = 'resolve-tag'
-    elif endpoint.endswith('/git/refs') and '--method' in arguments and flag_value(arguments, '--method') == 'POST':
-      operation = 'create-ref'
-elif arguments[:2] == ['release', 'view']:
-  require_repository(arguments)
-  json_fields = flag_value(arguments, '--json')
-  if json_fields == 'assets':
-    operation = 'view-assets'
-  elif 'isImmutable' in json_fields.split(','):
-    operation = 'view-metadata'
-  else:
-    fail('release metadata must include isImmutable')
-elif arguments[:2] == ['release', 'create']:
-  require_repository(arguments)
-  operation = 'create-release'
-elif arguments[:2] == ['release', 'delete']:
-  require_repository(arguments)
-  operation = 'delete-release'
-elif arguments[:2] == ['release', 'upload']:
-  require_repository(arguments)
-  operation = 'upload-release'
-elif arguments[:2] == ['release', 'edit']:
-  require_repository(arguments)
-  operation = 'publish-release'
+    endpoint = next((argument for argument in arguments if argument.startswith('repos/') or argument.startswith('https://')), '')
+    method = flag_value(arguments, '--method') if '--method' in arguments else 'GET'
+    if endpoint.startswith('https://'):
+      parsed_endpoint = urlsplit(endpoint)
+      expected_path_prefix = '/repos/' + os.environ['FAKE_EXPECTED_REPOSITORY'] + '/'
+      if parsed_endpoint.scheme != 'https' or parsed_endpoint.netloc != 'uploads.github.com' or not parsed_endpoint.path.startswith(expected_path_prefix):
+        fail('unexpected upload API repository')
+      query = parse_qs(parsed_endpoint.query, keep_blank_values=True, strict_parsing=True)
+      if set(query) != {'name'} or len(query['name']) != 1 or not query['name'][0]:
+        fail('upload URL must contain exactly one asset name')
+      upload_name = query['name'][0]
+      expected_endpoint = 'https://uploads.github.com{0}?name={1}'.format(parsed_endpoint.path, upload_name)
+      if endpoint != expected_endpoint or not parsed_endpoint.path.endswith('/assets') or method != 'POST':
+        fail('malformed exact-ID upload endpoint')
+      operation = 'upload-release'
+    else:
+      if not endpoint.startswith('repos/' + os.environ['FAKE_EXPECTED_REPOSITORY'] + '/'):
+        fail('unexpected API repository')
+      if endpoint.endswith('/immutable-releases'):
+        operation = 'inspect-immutability'
+        jq_filter = flag_value(arguments, '--jq')
+        if '.enabled | type' not in jq_filter or '.enabled | tostring' not in jq_filter:
+          fail('immutable-release inspection must preserve JSON type')
+      elif '/releases?' in endpoint:
+        operation = 'list-releases'
+        jq_filter = flag_value(arguments, '--jq')
+        required_shape_checks = ('type != "array"', 'valid_release', '.tag_name | type', '.id | type', '.id > 0', '.id | floor', '.id | tostring', '"invalid"')
+        if not all(fragment in jq_filter for fragment in required_shape_checks):
+          fail('release list query must validate page, element and ID types')
+      elif '/git/matching-refs/tags/' in endpoint:
+        operation = 'list-tag-refs'
+      elif '/commits/' in endpoint:
+        operation = 'resolve-tag'
+      elif endpoint.endswith('/git/refs') and method == 'POST':
+        operation = 'create-ref'
+      elif endpoint.endswith('/releases') and method == 'POST':
+        operation = 'create-release'
+        require_positive_id_jq(arguments)
+      elif '/releases/' in endpoint and method == 'GET' and '--include' in arguments and '--silent' in arguments:
+        operation = 'view-release-status'
+      elif '/releases/' in endpoint and method == 'GET':
+        jq_filter = flag_value(arguments, '--jq')
+        operation = 'view-assets' if '.assets[]' in jq_filter else 'view-metadata'
+        if operation == 'view-metadata':
+          required_types = ('.id | type', '.tag_name | type', '.target_commitish | type', '.draft | type', '.immutable | type', '.prerelease | type', '.name | type', '.body | type', '.author.login | type')
+          required_delimiters = ('contains("|")', 'contains("\\r")', 'contains("\\n")')
+          if not all(fragment in jq_filter for fragment in required_types + required_delimiters):
+            fail('release metadata query must validate JSON types and delimiters')
+        else:
+          required_asset_checks = ('.assets | type', 'valid_asset', '.name | line_safe_string', '.size | type', '.size >= 0', '.size | floor', '.state | line_safe_string', '.digest == null', '.digest | line_safe_string', '"invalid"')
+          if not all(fragment in jq_filter for fragment in required_asset_checks):
+            fail('release asset query must validate collection and field types')
+      elif '/releases/' in endpoint and method == 'DELETE':
+        operation = 'delete-release'
+      elif '/releases/' in endpoint and method == 'PATCH':
+        operation = 'publish-release'
+        require_positive_id_jq(arguments)
 else:
   fail('unsupported gh arguments: ' + repr(arguments))
 if not operation:
@@ -176,7 +255,7 @@ record = {'arguments': arguments, 'operation': operation, 'github_token_present'
 with Path(os.environ['FAKE_GH_LOG']).open('a', encoding='utf-8') as stream:
   stream.write(json.dumps(record, sort_keys=True) + '\n')
 if operation == os.environ.get('FAKE_GH_FAIL_OPERATION'):
-  fail('injected operation failure', 72)
+  fail('injected operation failure', int(os.environ.get('FAKE_GH_FAIL_STATUS', '72')))
 
 release = state.get('release')
 if operation == 'inspect-immutability':
@@ -186,8 +265,17 @@ elif operation == 'inspect-authenticated-user':
 elif operation == 'inspect-latest':
   print(state.get('latest_status', 'null'))
 elif operation == 'list-releases':
-  if release is not None and release['tag'] == os.environ['FAKE_EXPECTED_TAG']:
-    print(release['id'])
+  if state.get('malformed_release_list_response'):
+    print('invalid')
+    raise SystemExit(0)
+  visible_release = release
+  remaining = state.get('list_visibility_delay_remaining', 0)
+  if remaining > 0:
+    state['list_visibility_delay_remaining'] = remaining - 1
+    visible_release = state.get('stale_list_release') if state.get('list_visibility_delay_mode') == 'stale' else None
+    save_state(state)
+  if visible_release is not None and visible_release['tag'] == os.environ['FAKE_EXPECTED_TAG']:
+    print(visible_release['id'])
 elif operation == 'list-tag-refs':
   if state.get('tag_sha') is not None:
     print('refs/tags/' + os.environ['FAKE_EXPECTED_TAG'])
@@ -198,96 +286,184 @@ elif operation == 'resolve-tag':
 elif operation == 'create-ref':
   if state.get('tag_sha') is not None:
     fail('tag already exists', 1)
-  if field_value(arguments, 'ref') != 'refs/tags/' + os.environ['FAKE_EXPECTED_TAG']:
+  if field_value(arguments, '-f', 'ref') != 'refs/tags/' + os.environ['FAKE_EXPECTED_TAG']:
     fail('unexpected tag ref')
-  state['tag_sha'] = field_value(arguments, 'sha')
+  state['tag_sha'] = field_value(arguments, '-f', 'sha')
   save_state(state)
   print('{}')
+elif operation == 'view-release-status':
+  requested_id = requested_release_id(endpoint)
+  deleted_release = state.get('deleted_release')
+  remaining = state.get('delete_get_stale_remaining', 0)
+  if deleted_release is not None and deleted_release['id'] == requested_id and remaining > 0:
+    state['delete_get_stale_remaining'] = remaining - 1
+    save_state(state)
+    print('HTTP/2.0 200 OK')
+  elif release is not None and release.get('id') == requested_id:
+    print('HTTP/2.0 200 OK')
+  else:
+    print('HTTP/2.0 404 Not Found')
+    raise SystemExit(1)
 elif operation == 'view-metadata':
-  if release is None:
+  requested_id = requested_release_id(endpoint)
+  if release is None or str(release.get('id')) != str(requested_id):
     fail('release does not exist', 1)
-  values = (release['tag'], release['target'], str(release['draft']).lower(), str(release['immutable']).lower(), str(release['prerelease']).lower(), release['title'], release['body'], release['author'])
-  print('|'.join(values))
+  visible_release = release
+  remaining = state.get('create_get_404_remaining', 0)
+  if remaining > 0:
+    state['create_get_404_remaining'] = remaining - 1
+    save_state(state)
+    fail('release is not visible by ID', 1)
+  remaining = state.get('publish_get_stale_remaining', 0)
+  if remaining > 0:
+    state['publish_get_stale_remaining'] = remaining - 1
+    visible_release = state['prepublish_release']
+    save_state(state)
+  else:
+    remaining = state.get('publish_immutable_delay_remaining', 0)
+    if remaining > 0:
+      state['publish_immutable_delay_remaining'] = remaining - 1
+      visible_release = dict(release)
+      visible_release['immutable'] = False
+      save_state(state)
+  print_release_metadata(visible_release)
 elif operation == 'view-assets':
-  if release is None:
+  requested_id = requested_release_id(endpoint)
+  if release is None or release.get('id') != requested_id:
     fail('release does not exist', 1)
+  if state.get('malformed_assets_response'):
+    print('invalid')
+    raise SystemExit(0)
   for name in sorted(release['assets']):
     contents = asset_bytes(release['assets'][name])
     print('{}|{}|uploaded|sha256:{}'.format(name, len(contents), hashlib.sha256(contents).hexdigest()))
-elif operation == 'create-release':
-  if release is not None:
-    fail('release already exists', 1)
-  if arguments[2] != os.environ['FAKE_EXPECTED_TAG'] or state.get('tag_sha') is None:
-    fail('draft requires the exact existing tag')
-  required_flags = ('--draft', '--verify-tag', '--latest=false')
-  if not all(flag in arguments for flag in required_flags):
-    fail('draft safety flag missing')
-  target = flag_value(arguments, '--target')
-  title = flag_value(arguments, '--title')
-  body = flag_value(arguments, '--notes')
-  release = {'id': state['next_id'], 'tag': arguments[2], 'target': target, 'draft': True, 'immutable': False, 'prerelease': False, 'title': title, 'body': body, 'author': state.get('authenticated_login', 'github-actions[bot]'), 'assets': {}}
-  state['next_id'] += 1
-  state['release'] = release
-  save_state(state)
-elif operation == 'delete-release':
-  if release is None or not release['draft'] or '--yes' not in arguments or '--cleanup-tag' in arguments:
-    fail('unsafe draft deletion')
-  state['release'] = None
-  save_state(state)
-elif operation == 'upload-release':
-  if release is None or not release['draft'] or arguments[2] != release['tag']:
-    fail('assets can only be uploaded to the exact draft')
-  repository_index = arguments.index('--repo')
-  upload_paths = arguments[3:repository_index]
-  if not upload_paths:
-    fail('no upload paths')
-  for path_text in upload_paths:
-    path = Path(path_text)
-    name = path.name
-    should_fail = name == os.environ.get('FAKE_GH_FAIL_UPLOAD')
-    if should_fail and os.environ.get('FAKE_GH_FAIL_AFTER_WRITE') != '1':
-      fail('injected upload failure', 73)
-    if name in release['assets']:
-      fail('asset already exists', 1)
-    release['assets'][name] = base64.b64encode(path.read_bytes()).decode('ascii')
-    state['release'] = release
-    save_state(state)
-    if name == os.environ.get('FAKE_GH_SIGNAL_UPLOAD'):
-      os.kill(os.getppid(), signal.SIGTERM)
-      raise SystemExit(0)
-    if should_fail:
-      fail('injected upload failure after write', 73)
-  mutation = os.environ.get('FAKE_MUTATE_AFTER_UPLOAD')
-  if mutation == 'metadata':
-    release['title'] = 'tampered during upload'
-    state['release'] = release
-    save_state(state)
-  elif mutation == 'immutability':
-    state['immutable_status'] = 'boolean|false'
-    save_state(state)
-  elif mutation == 'identity':
+  if state.pop('replace_id_after_asset_view', False):
     release['id'] = 999
     state['release'] = release
     save_state(state)
-  elif mutation == 'author':
-    state['authenticated_login'] = 'different-user'
+elif operation == 'create-release':
+  if release is not None:
+    fail('release already exists', 1)
+  if state.get('tag_sha') is None:
+    fail('draft requires the exact existing tag')
+  tag = field_value(arguments, '-f', 'tag_name')
+  target = field_value(arguments, '-f', 'target_commitish')
+  title = field_value(arguments, '-f', 'name')
+  body = field_value(arguments, '-f', 'body')
+  if tag != os.environ['FAKE_EXPECTED_TAG'] or field_value(arguments, '-F', 'draft') != 'true' or field_value(arguments, '-F', 'prerelease') != 'false' or field_value(arguments, '-f', 'make_latest') != 'false':
+    fail('draft safety field missing')
+  release = {'id': state['next_id'], 'tag': tag, 'target': target, 'draft': True, 'immutable': False, 'prerelease': False, 'title': title, 'body': body, 'author': state.get('authenticated_login', 'github-actions[bot]'), 'assets': {}}
+  state['next_id'] += 1
+  state['release'] = release
+  state['create_get_404_remaining'] = state.get('create_get_404_calls', 0)
+  state['list_visibility_delay_mode'] = 'hidden'
+  state['list_visibility_delay_remaining'] = state.get('create_list_delay_calls', 0)
+  save_state(state)
+  fail_after_server_write(operation)
+  print(release['id'])
+elif operation == 'delete-release':
+  requested_id = requested_release_id(endpoint)
+  if release is None or release.get('id') != requested_id or not release['draft']:
+    fail('unsafe draft deletion')
+  state['deleted_release'] = release
+  state['stale_list_release'] = release
+  state['release'] = None
+  state['delete_get_stale_remaining'] = state.get('delete_get_stale_calls', 0)
+  state['list_visibility_delay_mode'] = 'stale'
+  state['list_visibility_delay_remaining'] = state.get('delete_list_delay_calls', 0)
+  save_state(state)
+  fail_after_server_write(operation)
+elif operation == 'upload-release':
+  requested_id = requested_release_id(endpoint)
+  if state.pop('replace_id_before_first_upload', False):
+    replacement = dict(release)
+    replacement['id'] = 999
+    replacement['assets'] = {}
+    state['release'] = replacement
     save_state(state)
+    release = replacement
+  if release is None or release.get('id') != requested_id or not release['draft']:
+    fail('assets can only be uploaded to the exact draft ID')
+  headers = [arguments[index + 1] for index, argument in enumerate(arguments[:-1]) if argument == '-H']
+  if headers != ['Content-Type: application/octet-stream']:
+    fail('upload must have the exact binary content type')
+  path = Path(flag_value(arguments, '--input'))
+  if path.name != upload_name:
+    fail('upload URL name does not match the input basename')
+  if any(argument in ('-f', '-F') and index + 1 < len(arguments) and arguments[index + 1].startswith('name=') for index, argument in enumerate(arguments)):
+    fail('upload name must be encoded in the absolute URL')
+  jq_filter = flag_value(arguments, '--jq')
+  required_types = ('.name | type', '.size | type', '.state | type', '.digest | type')
+  if not all(fragment in jq_filter for fragment in required_types):
+    fail('upload response must validate JSON types')
+  should_fail = upload_name == os.environ.get('FAKE_GH_FAIL_UPLOAD')
+  if should_fail and os.environ.get('FAKE_GH_FAIL_AFTER_WRITE') != '1':
+    fail('injected upload failure', 73)
+  if upload_name in release['assets']:
+    fail('asset already exists', 1)
+  contents = path.read_bytes()
+  release['assets'][upload_name] = base64.b64encode(contents).decode('ascii')
+  state['release'] = release
+  save_state(state)
+  if upload_name == os.environ.get('FAKE_GH_SIGNAL_UPLOAD'):
+    os.kill(os.getppid(), signal.SIGTERM)
+    raise SystemExit(0)
+  if should_fail:
+    fail('injected upload failure after write', 73)
+  if len(release['assets']) == 12:
+    mutation = os.environ.get('FAKE_MUTATE_AFTER_UPLOAD')
+    if mutation == 'metadata':
+      release['title'] = 'tampered during upload'
+      state['release'] = release
+      save_state(state)
+    elif mutation == 'immutability':
+      state['immutable_status'] = 'boolean|false'
+      save_state(state)
+    elif mutation == 'identity':
+      release['id'] = 999
+      state['release'] = release
+      save_state(state)
+    elif mutation == 'author':
+      state['authenticated_login'] = 'different-user'
+      save_state(state)
+  print('{}|{}|uploaded|sha256:{}'.format(upload_name, len(contents), hashlib.sha256(contents).hexdigest()))
 elif operation == 'publish-release':
-  if release is None or not release['draft'] or arguments[2] != release['tag']:
+  requested_id = requested_release_id(endpoint)
+  if release is None or release.get('id') != requested_id or not release['draft']:
     fail('only the exact draft can be published')
-  required_flags = ('--draft=false', '--verify-tag', '--latest=false')
-  if not all(flag in arguments for flag in required_flags):
-    fail('publish safety flag missing')
-  if flag_value(arguments, '--target') != release['target']:
+  if field_value(arguments, '-f', 'tag_name') != release['tag'] or field_value(arguments, '-F', 'draft') != 'false' or field_value(arguments, '-F', 'prerelease') != 'false' or field_value(arguments, '-f', 'make_latest') != 'false':
+    fail('publish safety field missing')
+  if field_value(arguments, '-f', 'target_commitish') != release['target']:
     fail('publish target mismatch')
-  if flag_value(arguments, '--title') != release['title'] or flag_value(arguments, '--notes') != release['body'] or '--prerelease=false' not in arguments:
+  if field_value(arguments, '-f', 'name') != release['title'] or field_value(arguments, '-f', 'body') != release['body']:
     fail('publish metadata mismatch')
+  state['prepublish_release'] = dict(release)
   release['draft'] = False
   release['immutable'] = state.get('immutable_after_publish', True)
   if state.get('latest_after_publish'):
     state['latest_status'] = 'tag|' + release['tag']
   state['release'] = release
+  state['publish_get_stale_remaining'] = state.get('publish_get_stale_calls', 0)
+  state['publish_immutable_delay_remaining'] = state.get('publish_immutable_delay_calls', 0)
+  state['list_visibility_delay_mode'] = 'hidden'
+  state['list_visibility_delay_remaining'] = state.get('publish_list_delay_calls', 0)
   save_state(state)
+  fail_after_server_write(operation)
+  print(release['id'])
+'''
+
+FAKE_SLEEP = r'''#!/usr/bin/env python3
+import os
+from pathlib import Path
+import sys
+
+if len(sys.argv) != 2 or sys.argv[1] not in ('1', '2', '4', '8', '16'):
+  raise SystemExit(91)
+sensitive = ('GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN', 'GH_HOST', 'ENV_TOKEN_SOURCE', 'ENV_TOKEN_CONTENT')
+if any(name in os.environ for name in sensitive):
+  raise SystemExit(92)
+with Path(os.environ['FAKE_SLEEP_LOG']).open('a', encoding='ascii') as stream:
+  stream.write(sys.argv[1] + '\n')
 '''
 
 FAKE_LOCAL_TOOL = r'''#!PYTHON_EXECUTABLE
@@ -337,6 +513,7 @@ class PublishDistributionsTest(unittest.TestCase):
     self.fake_bin = self.root / 'bin'
     self.log_path = self.root / 'gh.log'
     self.local_tool_log = self.root / 'local-tool.log'
+    self.sleep_log = self.root / 'sleep.log'
     self.shell_injection_log = self.root / 'shell-injection.log'
     self.state_path = self.root / 'state.json'
     self.artifact_directory.mkdir()
@@ -344,14 +521,21 @@ class PublishDistributionsTest(unittest.TestCase):
     self.fake_gh = self.fake_bin / 'gh'
     self.fake_gh.write_text(FAKE_GH, encoding='utf-8')
     self.fake_gh.chmod(0o755)
+    self.fake_sleep = self.fake_bin / 'sleep'
+    self.fake_sleep.write_text(FAKE_SLEEP, encoding='utf-8')
+    self.fake_sleep.chmod(0o755)
     real_local_tool = shutil.which('sha256sum') or shutil.which('shasum')
     self.assertIsNotNone(real_local_tool)
     self.real_local_tool = real_local_tool
     self.fake_local_tool = self.fake_bin / Path(real_local_tool).name
-    self.fake_local_tool.write_text(FAKE_LOCAL_TOOL.replace('PYTHON_EXECUTABLE', sys.executable, 1), encoding='utf-8')
+    self.fake_local_tool.write_text(
+        FAKE_LOCAL_TOOL.replace('PYTHON_EXECUTABLE', sys.executable, 1),
+        encoding='utf-8')
     self.fake_local_tool.chmod(0o755)
     self.fake_python = self.fake_bin / 'python3'
-    self.fake_python.write_text(FAKE_PYTHON.replace('PYTHON_EXECUTABLE', sys.executable), encoding='utf-8')
+    self.fake_python.write_text(
+        FAKE_PYTHON.replace('PYTHON_EXECUTABLE', sys.executable),
+        encoding='utf-8')
     self.fake_python.chmod(0o755)
     self.create_artifacts()
     self.write_state({'next_id': 1, 'tag_sha': None, 'release': None})
@@ -398,6 +582,8 @@ class PublishDistributionsTest(unittest.TestCase):
             str(self.state_path),
         'FAKE_LOCAL_TOOL_LOG':
             str(self.local_tool_log),
+        'FAKE_SLEEP_LOG':
+            str(self.sleep_log),
         'FAKE_REAL_LOCAL_TOOL':
             self.real_local_tool,
         'FAKE_SHELL_INJECTION_LOG':
@@ -444,6 +630,11 @@ class PublishDistributionsTest(unittest.TestCase):
 
   def operations(self):
     return [record['operation'] for record in self.read_log()]
+
+  def sleep_delays(self):
+    if not self.sleep_log.exists():
+      return []
+    return self.sleep_log.read_text(encoding='ascii').splitlines()
 
   def canonical_assets(self):
     return {
@@ -519,28 +710,35 @@ class PublishDistributionsTest(unittest.TestCase):
     upload_records = [
         record for record in records if record['operation'] == 'upload-release'
     ]
-    self.assertEqual(2, len(upload_records))
-    self.assertEqual(
-        list(ARCHIVE_NAMES), [
-            Path(path).name
-            for path in upload_records[0]['arguments'][3:upload_records[0][
-                'arguments'].index('--repo')]
-        ])
-    self.assertEqual(
-        list(CHECKSUM_NAMES), [
-            Path(path).name
-            for path in upload_records[1]['arguments'][3:upload_records[1][
-                'arguments'].index('--repo')]
-        ])
+    expected_upload_names = ARCHIVE_NAMES + CHECKSUM_NAMES
+    self.assertEqual(len(expected_upload_names), len(upload_records))
+    for record, expected_name in zip(upload_records, expected_upload_names):
+      arguments = record['arguments']
+      endpoint = next(
+          argument for argument in arguments if argument.startswith('https://'))
+      self.assertEqual(
+          'https://uploads.github.com/repos/{}/releases/1/assets?name={}'.
+          format(REPOSITORY, expected_name), endpoint)
+      self.assertEqual('POST', flag_argument(arguments, '--method'))
+      self.assertEqual('Content-Type: application/octet-stream',
+                       flag_argument(arguments, '-H'))
+      self.assertEqual(expected_name,
+                       Path(flag_argument(arguments, '--input')).name)
+      self.assertNotIn(TAG_NAME, endpoint)
     create_arguments = next(record['arguments'] for record in records
                             if record['operation'] == 'create-release')
     publish_arguments = next(record['arguments'] for record in records
                              if record['operation'] == 'publish-release')
-    self.assertIn('--latest=false', create_arguments)
-    self.assertIn('--draft', create_arguments)
-    self.assertIn('--verify-tag', create_arguments)
-    self.assertIn('--latest=false', publish_arguments)
-    self.assertIn('--draft=false', publish_arguments)
+    self.assertEqual('false',
+                     field_argument(create_arguments, '-f', 'make_latest'))
+    self.assertEqual('true', field_argument(create_arguments, '-F', 'draft'))
+    self.assertEqual('false',
+                     field_argument(create_arguments, '-F', 'prerelease'))
+    self.assertEqual('false',
+                     field_argument(publish_arguments, '-f', 'make_latest'))
+    self.assertEqual('false', field_argument(publish_arguments, '-F', 'draft'))
+    self.assertEqual('false',
+                     field_argument(publish_arguments, '-F', 'prerelease'))
     operations = self.operations()
     self.assertEqual('inspect-immutability', operations[0])
     self.assertLess(
@@ -555,6 +753,37 @@ class PublishDistributionsTest(unittest.TestCase):
         operations.index('upload-release'), operations.index('publish-release'))
     self.assertLess(
         operations.index('publish-release'), operations.index('inspect-latest'))
+
+  def test_delayed_create_visibility_is_retried_by_stable_release_id(self):
+    state = self.read_state()
+    state['create_get_404_calls'] = 1
+    state['create_list_delay_calls'] = 1
+    self.write_state(state)
+
+    result = self.run_publisher()
+
+    self.assertEqual(0, result.returncode, result.stderr)
+    self.assert_exact_published_release()
+    self.assertEqual(['1', '2'], self.sleep_delays())
+    create_record = next(record for record in self.read_log()
+                         if record['operation'] == 'create-release')
+    self.assertIn('repos/{}/releases'.format(REPOSITORY),
+                  create_record['arguments'])
+
+  def test_create_visibility_retry_is_bounded(self):
+    state = self.read_state()
+    state['create_get_404_calls'] = 99
+    self.write_state(state)
+
+    result = self.run_publisher()
+
+    self.assertNotEqual(0, result.returncode)
+    self.assertIn('Draft release was not visible after creation', result.stderr)
+    self.assertEqual(['1', '2', '4', '8', '16'], self.sleep_delays())
+    self.assertTrue(self.read_state()['release']['draft'])
+    self.assertEqual({}, self.read_state()['release']['assets'])
+    self.assertNotIn('upload-release', self.operations())
+    self.assertNotIn('publish-release', self.operations())
 
   def test_authenticated_gh_keyring_identity_owns_the_release_without_token_environment(
       self):
@@ -582,7 +811,13 @@ class PublishDistributionsTest(unittest.TestCase):
             for record in self.read_log()))
 
   def test_gh_token_precedence_matches_the_gh_cli(self):
-    result = self.run_publisher(environment=self.environment(GITHUB_TOKEN='must-not-be-used', GH_TOKEN=TOKEN, GH_ENTERPRISE_TOKEN='must-not-leak', GITHUB_ENTERPRISE_TOKEN='must-not-leak', ENV_TOKEN_SOURCE='must-not-remain-exported', ENV_TOKEN_CONTENT='must-not-remain-exported'))
+    result = self.run_publisher(environment=self.environment(
+        GITHUB_TOKEN='must-not-be-used',
+        GH_TOKEN=TOKEN,
+        GH_ENTERPRISE_TOKEN='must-not-leak',
+        GITHUB_ENTERPRISE_TOKEN='must-not-leak',
+        ENV_TOKEN_SOURCE='must-not-remain-exported',
+        ENV_TOKEN_CONTENT='must-not-remain-exported'))
     self.assertEqual(0, result.returncode, result.stderr)
     self.assert_exact_published_release()
     self.assertTrue(self.local_tool_log.exists())
@@ -592,7 +827,9 @@ class PublishDistributionsTest(unittest.TestCase):
 
   def test_privileged_startup_blocks_bash_env_and_exported_gh_function(self):
     bash_environment = self.root / 'malicious-bash-env'
-    bash_environment.write_text("printf 'BASH_ENV executed\\n' >> \"$FAKE_SHELL_INJECTION_LOG\"\ngh() { printf 'BASH_ENV gh function executed\\n' >> \"$FAKE_SHELL_INJECTION_LOG\"; return 97; }\nexport -f gh\n", encoding='utf-8')
+    bash_environment.write_text(
+        "printf 'BASH_ENV executed\\n' >> \"$FAKE_SHELL_INJECTION_LOG\"\ngh() { printf 'BASH_ENV gh function executed\\n' >> \"$FAKE_SHELL_INJECTION_LOG\"; return 97; }\nexport -f gh\n",
+        encoding='utf-8')
     environment = self.environment(BASH_ENV=str(bash_environment))
     environment[
         'BASH_FUNC_gh%%'] = '() { printf \'exported gh function executed\\n\' >> "$FAKE_SHELL_INJECTION_LOG"; return 98; }'
@@ -602,7 +839,14 @@ class PublishDistributionsTest(unittest.TestCase):
     self.assert_exact_published_release()
 
   def test_non_privileged_bash_invocation_is_rejected_before_gh(self):
-    result = subprocess.run(['/bin/bash', str(PUBLISHER), COMMIT_SHA, str(self.artifact_directory)], check=False, capture_output=True, text=True, env=self.environment())
+    result = subprocess.run(
+        ['/bin/bash',
+         str(PUBLISHER), COMMIT_SHA,
+         str(self.artifact_directory)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=self.environment())
     self.assertNotEqual(0, result.returncode)
     self.assertIn('execute publish_distributions.sh directly', result.stderr)
     self.assertFalse(self.log_path.exists())
@@ -616,8 +860,16 @@ class PublishDistributionsTest(unittest.TestCase):
     shutil.copy2(DISTRIB_ROOT / verifier_copy.name, verifier_copy)
     publisher_copy.chmod(0o755)
     environment = self.environment()
-    environment['PATH'] = '{}{}{}'.format(publication_bin, os.pathsep, environment['PATH'])
-    result = subprocess.run([PUBLISHER.name, COMMIT_SHA, str(self.artifact_directory)], check=False, capture_output=True, text=True, env=environment, cwd=self.root)
+    environment['PATH'] = '{}{}{}'.format(publication_bin, os.pathsep,
+                                          environment['PATH'])
+    result = subprocess.run(
+        [PUBLISHER.name, COMMIT_SHA,
+         str(self.artifact_directory)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+        cwd=self.root)
     self.assertEqual(0, result.returncode, result.stderr)
     self.assert_exact_published_release()
 
@@ -625,7 +877,13 @@ class PublishDistributionsTest(unittest.TestCase):
     publisher_copy = self.root / PUBLISHER.name
     shutil.copy2(PUBLISHER, publisher_copy)
     publisher_copy.chmod(0o755)
-    result = subprocess.run([str(publisher_copy), COMMIT_SHA, str(self.artifact_directory)], check=False, capture_output=True, text=True, env=self.environment())
+    result = subprocess.run(
+        [str(publisher_copy), COMMIT_SHA,
+         str(self.artifact_directory)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=self.environment())
     self.assertNotEqual(0, result.returncode)
     self.assertIn('Required sibling distribution verifier', result.stderr)
     self.assertFalse(self.log_path.exists())
@@ -788,6 +1046,33 @@ class PublishDistributionsTest(unittest.TestCase):
         self.assertEqual(before, self.state_path.read_bytes())
         self.assert_no_modifying_calls()
 
+  def test_metadata_json_types_and_delimiters_fail_closed(self):
+    mutations = (
+        lambda release: release.update(id='1'),
+        lambda release: release.update(target=123),
+        lambda release: release.update(draft='false'),
+        lambda release: release.update(immutable='true'),
+        lambda release: release.update(prerelease='false'),
+        lambda release: release.update(title=123),
+        lambda release: release.update(title=RELEASE_TITLE + '|injected'),
+        lambda release: release.update(body=RELEASE_BODY + '\ninserted'),
+        lambda release: release.update(author='bad|author'),)
+    for mutation in mutations:
+      with self.subTest(mutation=mutation):
+        self.set_release(False, ASSET_NAMES)
+        state = self.read_state()
+        mutation(state['release'])
+        self.write_state(state)
+        before = self.state_path.read_bytes()
+        if self.log_path.exists():
+          self.log_path.unlink()
+
+        result = self.run_publisher()
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual(before, self.state_path.read_bytes())
+        self.assert_no_modifying_calls()
+
   def test_incomplete_owned_draft_is_replaced_without_retargeting_tag(self):
     self.set_release(True, ARCHIVE_NAMES[:2])
     result = self.run_publisher()
@@ -798,6 +1083,54 @@ class PublishDistributionsTest(unittest.TestCase):
     self.assertLess(self.operations().index('delete-release'),
                     self.operations().index('create-release'))
 
+  def test_delayed_delete_visibility_is_retried_after_exact_id_deletion(self):
+    self.set_release(True, ARCHIVE_NAMES[:2])
+    state = self.read_state()
+    state['delete_get_stale_calls'] = 1
+    state['delete_list_delay_calls'] = 1
+    self.write_state(state)
+
+    result = self.run_publisher()
+
+    self.assertEqual(0, result.returncode, result.stderr)
+    self.assert_exact_published_release()
+    self.assertEqual(['1', '2'], self.sleep_delays())
+    delete_record = next(record for record in self.read_log()
+                         if record['operation'] == 'delete-release')
+    self.assertIn('repos/{}/releases/1'.format(REPOSITORY),
+                  delete_record['arguments'])
+
+  def test_delete_visibility_retry_is_bounded(self):
+    self.set_release(True, ARCHIVE_NAMES[:2])
+    state = self.read_state()
+    state['delete_get_stale_calls'] = 99
+    self.write_state(state)
+
+    result = self.run_publisher()
+
+    self.assertNotEqual(0, result.returncode)
+    self.assertIn('Unable to confirm removal of incomplete owned draft',
+                  result.stderr)
+    self.assertEqual(['1', '2', '4', '8', '16'], self.sleep_delays())
+    self.assertIsNone(self.read_state()['release'])
+    self.assertNotIn('create-release', self.operations())
+    self.assertNotIn('upload-release', self.operations())
+    self.assertNotIn('publish-release', self.operations())
+
+  def test_replaced_draft_id_is_not_deleted(self):
+    self.set_release(True, ARCHIVE_NAMES[:2])
+    state = self.read_state()
+    state['replace_id_after_asset_view'] = True
+    self.write_state(state)
+
+    result = self.run_publisher()
+
+    self.assertNotEqual(0, result.returncode)
+    self.assertIn('Draft release identity changed before deletion',
+                  result.stderr)
+    self.assertEqual(999, self.read_state()['release']['id'])
+    self.assertNotIn('delete-release', self.operations())
+
   def test_complete_owned_draft_publishes_without_reupload(self):
     self.set_release(True, ASSET_NAMES)
     result = self.run_publisher()
@@ -806,6 +1139,40 @@ class PublishDistributionsTest(unittest.TestCase):
     self.assertIn('publish-release', self.operations())
     self.assertNotIn('delete-release', self.operations())
     self.assertNotIn('upload-release', self.operations())
+
+  def test_delayed_publish_visibility_is_retried_by_stable_release_id(self):
+    self.set_release(True, ASSET_NAMES)
+    state = self.read_state()
+    state['publish_get_stale_calls'] = 1
+    state['publish_immutable_delay_calls'] = 1
+    state['publish_list_delay_calls'] = 1
+    self.write_state(state)
+
+    result = self.run_publisher()
+
+    self.assertEqual(0, result.returncode, result.stderr)
+    self.assert_exact_published_release()
+    self.assertEqual(['1', '2', '4'], self.sleep_delays())
+    publish_record = next(record for record in self.read_log()
+                          if record['operation'] == 'publish-release')
+    self.assertIn('repos/{}/releases/1'.format(REPOSITORY),
+                  publish_record['arguments'])
+
+  def test_publish_visibility_retry_is_bounded(self):
+    self.set_release(True, ASSET_NAMES)
+    state = self.read_state()
+    state['publish_get_stale_calls'] = 99
+    self.write_state(state)
+
+    result = self.run_publisher()
+
+    self.assertNotEqual(0, result.returncode)
+    self.assertIn('Release remained a draft after publication', result.stderr)
+    self.assertEqual(['1', '2', '4', '8', '16'], self.sleep_delays())
+    self.assertFalse(self.read_state()['release']['draft'])
+    self.assertTrue(self.read_state()['release']['immutable'])
+    self.assertNotIn('upload-release', self.operations())
+    self.assertNotIn('delete-release', self.operations())
 
   def test_owned_draft_without_tag_recreates_exact_ref_before_recovery(self):
     self.set_release(True, ARCHIVE_NAMES[:1], tag_sha=None)
@@ -868,6 +1235,130 @@ class PublishDistributionsTest(unittest.TestCase):
     self.assertEqual(before, self.state_path.read_bytes())
     self.assert_no_modifying_calls()
 
+  def test_malformed_release_list_cannot_prove_absence(self):
+    for mode in ('non-array', 'string-id', 'zero-id'):
+      with self.subTest(mode=mode):
+        state = {
+            'next_id': 1,
+            'tag_sha': None,
+            'release': None,
+            'malformed_release_list_response': mode
+        }
+        self.write_state(state)
+        if self.log_path.exists():
+          self.log_path.unlink()
+
+        result = self.run_publisher()
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual(state, self.read_state())
+        self.assert_no_modifying_calls()
+
+  def test_malformed_asset_collection_cannot_authorize_draft_deletion(self):
+    for mode in ('missing', 'non-array', 'invalid-field'):
+      with self.subTest(mode=mode):
+        self.set_release(True, ARCHIVE_NAMES[:2])
+        state = self.read_state()
+        state['malformed_assets_response'] = mode
+        self.write_state(state)
+        if self.log_path.exists():
+          self.log_path.unlink()
+
+        result = self.run_publisher()
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual(state, self.read_state())
+        self.assertNotIn('delete-release', self.operations())
+        self.assertNotIn('create-release', self.operations())
+
+  @unittest.skipUnless(
+      shutil.which('jq'), 'direct publisher jq contract tests require jq')
+  def test_release_list_and_asset_jq_contracts_reject_malformed_json(self):
+    result = self.run_publisher()
+    self.assertEqual(0, result.returncode, result.stderr)
+    filters = {}
+    for record in self.read_log():
+      if record['operation'] in ('list-releases', 'view-assets'):
+        filters.setdefault(record['operation'],
+                           flag_argument(record['arguments'], '--jq'))
+    self.assertEqual({'list-releases', 'view-assets'}, set(filters))
+
+    fixtures = {
+        'list-releases': ({}, [{
+            'tag_name': TAG_NAME,
+            'id': '1'
+        }], [{
+            'tag_name': TAG_NAME,
+            'id': 0
+        }], [{
+            'tag_name': TAG_NAME,
+            'id': 1.5
+        }], [{
+            'id': 1
+        }]),
+        'view-assets': ({}, {
+            'assets': {}
+        }, {
+            'assets': [{
+                'name': ARCHIVE_NAMES[0],
+                'size': '1',
+                'state': 'uploaded',
+                'digest': 'sha256:' + '0' * 64
+            }]
+        }, {
+            'assets': [{
+                'name': ARCHIVE_NAMES[0] + '|injected',
+                'size': 1,
+                'state': 'uploaded',
+                'digest': 'sha256:' + '0' * 64
+            }]
+        }, {
+            'assets': [{
+                'name': ARCHIVE_NAMES[0],
+                'size': -1,
+                'state': 'uploaded',
+                'digest': 'sha256:' + '0' * 64
+            }]
+        })
+    }
+    jq_path = shutil.which('jq')
+    for operation, malformed_payloads in fixtures.items():
+      for payload in malformed_payloads:
+        with self.subTest(operation=operation, payload=payload):
+          jq_result = subprocess.run(
+              [jq_path, '-r', filters[operation]],
+              check=False,
+              capture_output=True,
+              text=True,
+              input=json.dumps(payload))
+          self.assertEqual(0, jq_result.returncode, jq_result.stderr)
+          self.assertEqual('invalid', jq_result.stdout.rstrip('\n'))
+
+    valid_payloads = {
+        'list-releases': ([{
+            'tag_name': TAG_NAME,
+            'id': 7
+        }], '7'),
+        'view-assets': ({
+            'assets': [{
+                'name': ARCHIVE_NAMES[0],
+                'size': 1,
+                'state': 'uploaded',
+                'digest': 'sha256:' + '0' * 64
+            }]
+        }, '{}|1|uploaded|sha256:{}'.format(ARCHIVE_NAMES[0], '0' * 64))
+    }
+    for operation, (payload, expected_output) in valid_payloads.items():
+      with self.subTest(operation=operation, valid=True):
+        jq_result = subprocess.run(
+            [jq_path, '-r', filters[operation]],
+            check=False,
+            capture_output=True,
+            text=True,
+            input=json.dumps(payload))
+        self.assertEqual(0, jq_result.returncode, jq_result.stderr)
+        self.assertEqual(expected_output, jq_result.stdout.rstrip('\n'))
+
   def test_archive_upload_failure_leaves_invisible_draft_without_checksums(
       self):
     result = self.run_publisher(environment=self.environment(
@@ -879,6 +1370,85 @@ class PublishDistributionsTest(unittest.TestCase):
     self.assertNotIn('publish-release', self.operations())
     self.assertFalse(
         any(name.endswith('.sha256') for name in state['release']['assets']))
+
+  def test_replaced_draft_id_cannot_receive_first_asset_upload(self):
+    state = self.read_state()
+    state['replace_id_before_first_upload'] = True
+    self.write_state(state)
+
+    result = self.run_publisher()
+
+    self.assertNotEqual(0, result.returncode)
+    self.assertIn('Archive upload failed', result.stderr)
+    replacement = self.read_state()['release']
+    self.assertEqual(999, replacement['id'])
+    self.assertEqual({}, replacement['assets'])
+    upload_records = [
+        record for record in self.read_log()
+        if record['operation'] == 'upload-release'
+    ]
+    self.assertEqual(1, len(upload_records))
+    self.assertIn(
+        'https://uploads.github.com/repos/{}/releases/1/assets?name={}'.format(
+            REPOSITORY, ARCHIVE_NAMES[0]), upload_records[0]['arguments'])
+
+  def test_create_response_failure_after_server_write_recovers_on_rerun(self):
+    state = self.read_state()
+    state['create_get_404_calls'] = 1
+    state['create_list_delay_calls'] = 2
+    self.write_state(state)
+    result = self.run_publisher(environment=self.environment(
+        FAKE_GH_FAIL_AFTER_WRITE_OPERATION='create-release'))
+
+    self.assertEqual(0, result.returncode, result.stderr)
+    self.assert_exact_published_release()
+    self.assertEqual(1, self.read_state()['release']['id'])
+    self.assertEqual(['1', '2', '4'], self.sleep_delays())
+
+    self.log_path.unlink()
+    result = self.run_publisher()
+
+    self.assertEqual(0, result.returncode, result.stderr)
+    self.assert_exact_published_release()
+    self.assertEqual(1, self.read_state()['release']['id'])
+    self.assert_no_modifying_calls()
+
+  def test_visible_created_id_with_transient_metadata_404_converges(self):
+    self.set_release(True)
+    state = self.read_state()
+    state['create_get_404_remaining'] = 1
+    self.write_state(state)
+
+    result = self.run_publisher()
+
+    self.assertEqual(0, result.returncode, result.stderr)
+    self.assert_exact_published_release()
+    self.assertEqual(2, self.read_state()['release']['id'])
+    self.assertEqual(['1'], self.sleep_delays())
+    self.assertIn('view-release-status', self.operations())
+    self.assertIn('delete-release', self.operations())
+
+  def test_delete_response_failure_after_server_write_recovers_on_rerun(self):
+    self.set_release(True, ARCHIVE_NAMES[:2])
+    state = self.read_state()
+    state['delete_get_stale_calls'] = 1
+    state['delete_list_delay_calls'] = 2
+    self.write_state(state)
+    result = self.run_publisher(environment=self.environment(
+        FAKE_GH_FAIL_AFTER_WRITE_OPERATION='delete-release'))
+
+    self.assertEqual(0, result.returncode, result.stderr)
+    self.assert_exact_published_release()
+    self.assertEqual(2, self.read_state()['release']['id'])
+    self.assertEqual(['1', '2', '4'], self.sleep_delays())
+
+    self.log_path.unlink()
+    result = self.run_publisher()
+
+    self.assertEqual(0, result.returncode, result.stderr)
+    self.assert_exact_published_release()
+    self.assertEqual(2, self.read_state()['release']['id'])
+    self.assert_no_modifying_calls()
 
   def test_checksum_upload_failure_is_recovered_on_rerun(self):
     result = self.run_publisher(environment=self.environment(
@@ -906,7 +1476,47 @@ class PublishDistributionsTest(unittest.TestCase):
     self.assertNotIn('upload-release', self.operations())
     self.assertNotIn('delete-release', self.operations())
 
-  def test_final_preflight_rejects_repository_or_draft_changes_during_upload(self):
+  def test_publish_response_failure_after_server_write_is_idempotent_on_rerun(
+      self):
+    self.set_release(True, ASSET_NAMES)
+    state = self.read_state()
+    state['publish_get_stale_calls'] = 1
+    state['publish_immutable_delay_calls'] = 1
+    state['publish_list_delay_calls'] = 1
+    self.write_state(state)
+    result = self.run_publisher(environment=self.environment(
+        FAKE_GH_FAIL_AFTER_WRITE_OPERATION='publish-release'))
+
+    self.assertEqual(0, result.returncode, result.stderr)
+    self.assert_exact_published_release()
+    self.assertEqual(['1', '2', '4'], self.sleep_delays())
+
+    self.log_path.unlink()
+    result = self.run_publisher()
+
+    self.assertEqual(0, result.returncode, result.stderr)
+    self.assert_exact_published_release()
+    self.assert_no_modifying_calls()
+
+  def test_current_published_id_converges_from_stale_draft_metadata(self):
+    self.set_release(False, ASSET_NAMES)
+    state = self.read_state()
+    prepublish_release = dict(state['release'])
+    prepublish_release['draft'] = True
+    prepublish_release['immutable'] = False
+    state['prepublish_release'] = prepublish_release
+    state['publish_get_stale_remaining'] = 1
+    state['publish_immutable_delay_remaining'] = 1
+    self.write_state(state)
+
+    result = self.run_publisher()
+
+    self.assertEqual(0, result.returncode, result.stderr)
+    self.assert_exact_published_release()
+    self.assert_no_modifying_calls()
+
+  def test_final_preflight_rejects_repository_or_draft_changes_during_upload(
+      self):
     cases = (('metadata', 'Release ownership marker mismatch'),
              ('immutability', 'Immutable releases must be enabled'),
              ('identity',
@@ -917,7 +1527,8 @@ class PublishDistributionsTest(unittest.TestCase):
         self.write_state({'next_id': 1, 'tag_sha': None, 'release': None})
         if self.log_path.exists():
           self.log_path.unlink()
-        result = self.run_publisher(environment=self.environment(FAKE_MUTATE_AFTER_UPLOAD=mutation))
+        result = self.run_publisher(environment=self.environment(
+            FAKE_MUTATE_AFTER_UPLOAD=mutation))
         self.assertNotEqual(0, result.returncode)
         self.assertIn(expected_error, result.stderr)
         self.assertTrue(self.read_state()['release']['draft'])
@@ -945,6 +1556,37 @@ class PublishDistributionsTest(unittest.TestCase):
     self.assertTrue(self.read_state()['release']['immutable'])
     self.assertLess(self.operations().index('publish-release'),
                     self.operations().index('inspect-latest'))
+
+  def test_mutating_api_interruption_statuses_are_terminal(self):
+    operations = ('create-ref', 'create-release', 'upload-release',
+                  'delete-release', 'publish-release')
+    for operation in operations:
+      for status in (129, 130, 143):
+        with self.subTest(operation=operation, status=status):
+          if operation == 'create-ref':
+            self.write_state({'next_id': 1, 'tag_sha': None, 'release': None})
+          elif operation in ('create-release', 'upload-release'):
+            self.write_state({
+                'next_id': 1,
+                'tag_sha': COMMIT_SHA,
+                'release': None
+            })
+          elif operation == 'delete-release':
+            self.set_release(True, ARCHIVE_NAMES[:2])
+          else:
+            self.set_release(True, ASSET_NAMES)
+          for log_path in (self.log_path, self.sleep_log):
+            if log_path.exists():
+              log_path.unlink()
+
+          result = self.run_publisher(environment=self.environment(
+              FAKE_GH_FAIL_OPERATION=operation,
+              FAKE_GH_FAIL_STATUS=str(status)))
+
+          self.assertEqual(status, result.returncode, result.stderr)
+          recorded_operations = self.operations()
+          self.assertEqual(operation, recorded_operations[-1])
+          self.assertEqual(1, recorded_operations.count(operation))
 
   def test_interruption_during_upload_leaves_invisible_recoverable_draft(self):
     result = self.run_publisher(environment=self.environment(
@@ -1026,11 +1668,13 @@ class PublishDistributionsTest(unittest.TestCase):
     archive_path = self.artifact_directory / archive_name
     archive_path.write_bytes(build_valid_archive(target, WRONG_SHA))
     digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
-    (self.artifact_directory / '{}.sha256'.format(archive_name)).write_bytes('{}  {}\n'.format(digest, archive_name).encode('ascii'))
+    (self.artifact_directory / '{}.sha256'.format(archive_name)
+    ).write_bytes('{}  {}\n'.format(digest, archive_name).encode('ascii'))
     before = self.state_path.read_bytes()
     result = self.run_publisher()
     self.assertNotEqual(0, result.returncode)
-    self.assertIn('Distribution archive byte verification failed', result.stderr)
+    self.assertIn('Distribution archive byte verification failed',
+                  result.stderr)
     self.assertEqual(before, self.state_path.read_bytes())
     self.assertEqual([], self.read_log())
 
@@ -1038,22 +1682,28 @@ class PublishDistributionsTest(unittest.TestCase):
     target = TARGETS[0]
     archive_name = '{}.tar.gz'.format(target)
     archive_path = self.artifact_directory / archive_name
-    members = [member for member in canonical_members(target, COMMIT_SHA) if member['name'] != target + '/README.txt']
+    members = [
+        member for member in canonical_members(target, COMMIT_SHA)
+        if member['name'] != target + '/README.txt'
+    ]
     archive_path.write_bytes(build_tar_gz(members))
     digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
-    (self.artifact_directory / '{}.sha256'.format(archive_name)).write_bytes('{}  {}\n'.format(digest, archive_name).encode('ascii'))
+    (self.artifact_directory / '{}.sha256'.format(archive_name)
+    ).write_bytes('{}  {}\n'.format(digest, archive_name).encode('ascii'))
     before = self.state_path.read_bytes()
 
     result = self.run_publisher()
 
     self.assertNotEqual(0, result.returncode)
-    self.assertIn('Distribution archive byte verification failed', result.stderr)
+    self.assertIn('Distribution archive byte verification failed',
+                  result.stderr)
     self.assertEqual(before, self.state_path.read_bytes())
     self.assertEqual([], self.read_log())
 
   def test_python_older_than_3_9_fails_before_any_gh_call(self):
     before = self.state_path.read_bytes()
-    result = self.run_publisher(environment=self.environment(FAKE_PYTHON_TOO_OLD='1'))
+    result = self.run_publisher(environment=self.environment(
+        FAKE_PYTHON_TOO_OLD='1'))
     self.assertNotEqual(0, result.returncode)
     self.assertIn('Python 3.9 or newer is required', result.stderr)
     self.assertEqual(before, self.state_path.read_bytes())
@@ -1072,7 +1722,7 @@ class PublishDistributionsTest(unittest.TestCase):
     self.assertEqual([], self.read_log())
     no_gh_bin = self.root / 'no-gh-bin'
     no_gh_bin.mkdir()
-    for command_name in ('sha256sum', 'shasum', 'cmp', 'wc', 'tr'):
+    for command_name in ('sha256sum', 'shasum', 'cmp', 'sleep', 'wc', 'tr'):
       source = shutil.which(command_name)
       if source is not None:
         destination = no_gh_bin / Path(source).name

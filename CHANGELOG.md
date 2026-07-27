@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-07-27: Handler relay and compatibility fixes
+
+- Completed `CefDownloadHandler.canDownload` forwarding through the stable `CefClient` relay.
+  Registered handlers now receive the exact browser, URL, and request method and can allow or deny
+  a user-initiated download; no handler or a removed handler retains CEF's default-allow behavior.
+- Restored direct source and binary compatibility for both legacy six-argument and current
+  eight-argument `CefDialogHandler.onFileDialog` implementations. CEF still dispatches the full
+  ordered MIME filter, expansion, and description vectors through the eight-argument path, which
+  falls back one-way to a legacy override when necessary.
+
 ## 2026-07-24 to 2026-07-27: JCEF 151 and Java 17 modernization
 
 This entry records the complete product, API, compatibility, build, test, and publication work in
@@ -183,8 +193,7 @@ API.
 - Added `CefDisplayHandler.onFaviconURLChange` with ordered, detached icon-URL snapshots.
 - Added source-compatible custom-cursor overloads to both display and render handlers.
 - Updated file-dialog delivery with folder selection plus CEF-provided MIME expansion and
-  description lists. `CefDialogHandler.onFileDialog` changed from six to eight arguments, so direct
-  handler implementations must migrate to the new signature.
+  description lists through the complete eight-argument `CefDialogHandler.onFileDialog` callback.
 - Added a complete `CefPermissionHandler` surface for media-access requests and general permission
   prompts, including `CefMediaAccessPermissionTypes`, `CefPermissionRequestTypes`,
   `CefPermissionRequestResult`, one-shot `CefMediaAccessCallback` and
@@ -196,6 +205,8 @@ API.
 - Modernized download handling with explicit `onBeforeDownloadWithDecision`, pause/interruption
   state, complete interrupt reasons, raw reason fallback, and original URL reporting while
   preserving the legacy before-download callback.
+- Added the CEF 151 `CefDownloadHandler.canDownload` interface and native callback; the 2026-07-27
+  follow-up above completes forwarding through normal `CefClient.addDownloadHandler` registration.
 - Updated `CefLoadHandler.ErrorCode` to the CEF 151 domain and added raw integer error delivery for
   forward compatibility. Navigation transitions now use immutable `CefRequest.Transition` values
   so source, qualifier, redirect, and future bits are preserved without mutating shared enum
@@ -275,9 +286,11 @@ especially where Java may have inlined changed numeric constants.
   failures. Direct `CefAppHandler` implementations must add `onAlreadyRunningAppRelaunch`, and
   direct `CefRenderHandler` implementations must add the paint-listener methods. Their adapters
   provide defaults. Custom `CefClientHandler` subclasses must implement `getFindHandler()`.
-- `CefDialogHandler.onFileDialog` now receives MIME expansion and description lists in its
-  eight-argument signature. Direct implementations must update from the old six-argument method;
-  there is no dialog-handler adapter that can absorb this source break.
+- The initial CEF 151 synchronization changed `CefDialogHandler.onFileDialog` from six to eight
+  arguments. The compatibility defaults above accept direct implementations of either
+  signature and preserve all three parallel metadata vectors. The interface is no longer a
+  functional interface because Java cannot represent both lambda arities; lambda users must use an
+  explicit handler implementation.
 - Removed obsolete `CefSettings.pack_loading_disabled`; CEF 151 no longer exposes that setting.
 - Request-flag values changed: stored credentials moved from `2` to `8`, upload progress from `8`
   to `16`, no-download-data from `64` to `32`, and no-retry-on-5xx from `128` to `64`.
@@ -300,13 +313,6 @@ especially where Java may have inlined changed numeric constants.
   `CM_MEDIAFLAG_HAS_VIDEO` aliases `CM_MEDIAFLAG_CAN_TOGGLE_CONTROLS`, and bit `128`
   `CM_MEDIAFLAG_CONTROL_ROOT_ELEMENT` aliases `CM_MEDIAFLAG_CONTROLS`. The old names no longer
   represent their former concepts.
-
-### Known API limitation
-
-CEF 151's `CefDownloadHandler.canDownload` interface and native bridge are present, but
-`CefClient.addDownloadHandler` does not relay the decision to the registered handler. A normally
-registered download handler therefore receives the default-allow result and cannot intercept this
-specific decision in this implementation series.
 
 ### MCEF compatibility retained and improved
 

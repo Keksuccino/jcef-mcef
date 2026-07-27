@@ -26,7 +26,33 @@ public interface CefDialogHandler {
     }
 
     /**
+     * Legacy file-dialog callback without MIME expansion and description metadata.
+     *
+     * <p>Existing handlers may continue to override this method. Native CEF 151 dispatches the
+     * extended overload, whose default implementation delegates here exactly once. New handlers
+     * should override the extended overload instead so they receive all metadata.
+     *
+     * @param browser The browser requesting the dialog.
+     * @param mode The type of dialog to display.
+     * @param title The dialog title, or an empty string for the default title.
+     * @param defaultFilePath The initially selected path.
+     * @param acceptFilters The accepted MIME types and file extensions.
+     * @param callback The one-shot continuation for a custom dialog.
+     * @return {@code true} when the handler owns {@code callback}; {@code false} for CEF's dialog.
+     * @deprecated Override the extended overload to receive MIME expansion and description lists.
+     */
+    @Deprecated
+    public default boolean onFileDialog(CefBrowser browser, FileDialogMode mode, String title,
+            String defaultFilePath, Vector<String> acceptFilters, CefFileDialogCallback callback) {
+        return false;
+    }
+
+    /**
      * Called to run a file chooser dialog.
+     *
+     * <p>The default implementation delegates one-way to the legacy overload. Override this method
+     * to consume MIME expansion and description metadata. Implementations that transform the
+     * parallel filter vectors must preserve their shared index alignment.
      *
      * @param browser
      * @param mode represents the type of dialog to display.
@@ -49,7 +75,9 @@ public interface CefDialogHandler {
      * @return To display a custom dialog return true and execute callback.
      * To display the default dialog return false.
      */
-    public boolean onFileDialog(CefBrowser browser, FileDialogMode mode, String title,
+    public default boolean onFileDialog(CefBrowser browser, FileDialogMode mode, String title,
             String defaultFilePath, Vector<String> acceptFilters, Vector<String> acceptExtensions,
-            Vector<String> acceptDescriptions, CefFileDialogCallback callback);
+            Vector<String> acceptDescriptions, CefFileDialogCallback callback) {
+        return onFileDialog(browser, mode, title, defaultFilePath, acceptFilters, callback);
+    }
 }

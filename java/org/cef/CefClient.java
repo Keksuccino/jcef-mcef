@@ -61,7 +61,9 @@ public class CefClient extends CefClientHandler
     private CefDialogHandler dialogHandler_ = null;
     private CefDisplayHandler displayHandler_ = null;
     private CefAudioHandler audioHandler_ = null;
-    private CefDownloadHandler downloadHandler_ = null;
+    // Download callbacks run on the CEF UI thread while application threads may replace the
+    // delegate. Keep the stable CefClient native relay and publish only delegate changes.
+    private final AtomicReference<CefDownloadHandler> downloadHandler_ = new AtomicReference<CefDownloadHandler>();
     private CefDragHandler dragHandler_ = null;
     // Find callbacks run on CEF UI while application threads may replace the delegate. The atomic
     // first-writer-wins update matches the existing add-handler contract with explicit visibility.
@@ -353,13 +355,17 @@ public class CefClient extends CefClientHandler
     }
 
     @Override
-    public boolean onFileDialog(CefBrowser browser, FileDialogMode mode, String title,
-            String defaultFilePath, Vector<String> acceptFilters, Vector<String> acceptExtensions,
-            Vector<String> acceptDescriptions, CefFileDialogCallback callback) {
-        if (dialogHandler_ != null && browser != null) {
-            return dialogHandler_.onFileDialog(browser, mode, title, defaultFilePath, acceptFilters,
-                    acceptExtensions, acceptDescriptions, callback);
-        }
+    @Deprecated
+    public boolean onFileDialog(CefBrowser browser, FileDialogMode mode, String title, String defaultFilePath, Vector<String> acceptFilters, CefFileDialogCallback callback) {
+        CefDialogHandler handler = dialogHandler_;
+        if (handler != null && browser != null) return handler.onFileDialog(browser, mode, title, defaultFilePath, acceptFilters, callback);
+        return false;
+    }
+
+    @Override
+    public boolean onFileDialog(CefBrowser browser, FileDialogMode mode, String title, String defaultFilePath, Vector<String> acceptFilters, Vector<String> acceptExtensions, Vector<String> acceptDescriptions, CefFileDialogCallback callback) {
+        CefDialogHandler handler = dialogHandler_;
+        if (handler != null && browser != null) return handler.onFileDialog(browser, mode, title, defaultFilePath, acceptFilters, acceptExtensions, acceptDescriptions, callback);
         return false;
     }
 
@@ -458,34 +464,44 @@ public class CefClient extends CefClientHandler
     // CefDownloadHandler
 
     public CefClient addDownloadHandler(CefDownloadHandler handler) {
-        if (downloadHandler_ == null) downloadHandler_ = handler;
+        if (handler != null) downloadHandler_.compareAndSet(null, handler);
         return this;
     }
 
     public void removeDownloadHandler() {
-        downloadHandler_ = null;
+        downloadHandler_.set(null);
+    }
+
+    @Override
+    public boolean canDownload(CefBrowser browser, String url, String requestMethod) {
+        CefDownloadHandler handler = downloadHandler_.get();
+        if (handler != null && browser != null) return handler.canDownload(browser, url, requestMethod);
+        return true;
     }
 
     @Override
     @Deprecated
     public void onBeforeDownload(CefBrowser browser, CefDownloadItem downloadItem,
             String suggestedName, CefBeforeDownloadCallback callback) {
-        if (downloadHandler_ != null && browser != null)
-            downloadHandler_.onBeforeDownload(browser, downloadItem, suggestedName, callback);
+        CefDownloadHandler handler = downloadHandler_.get();
+        if (handler != null && browser != null)
+            handler.onBeforeDownload(browser, downloadItem, suggestedName, callback);
     }
 
     @Override
     public boolean onBeforeDownloadWithDecision(CefBrowser browser, CefDownloadItem downloadItem,
             String suggestedName, CefBeforeDownloadCallback callback) {
-        if (downloadHandler_ != null && browser != null)
-            return downloadHandler_.onBeforeDownloadWithDecision(browser, downloadItem, suggestedName, callback);
+        CefDownloadHandler handler = downloadHandler_.get();
+        if (handler != null && browser != null)
+            return handler.onBeforeDownloadWithDecision(browser, downloadItem, suggestedName, callback);
         return false;
     }
 
     @Override
     public void onDownloadUpdated(CefBrowser browser, CefDownloadItem downloadItem, CefDownloadItemCallback callback) {
-        if (downloadHandler_ != null && browser != null)
-            downloadHandler_.onDownloadUpdated(browser, downloadItem, callback);
+        CefDownloadHandler handler = downloadHandler_.get();
+        if (handler != null && browser != null)
+            handler.onDownloadUpdated(browser, downloadItem, callback);
     }
 
     // CefDragHandler

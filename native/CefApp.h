@@ -11,6 +11,8 @@ extern "C" {
 #define org_cef_CefApp_SHUTDOWN_WAIT_SECONDS 30LL
 #undef org_cef_CefApp_SHUTDOWN_PUMP_DELAY_MILLIS
 #define org_cef_CefApp_SHUTDOWN_PUMP_DELAY_MILLIS 10LL
+#undef org_cef_CefApp_AWT_MESSAGE_PUMP_FALLBACK_FPS
+#define org_cef_CefApp_AWT_MESSAGE_PUMP_FALLBACK_FPS 120L
 /*
  * Class:     org_cef_CefApp
  * Method:    N_Startup

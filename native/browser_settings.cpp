@@ -16,6 +16,11 @@ namespace {
 
 static_assert(STATE_DEFAULT == 0 && STATE_ENABLED == 1 && STATE_DISABLED == 2, "CefState Java values must match cef_state_t");
 
+// Keep this synchronized with CefBrowserSettings.DEFAULT_WINDOWLESS_FRAME_RATE.
+// Java normally supplies a settings object, but native null conversion remains
+// supported for legacy callers and must not silently fall back to CEF's 30 fps.
+constexpr int kJcefDefaultWindowlessFrameRate = 60;
+
 bool Reject(JNIEnv* env, const std::string& message, std::string* error) {
   if (error)
     *error = message;
@@ -132,6 +137,7 @@ bool Convert(JNIEnv* env, jobject jsettings, bool osr, bool transparent, CefBrow
     return Reject(env, "Native CefBrowserSettings output must not be null", error);
 
   CefBrowserSettings converted;
+  converted.windowless_frame_rate = kJcefDefaultWindowlessFrameRate;
   // MCEF's existing transparency flag remains authoritative for off-screen
   // rendering. A stray windowed transparency flag must not change the legacy
   // opaque-white default.

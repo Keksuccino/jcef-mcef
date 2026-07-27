@@ -687,11 +687,13 @@ public interface CefBrowser {
 
     /**
      * Set the maximum rate in frames per second (fps) that {@code CefRenderHandler::onPaint}
-     * will be called for a windowless browser. The actual fps may be
-     * lower if the browser cannot generate frames at the requested rate. The
-     * minimum value is 1, and the maximum value is 60 (default 30).
+     * will be called for a windowless browser. The actual fps may be lower if the browser cannot
+     * generate frames at the requested rate. The minimum value is 1. Pinned CEF 151 does not
+     * impose a 60 fps upper cap, so values such as 120 are supported. JCEF-created windowless
+     * browsers default to {@link org.cef.CefBrowserSettings#DEFAULT_WINDOWLESS_FRAME_RATE} fps.
      *
      * @param frameRate the maximum frame rate
+     * @throws IllegalArgumentException if {@code frameRate} is less than 1
      * @throws UnsupportedOperationException if not supported
      */
     public void setWindowlessFrameRate(int frameRate);
@@ -699,8 +701,10 @@ public interface CefBrowser {
     /**
      * Returns the maximum rate in frames per second (fps) that {@code CefRenderHandler::onPaint}
      * will be called for a windowless browser. The actual fps may be lower if the browser cannot
-     * generate frames at the requested rate. The minimum value is 1, and the maximum value is 60
-     * (default 30).
+     * generate frames at the requested rate. JCEF-created windowless browsers default to {@link
+     * org.cef.CefBrowserSettings#DEFAULT_WINDOWLESS_FRAME_RATE} fps. A browser created with an
+     * explicit {@code CefBrowserSettings.windowless_frame_rate} value of 0 uses CEF's 30 fps
+     * fallback instead.
      *
      * @return the framerate, 0 if an error occurs
      * @throws UnsupportedOperationException if not supported

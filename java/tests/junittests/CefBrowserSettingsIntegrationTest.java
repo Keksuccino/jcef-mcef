@@ -29,6 +29,7 @@ import java.util.concurrent.atomic.AtomicReference;
 class CefBrowserSettingsIntegrationTest {
     private static final long FUTURE_TIMEOUT_SECONDS = 10;
     private static final int WINDOWLESS_FRAME_RATE = 240;
+    private static final int HIGH_REFRESH_WINDOWLESS_FRAME_RATE = 120;
     private static final String JAVASCRIPT_DISABLED_TITLE = "JAVASCRIPT_DISABLED";
     private static final String JAVASCRIPT_EXECUTED_TITLE = "JAVASCRIPT_EXECUTED";
     private static final String JAVASCRIPT_TEST_URL =
@@ -60,6 +61,36 @@ class CefBrowserSettingsIntegrationTest {
         try {
             CefBrowser browser = await(browserCreated);
             assertEquals(WINDOWLESS_FRAME_RATE, await(browser.getWindowlessFrameRate()));
+        } finally {
+            frame.terminateTest();
+            frame.awaitCompletion();
+        }
+    }
+
+    @Test
+    void mcefStyleImmediateOsrBrowserDefaultsToSixtyAndSupportsRuntime120() throws Exception {
+        CompletableFuture<CefBrowser> browserCreated = new CompletableFuture<CefBrowser>();
+        TestFrame frame = TestFrame.createOnEventDispatchThread(() -> new TestFrame() {
+            @Override
+            protected void setupTest() {
+                browser_ = new CefBrowserOsr(client_, "about:blank", false, null);
+                assertNotNull(browser_);
+                browser_.createImmediately();
+                super.setupTest();
+            }
+
+            @Override
+            public void onAfterCreated(CefBrowser browser) {
+                super.onAfterCreated(browser);
+                if (browser == browser_) browserCreated.complete(browser);
+            }
+        });
+
+        try {
+            CefBrowser browser = await(browserCreated);
+            assertEquals(CefBrowserSettings.DEFAULT_WINDOWLESS_FRAME_RATE, await(browser.getWindowlessFrameRate()));
+            browser.setWindowlessFrameRate(HIGH_REFRESH_WINDOWLESS_FRAME_RATE);
+            assertEquals(HIGH_REFRESH_WINDOWLESS_FRAME_RATE, await(browser.getWindowlessFrameRate()));
         } finally {
             frame.terminateTest();
             frame.awaitCompletion();

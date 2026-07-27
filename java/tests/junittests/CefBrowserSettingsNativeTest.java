@@ -85,11 +85,11 @@ class CefBrowserSettingsNativeTest {
     }
 
     @Test
-    void preservesDefaultSentinelsAndResolvesLegacyColors() {
+    void usesJcefFrameRateDefaultAndResolvesLegacyColors() {
         Map<String, Object> defaults = convert(new CefBrowserSettings(), true, false);
 
         assertEquals(26, defaults.size());
-        assertEquals(0, defaults.get("windowless_frame_rate"));
+        assertEquals(CefBrowserSettings.DEFAULT_WINDOWLESS_FRAME_RATE, defaults.get("windowless_frame_rate"));
         assertEquals("", defaults.get("standard_font_family"));
         assertEquals("", defaults.get("default_encoding"));
         assertEquals(CefState.DEFAULT.getValue(), defaults.get("javascript"));
@@ -99,7 +99,7 @@ class CefBrowserSettingsNativeTest {
 
         Map<String, Object> transparent = convert(null, true, true);
         assertEquals(0, transparent.get("background_color"));
-        assertEquals(0, transparent.get("windowless_frame_rate"));
+        assertEquals(CefBrowserSettings.DEFAULT_WINDOWLESS_FRAME_RATE, transparent.get("windowless_frame_rate"));
     }
 
     @Test

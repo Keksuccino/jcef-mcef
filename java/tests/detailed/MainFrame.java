@@ -62,7 +62,7 @@ public class MainFrame extends BrowserFrame {
         boolean osrEnabledArg = false;
         boolean transparentPaintingEnabledArg = false;
         boolean createImmediately = false;
-        int windowless_frame_rate = 0;
+        int windowless_frame_rate = CefBrowserSettings.DEFAULT_WINDOWLESS_FRAME_RATE;
         for (String arg : args) {
             arg = arg.toLowerCase();
             if (arg.equals("--off-screen-rendering-enabled")) {
@@ -73,6 +73,8 @@ public class MainFrame extends BrowserFrame {
                 createImmediately = true;
             } else if (arg.equals("--windowless-frame-rate-60")) {
                 windowless_frame_rate = 60;
+            } else if (arg.equals("--windowless-frame-rate-120")) {
+                windowless_frame_rate = 120;
             }
         }
 
@@ -85,15 +87,9 @@ public class MainFrame extends BrowserFrame {
         frame.setSize(800, 600);
         frame.setVisible(true);
 
-        if (osrEnabledArg && windowless_frame_rate != 0) {
+        if (osrEnabledArg) {
             frame.getBrowser().getWindowlessFrameRate().thenAccept(
                     framerate -> System.out.println("Framerate is:" + framerate));
-
-            frame.getBrowser().setWindowlessFrameRate(2);
-            frame.getBrowser().getWindowlessFrameRate().thenAccept(
-                    framerate -> System.out.println("Framerate is:" + framerate));
-
-            frame.getBrowser().setWindowlessFrameRate(windowless_frame_rate);
         }
     }
 

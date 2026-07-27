@@ -29,6 +29,7 @@ import javax.swing.Timer;
 public class CefApp extends CefAppHandlerAdapter {
     private static final long SHUTDOWN_WAIT_SECONDS = 30;
     private static final long SHUTDOWN_PUMP_DELAY_MILLIS = 10;
+    private static final int AWT_MESSAGE_PUMP_FALLBACK_FPS = 120;
 
     public final class CefVersion {
         public final int JCEF_COMMIT_NUMBER;
@@ -593,6 +594,13 @@ public class CefApp extends CefAppHandlerAdapter {
         scheduleAwtMessageLoopWork(delay_ms);
     }
 
+    private static long awtMessagePumpMaximumDelayMillis() {
+        // CEF can request an earlier wake-up through OnScheduleMessagePumpWork. This fallback also
+        // has to be fast enough when no earlier callback arrives, otherwise it becomes an
+        // artificial paint-rate ceiling for high-refresh windowless browsers.
+        return Math.max(1L, 1000L / AWT_MESSAGE_PUMP_FALLBACK_FPS);
+    }
+
     private void scheduleAwtMessageLoopWork(final long delay_ms) {
         SwingUtilities.invokeLater(new Runnable() {
             @Override
@@ -602,7 +610,7 @@ public class CefApp extends CefAppHandlerAdapter {
                     return;
                 }
 
-                final long maxTimerDelay = 1000 / 30;
+                final long maxTimerDelay = awtMessagePumpMaximumDelayMillis();
                 if (workTimer_ != null) {
                     workTimer_.stop();
                     workTimer_ = null;

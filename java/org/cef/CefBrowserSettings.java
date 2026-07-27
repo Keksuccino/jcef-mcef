@@ -6,18 +6,22 @@ package org.cef;
 
 /**
  * Browser initialization settings. Specify {@code null} or leave fields at their default values to
- * get the recommended CEF values. The consequences of using custom values may not be well tested.
+ * get the recommended JCEF values. The consequences of using custom values may not be well tested.
  * Many of these and other settings can also be configured using command-line switches.
  */
 public class CefBrowserSettings {
+    /** JCEF's default paint rate for windowless browsers. */
+    public static final int DEFAULT_WINDOWLESS_FRAME_RATE = 60;
+
     /**
      * The maximum rate in frames per second (fps) that {@code CefRenderHandler.onPaint} will be
      * called for a windowless browser. The actual fps may be lower if the browser cannot generate
-     * frames at the requested rate. The minimum non-default value is 1 and the CEF default is 30;
-     * leave this value at 0 to use that default. This value can also be changed dynamically via
-     * {@code CefBrowser.setWindowlessFrameRate}.
+     * frames at the requested rate. JCEF defaults to 60 fps. Any positive rate supported by the
+     * host can be requested, including 120 fps; pinned CEF 151 does not impose a 60 fps upper cap.
+     * Set this value to 0 to explicitly opt into CEF's 30 fps fallback. This value can also be
+     * changed dynamically via {@code CefBrowser.setWindowlessFrameRate}.
      */
-    public int windowless_frame_rate = 0;
+    public int windowless_frame_rate = DEFAULT_WINDOWLESS_FRAME_RATE;
 
     /**
      * Font family used for text that does not specify a CSS generic family. {@code null} or an
@@ -171,7 +175,7 @@ public class CefBrowserSettings {
      */
     public CefState chrome_zoom_bubble = CefState.DEFAULT;
 
-    /** Creates browser settings initialized to CEF's recommended defaults. */
+    /** Creates browser settings initialized to JCEF's recommended defaults. */
     public CefBrowserSettings() {}
 
     /**

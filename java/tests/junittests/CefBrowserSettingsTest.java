@@ -21,6 +21,8 @@ import org.cef.browser.CefBrowserOsr;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
+import java.util.Arrays;
 
 class CefBrowserSettingsTest {
     private static final String[] STATE_FIELDS = {"remote_fonts", "javascript",
@@ -95,11 +97,13 @@ class CefBrowserSettingsTest {
     }
 
     @Test
-    void usesCefDefaultsForEverySetting() {
+    void usesJcefDefaultsForEverySetting() {
         CefBrowserSettings settings = new CefBrowserSettings();
 
-        assertEquals(26, CefBrowserSettings.class.getFields().length);
-        assertEquals(0, settings.windowless_frame_rate);
+        long instanceFieldCount = Arrays.stream(CefBrowserSettings.class.getFields()).filter(field -> !Modifier.isStatic(field.getModifiers())).count();
+        assertEquals(26, instanceFieldCount);
+        assertEquals(60, CefBrowserSettings.DEFAULT_WINDOWLESS_FRAME_RATE);
+        assertEquals(CefBrowserSettings.DEFAULT_WINDOWLESS_FRAME_RATE, settings.windowless_frame_rate);
         assertNull(settings.standard_font_family);
         assertNull(settings.fixed_font_family);
         assertNull(settings.serif_font_family);
@@ -180,10 +184,22 @@ class CefBrowserSettingsTest {
 
         settings.windowless_frame_rate = 1;
         assertDoesNotThrow(() -> settings.validate(true, false));
+        settings.windowless_frame_rate = 120;
+        assertDoesNotThrow(() -> settings.validate(true, false));
         settings.windowless_frame_rate = Integer.MAX_VALUE;
+        assertDoesNotThrow(() -> settings.validate(true, false));
+        settings.windowless_frame_rate = 0;
         assertDoesNotThrow(() -> settings.validate(true, false));
         settings.windowless_frame_rate = -1;
         assertThrows(IllegalArgumentException.class, () -> settings.validate(true, false));
+    }
+
+    @Test
+    void runtimeWindowlessFrameRateRejectsCefFallbackValues() {
+        CefBrowserOsr browser = new CefBrowserOsr(null, "about:blank", false, null);
+
+        assertThrows(IllegalArgumentException.class, () -> browser.setWindowlessFrameRate(0));
+        assertThrows(IllegalArgumentException.class, () -> browser.setWindowlessFrameRate(-1));
     }
 
     @Test

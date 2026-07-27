@@ -4809,6 +4809,12 @@ JNIEXPORT void JNICALL
 Java_org_cef_browser_CefBrowser_1N_N_1SetWindowlessFrameRate(JNIEnv* env,
                                                              jobject jbrowser,
                                                              jint frameRate) {
+  if (frameRate < 1) {
+    ScopedJNIClass exception_class(env, "java/lang/IllegalArgumentException");
+    if (exception_class)
+      env->ThrowNew(exception_class, ("frameRate must be 1 or greater: " + std::to_string(frameRate)).c_str());
+    return;
+  }
   CefRefPtr<CefBrowser> browser = JNI_GET_BROWSER_OR_RETURN(env, jbrowser);
   CefRefPtr<CefBrowserHost> host = browser->GetHost();
   host->SetWindowlessFrameRate(frameRate);

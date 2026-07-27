@@ -27,6 +27,12 @@ import java.util.concurrent.atomic.AtomicReference;
 class CefAppLifecycleTest {
     private static final Method DIRECT_LIFECYCLE_METHOD = getDirectLifecycleMethod();
     private static final Method DEDICATED_LIFECYCLE_METHOD = getDedicatedLifecycleMethod();
+    private static final Method AWT_MESSAGE_PUMP_DELAY_METHOD = getAwtMessagePumpDelayMethod();
+
+    @Test
+    void awtMessagePumpFallbackDoesNotCap120FpsOsr() {
+        assertEquals(8L, awtMessagePumpMaximumDelayMillis());
+    }
 
     @Test
     void macLifecycleStaysOnCallerThreadForNativeAppKitMarshalling() {
@@ -202,6 +208,16 @@ class CefAppLifecycleTest {
         }
     }
 
+    private static Method getAwtMessagePumpDelayMethod() {
+        try {
+            Method method = CefApp.class.getDeclaredMethod("awtMessagePumpMaximumDelayMillis");
+            method.setAccessible(true);
+            return method;
+        } catch (ReflectiveOperationException exception) {
+            throw new ExceptionInInitializerError(exception);
+        }
+    }
+
     private static boolean usesDirectLifecycleThread(boolean externallyDrivenMessagePump, boolean macintosh) {
         try {
             return ((Boolean) DIRECT_LIFECYCLE_METHOD.invoke(null, externallyDrivenMessagePump, macintosh)).booleanValue();
@@ -215,6 +231,16 @@ class CefAppLifecycleTest {
     private static boolean usesDedicatedLifecycleThread(boolean externallyDrivenMessagePump, boolean macintosh) {
         try {
             return ((Boolean) DEDICATED_LIFECYCLE_METHOD.invoke(null, externallyDrivenMessagePump, macintosh)).booleanValue();
+        } catch (IllegalAccessException exception) {
+            throw new AssertionError(exception);
+        } catch (InvocationTargetException exception) {
+            throw new AssertionError(exception.getCause());
+        }
+    }
+
+    private static long awtMessagePumpMaximumDelayMillis() {
+        try {
+            return ((Long) AWT_MESSAGE_PUMP_DELAY_METHOD.invoke(null)).longValue();
         } catch (IllegalAccessException exception) {
             throw new AssertionError(exception);
         } catch (InvocationTargetException exception) {

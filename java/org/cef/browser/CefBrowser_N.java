@@ -1316,6 +1316,7 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     }
 
     public void setWindowlessFrameRate(int frameRate) {
+        if (frameRate < 1) throw new IllegalArgumentException("frameRate must be 1 or greater: " + frameRate);
         try {
             N_SetWindowlessFrameRate(frameRate);
         } catch (UnsatisfiedLinkError ule) {

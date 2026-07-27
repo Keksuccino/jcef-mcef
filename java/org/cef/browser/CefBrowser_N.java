@@ -1317,6 +1317,9 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
 
     public void setWindowlessFrameRate(int frameRate) {
         if (frameRate < 1) throw new IllegalArgumentException("frameRate must be 1 or greater: " + frameRate);
+        synchronized (this) {
+            if (!isNativeBrowserAvailable()) return;
+        }
         try {
             N_SetWindowlessFrameRate(frameRate);
         } catch (UnsatisfiedLinkError ule) {
@@ -1325,14 +1328,8 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
     }
 
     public CompletableFuture<Integer> getWindowlessFrameRate() {
-        final CompletableFuture<Integer> future = new CompletableFuture<>();
-        try {
-            N_GetWindowlessFrameRate(future::complete);
-        } catch (UnsatisfiedLinkError ule) {
-            ule.printStackTrace();
-            future.complete(0);
-        }
-        return future;
+        QueryStarter<Integer> queryStarter = completion -> N_GetWindowlessFrameRate(completion::complete);
+        return withFailureFallback(executeQuery("windowless frame-rate query", queryStarter), Integer.valueOf(0));
     }
 
     @Override
@@ -1410,6 +1407,15 @@ public abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowse
         } else {
             completion.fail(new IllegalStateException("Failed to execute browser " + operation));
         }
+    }
+
+    private static <T> CompletableFuture<T> withFailureFallback(CompletableFuture<T> source, T fallback) {
+        CompletableFuture<T> result = new CompletableFuture<T>();
+        source.whenComplete((value, failure) -> result.complete(failure == null ? value : fallback));
+        result.whenComplete((value, failure) -> {
+            if (!source.isDone()) source.cancel(false);
+        });
+        return result;
     }
 
     private <T> CompletableFuture<T> executeQuery(String operation, QueryStarter<T> starter) {

@@ -21,8 +21,10 @@ import org.junit.jupiter.api.Test;
 
 import java.awt.BorderLayout;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 @NativeCefTest
@@ -95,6 +97,75 @@ class CefBrowserSettingsIntegrationTest {
             frame.terminateTest();
             frame.awaitCompletion();
         }
+    }
+
+    @Test
+    void closeRaceRejectsRuntimeFrameRateWorkAndCompletesTheQuery() throws Exception {
+        String testUrl = "http://browser-settings.test/windowless-frame-rate-close-race.html";
+        CompletableFuture<CefBrowser> browserCreated = new CompletableFuture<CefBrowser>();
+        CountDownLatch loadCallbackEntered = new CountDownLatch(1);
+        CountDownLatch releaseLoadCallback = new CountDownLatch(1);
+        AtomicBoolean loadCallbackHeld = new AtomicBoolean();
+        AtomicInteger terminalNotifications = new AtomicInteger();
+        AtomicReference<Throwable> callbackFailure = new AtomicReference<Throwable>();
+        TestFrame frame = TestFrame.createOnEventDispatchThread(() -> new TestFrame() {
+            @Override
+            protected void setupTest() {
+                addResource(testUrl, "<html><body>Windowless frame-rate close race</body></html>", "text/html");
+                browser_ = new CefBrowserOsr(client_, testUrl, false, null);
+                browser_.createImmediately();
+                super.setupTest();
+            }
+
+            @Override
+            public void onAfterCreated(CefBrowser browser) {
+                super.onAfterCreated(browser);
+                if (browser == browser_) browserCreated.complete(browser);
+            }
+
+            @Override
+            public void onLoadEnd(CefBrowser browser, CefFrame frame, int httpStatusCode) {
+                super.onLoadEnd(browser, frame, httpStatusCode);
+                if (browser != browser_ || !frame.isMain() || !loadCallbackHeld.compareAndSet(false, true)) return;
+                loadCallbackEntered.countDown();
+                try {
+                    if (!releaseLoadCallback.await(FUTURE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) callbackFailure.compareAndSet(null, new AssertionError("Timed out waiting to release the held CEF UI callback"));
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    callbackFailure.compareAndSet(null, exception);
+                }
+            }
+        });
+
+        try {
+            CefBrowser browser = await(browserCreated);
+            assertTrue(loadCallbackEntered.await(FUTURE_TIMEOUT_SECONDS, TimeUnit.SECONDS), "The CEF UI callback was not entered");
+
+            CompletableFuture<Integer> admittedFrameRate = browser.getWindowlessFrameRate();
+            assertFalse(admittedFrameRate.isDone(), "The held CEF UI callback must keep the native query pending");
+            admittedFrameRate.whenComplete((value, failure) -> terminalNotifications.incrementAndGet());
+
+            // Close marks the Java lifecycle terminal before native teardown can run on the held
+            // CEF UI thread. It must finish the admitted query and reject any new JNI work even
+            // though the native handle is still published.
+            browser.close(true);
+            assertTrue(admittedFrameRate.isDone(), "Close must finish an admitted frame-rate query");
+            assertEquals(0, admittedFrameRate.getNow(Integer.valueOf(-1)).intValue());
+            assertEquals(1, terminalNotifications.get());
+
+            browser.setWindowlessFrameRate(HIGH_REFRESH_WINDOWLESS_FRAME_RATE);
+            CompletableFuture<Integer> rejectedFrameRate = browser.getWindowlessFrameRate();
+            assertTrue(rejectedFrameRate.isDone(), "A frame-rate query that loses to close must complete immediately");
+            assertEquals(0, rejectedFrameRate.getNow(Integer.valueOf(-1)).intValue());
+        } finally {
+            releaseLoadCallback.countDown();
+            frame.terminateTest();
+            frame.awaitCompletion();
+        }
+
+        assertEquals(1, terminalNotifications.get(), "A late native callback must not publish a second result");
+        Throwable failure = callbackFailure.get();
+        if (failure != null) throw new AssertionError("CEF UI callback failed", failure);
     }
 
     @Test

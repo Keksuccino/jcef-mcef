@@ -6,6 +6,7 @@ package tests.junittests;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -18,11 +19,16 @@ import org.cef.CefColor;
 import org.cef.CefState;
 import org.cef.browser.CefBrowserFactory;
 import org.cef.browser.CefBrowserOsr;
+import org.cef.browser.CefBrowser_N;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.concurrent.CompletableFuture;
 
 class CefBrowserSettingsTest {
     private static final String[] STATE_FIELDS = {"remote_fonts", "javascript",
@@ -203,6 +209,45 @@ class CefBrowserSettingsTest {
     }
 
     @Test
+    void nativeWindowlessFrameRateBridgeOwnsLifecycleAndCompletesEveryQueryPath() throws Exception {
+        String nativeBridge = readNativeBrowserSource();
+        String setter = sourceBetween(nativeBridge, "Java_org_cef_browser_CefBrowser_1N_N_1SetWindowlessFrameRate(", "void getWindowlessFrameRate(");
+        String query = sourceBetween(nativeBridge, "void getWindowlessFrameRate(", "Java_org_cef_browser_CefBrowser_1N_N_1GetWindowlessFrameRate(");
+        String getter = sourceBetween(nativeBridge, "Java_org_cef_browser_CefBrowser_1N_N_1GetWindowlessFrameRate(", "Java_org_cef_browser_CefBrowser_1N_N_1SetAudioMuted(");
+
+        assertOrdered(setter, "GetLifecycleSafeJNIBrowser", "GetWindowlessInputHost", "host->SetWindowlessFrameRate(frameRate)");
+        assertOrdered(query, "REQUIRE_UI_THREAD()", "GetWindowlessInputHost", "callback->onComplete(0)", "host->GetWindowlessFrameRate()");
+        assertOrdered(getter, "GetLifecycleSafeJNIBrowser", "if (!browser.get())", "callback->onComplete(0)", "if (CefCurrentlyOn(TID_UI))");
+        String postedQuery = getter.substring(getter.indexOf("if (CefCurrentlyOn(TID_UI))"));
+        assertOrdered(postedQuery, "if (!CefPostTask(", "callback->onComplete(0)");
+    }
+
+    @Test
+    void frameRateFailureMappingPreservesQueryControllerOwnership() throws Exception {
+        CompletableFuture<Integer> canceledSource = new CompletableFuture<Integer>();
+        CompletableFuture<Integer> canceledResult = withFailureFallback(canceledSource, Integer.valueOf(0));
+        assertTrue(canceledResult.cancel(false));
+        assertTrue(canceledSource.isCancelled());
+
+        CompletableFuture<Integer> callerCompletedSource = new CompletableFuture<Integer>();
+        CompletableFuture<Integer> callerCompletedResult = withFailureFallback(callerCompletedSource, Integer.valueOf(0));
+        assertTrue(callerCompletedResult.complete(Integer.valueOf(9)));
+        assertEquals(9, callerCompletedResult.join().intValue());
+        assertTrue(callerCompletedSource.isCancelled());
+
+        CompletableFuture<Integer> failedSource = new CompletableFuture<Integer>();
+        CompletableFuture<Integer> failedResult = withFailureFallback(failedSource, Integer.valueOf(0));
+        assertTrue(failedSource.completeExceptionally(new IllegalStateException("expected")));
+        assertEquals(0, failedResult.join().intValue());
+
+        CompletableFuture<Integer> completedSource = new CompletableFuture<Integer>();
+        CompletableFuture<Integer> completedResult = withFailureFallback(completedSource, Integer.valueOf(0));
+        assertTrue(completedSource.complete(Integer.valueOf(120)));
+        assertEquals(120, completedResult.join().intValue());
+        assertFalse(completedSource.isCancelled());
+    }
+
+    @Test
     void officialBrowserWrappersRejectInvalidSettingsDuringConstruction() {
         CefBrowserSettings settings = new CefBrowserSettings();
         settings.windowless_frame_rate = -1;
@@ -262,6 +307,36 @@ class CefBrowserSettingsTest {
 
         settings.background_color = new CefColor(255, 12, 34, 56);
         assertThrows(IllegalArgumentException.class, () -> settings.validate(true, true));
+    }
+
+    private static String readNativeBrowserSource() throws Exception {
+        Path sourcePath = Path.of(System.getProperty("user.dir"), "native", "CefBrowser_N.cpp");
+        assertTrue(Files.isRegularFile(sourcePath), "Run source contract tests from the repository root");
+        return Files.readString(sourcePath).replace("\r\n", "\n").replace('\r', '\n');
+    }
+
+    private static String sourceBetween(String source, String startMarker, String endMarker) {
+        int start = source.indexOf(startMarker);
+        int end = source.indexOf(endMarker, start + startMarker.length());
+        assertTrue(start >= 0, "Missing source marker: " + startMarker);
+        assertTrue(end > start, "Missing source marker after " + startMarker + ": " + endMarker);
+        return source.substring(start, end);
+    }
+
+    private static void assertOrdered(String source, String... markers) {
+        int previous = -1;
+        for (String marker : markers) {
+            int current = source.indexOf(marker, previous + 1);
+            assertTrue(current > previous, "Missing or out-of-order source marker: " + marker);
+            previous = current;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T> CompletableFuture<T> withFailureFallback(CompletableFuture<T> source, T fallback) throws Exception {
+        Method method = CefBrowser_N.class.getDeclaredMethod("withFailureFallback", CompletableFuture.class, Object.class);
+        method.setAccessible(true);
+        return (CompletableFuture<T>) method.invoke(null, source, fallback);
     }
 
     private static CefBrowserSettings populatedSettings() {

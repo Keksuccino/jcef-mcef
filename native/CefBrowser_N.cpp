@@ -4815,13 +4815,20 @@ Java_org_cef_browser_CefBrowser_1N_N_1SetWindowlessFrameRate(JNIEnv* env,
       env->ThrowNew(exception_class, ("frameRate must be 1 or greater: " + std::to_string(frameRate)).c_str());
     return;
   }
-  CefRefPtr<CefBrowser> browser = JNI_GET_BROWSER_OR_RETURN(env, jbrowser);
-  CefRefPtr<CefBrowserHost> host = browser->GetHost();
+  CefRefPtr<CefBrowser> browser = GetLifecycleSafeJNIBrowser(env, jbrowser);
+  CefRefPtr<CefBrowserHost> host = GetWindowlessInputHost(browser);
+  if (!host.get())
+    return;
   host->SetWindowlessFrameRate(frameRate);
 }
 
-void getWindowlessFrameRate(CefRefPtr<CefBrowserHost> host,
-                            CefRefPtr<IntCallback> callback) {
+void getWindowlessFrameRate(CefRefPtr<CefBrowser> browser, CefRefPtr<IntCallback> callback) {
+  REQUIRE_UI_THREAD();
+  CefRefPtr<CefBrowserHost> host = GetWindowlessInputHost(browser);
+  if (!host.get()) {
+    callback->onComplete(0);
+    return;
+  }
   callback->onComplete((jint)host->GetWindowlessFrameRate());
 }
 
@@ -4832,17 +4839,18 @@ Java_org_cef_browser_CefBrowser_1N_N_1GetWindowlessFrameRate(
     jobject jintCallback) {
   CefRefPtr<IntCallback> callback = new IntCallback(env, jintCallback);
 
-  CefRefPtr<CefBrowser> browser = GetJNIBrowser(env, jbrowser);
+  CefRefPtr<CefBrowser> browser = GetLifecycleSafeJNIBrowser(env, jbrowser);
   if (!browser.get()) {
-    callback->onComplete(0);
+    if (!env->ExceptionCheck())
+      callback->onComplete(0);
     return;
   }
 
-  CefRefPtr<CefBrowserHost> host = browser->GetHost();
   if (CefCurrentlyOn(TID_UI)) {
-    getWindowlessFrameRate(host, callback);
+    getWindowlessFrameRate(browser, callback);
   } else {
-    CefPostTask(TID_UI, base::BindOnce(getWindowlessFrameRate, host, callback));
+    if (!CefPostTask(TID_UI, base::BindOnce(getWindowlessFrameRate, browser, callback)))
+      callback->onComplete(0);
   }
 }
 

@@ -231,7 +231,7 @@ exported shell functions from crossing the publication credential boundary.
 The publisher accepts only the exact six successful platform jobs and twelve
 canonical, non-expired raw artifacts. It downloads every artifact by ID,
 verifies its GitHub-reported size and SHA-256 digest, checks each archive
-against its checksum sidecar, and then creates a non-latest immutable release
-named `java-cef-<commit-sha>`. No personal token is stored in the repository;
+against its checksum sidecar, and then creates the current Latest immutable
+release named `java-cef-<commit-sha>`. No personal token is stored in the repository;
 the tool uses the authenticated `gh` credential store unless `GH_TOKEN` or
 `GITHUB_TOKEN` is deliberately supplied for that invocation.

@@ -38,6 +38,8 @@ This project provides a Java Wrapper for CEF (JCEF).
 
 The JCEF project extends the [Chromium Embedded Framework](https://github.com/chromiumembedded/cef). This fork downloads and verifies the exact matching CEF 151 archive for the selected 64-bit target, builds with JDK 17, and creates a validated MCEF-compatible distribution. Keep the native build directory named `jcef_build`; repository launch, test, and packaging tools depend on that convention. See [Branches and building](docs/branches_and_building.md) for prerequisites and commands for all six targets.
 
+Every newly published `java-cef-<commit>` release also provides the matching IDE pair `jcef-mcef.jar` and `jcef-mcef-sources.jar`. The binary JAR is the platform-neutral Java API taken byte-for-byte from the verified `linux_amd64` distribution, while the sources JAR contains only the production sources under IDE-compatible `org/cef/...` paths. The binary JAR still requires the matching platform distribution at runtime, plus the included JogAmp dependencies when JOGL-backed APIs are used.
+
 # Helping Out
 
 JCEF is still very much a work in progress. Some ways that you can help out:

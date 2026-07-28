@@ -18,7 +18,7 @@ unset BASH_ENV ENV CDPATH GLOBIGNORE
 readonly REPOSITORY_OWNER='Keksuccino'
 readonly REPOSITORY_NAME='jcef-mcef'
 readonly REPOSITORY="${REPOSITORY_OWNER}/${REPOSITORY_NAME}"
-readonly RELEASE_MARKER='managed-by=tools/distrib/publish_distributions.sh;schema=1'
+readonly RELEASE_MARKER='managed-by=tools/distrib/publish_distributions.sh;schema=2'
 readonly SYSTEM_ENV_PATH='/usr/bin/env'
 # Release assets use a different GitHub origin. A relative `gh api` endpoint
 # targets api.github.com, while `--hostname uploads.github.com` would construct
@@ -27,6 +27,9 @@ readonly SYSTEM_ENV_PATH='/usr/bin/env'
 readonly RELEASE_UPLOAD_BASE_URL="https://uploads.github.com/repos/${REPOSITORY}"
 readonly LATEST_RELEASE_QUERY="query(\$owner:String!,\$name:String!){repository(owner:\$owner,name:\$name){latestRelease{tagName}}}"
 readonly RELEASE_VISIBILITY_MAX_ATTEMPTS=6
+readonly BINARY_JAR_NAME='jcef-mcef.jar'
+readonly BINARY_JAR_SOURCE_TARGET='linux_amd64'
+readonly SOURCES_JAR_NAME='jcef-mcef-sources.jar'
 readonly -a TARGETS=(
   linux_amd64
   linux_arm64
@@ -35,6 +38,7 @@ readonly -a TARGETS=(
   windows_amd64
   windows_arm64
 )
+readonly EXPECTED_ARTIFACT_COUNT="$(( ${#TARGETS[@]} * 2 + 2 ))"
 
 # Keep credentials out of every local validation subprocess. An explicitly
 # supplied token is captured and exposed only to the resolved gh executable
@@ -62,8 +66,10 @@ PYTHON_PATH=''
 SLEEP_PATH=''
 SCRIPT_DIRECTORY=''
 VERIFIER_PATH=''
+SOURCES_JAR_HELPER_PATH=''
 COMMIT_SHA=''
 ARTIFACT_DIRECTORY=''
+SOURCE_SNAPSHOT_ROOT=''
 TAG_NAME=''
 RELEASE_TITLE=''
 RELEASE_BODY=''
@@ -85,10 +91,11 @@ TAG_CREATED=false
 RELEASE_ABSENCE_RECONCILED=false
 
 ASSET_NAMES=()
+ASSET_PATHS=()
 ASSET_SIZES=()
 ASSET_DIGESTS=()
-ARCHIVE_PATHS=()
-CHECKSUM_PATHS=()
+PRIMARY_ASSET_INDEXES=()
+CHECKSUM_ASSET_INDEXES=()
 SANITIZED_ENV_ARGS=(-u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS -u CDPATH -u GLOBIGNORE -u BASH_XTRACEFD -u PS4 -u ENV_TOKEN_SOURCE -u ENV_TOKEN_CONTENT -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN -u GH_DEBUG -u GH_FORCE_TTY -u GH_PAGER -u PAGER -u GH_REPO)
 
 die() {
@@ -165,9 +172,16 @@ file_size() {
 }
 
 append_asset() {
+  local asset_index="${#ASSET_NAMES[@]}"
   ASSET_NAMES+=("$1")
-  ASSET_SIZES+=("$2")
-  ASSET_DIGESTS+=("$3")
+  ASSET_PATHS+=("$2")
+  ASSET_SIZES+=("$3")
+  ASSET_DIGESTS+=("$4")
+  case "$5" in
+    primary) PRIMARY_ASSET_INDEXES+=("$asset_index") ;;
+    checksum) CHECKSUM_ASSET_INDEXES+=("$asset_index") ;;
+    *) die "Unknown release asset class: $5" ;;
+  esac
 }
 
 asset_name_is_expected() {
@@ -586,17 +600,14 @@ upload_release_asset() {
 }
 
 upload_release_assets() {
-  local index
   local asset_index
-  for ((index = 0; index < ${#ARCHIVE_PATHS[@]}; index++)); do
-    asset_index=$((index * 2))
-    if ! upload_release_asset "${ASSET_NAMES[$asset_index]}" "${ARCHIVE_PATHS[$index]}" "${ASSET_SIZES[$asset_index]}" "${ASSET_DIGESTS[$asset_index]}"; then
-      die "Archive upload failed for draft ${TAG_NAME}"
+  for asset_index in "${PRIMARY_ASSET_INDEXES[@]}"; do
+    if ! upload_release_asset "${ASSET_NAMES[$asset_index]}" "${ASSET_PATHS[$asset_index]}" "${ASSET_SIZES[$asset_index]}" "${ASSET_DIGESTS[$asset_index]}"; then
+      die "Primary asset upload failed for draft ${TAG_NAME}"
     fi
   done
-  for ((index = 0; index < ${#CHECKSUM_PATHS[@]}; index++)); do
-    asset_index=$((index * 2 + 1))
-    if ! upload_release_asset "${ASSET_NAMES[$asset_index]}" "${CHECKSUM_PATHS[$index]}" "${ASSET_SIZES[$asset_index]}" "${ASSET_DIGESTS[$asset_index]}"; then
+  for asset_index in "${CHECKSUM_ASSET_INDEXES[@]}"; do
+    if ! upload_release_asset "${ASSET_NAMES[$asset_index]}" "${ASSET_PATHS[$asset_index]}" "${ASSET_SIZES[$asset_index]}" "${ASSET_DIGESTS[$asset_index]}"; then
       die "Checksum upload failed for draft ${TAG_NAME}"
     fi
   done
@@ -800,8 +811,8 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-if [ "$#" -ne 2 ]; then
-  die 'Usage: publish_distributions.sh <40-lowercase-hex-commit-sha> <artifact-directory>'
+if [ "$#" -ne 3 ]; then
+  die 'Usage: publish_distributions.sh <40-lowercase-hex-commit-sha> <artifact-directory> <source-snapshot-root>'
 fi
 
 COMMIT_SHA="$1"
@@ -813,6 +824,10 @@ if [ ! -d "$2" ]; then
   die "Artifact directory does not exist: $2"
 fi
 ARTIFACT_DIRECTORY="$(cd -- "$2" && pwd -P)"
+if [ ! -d "$3" ]; then
+  die "Source snapshot root does not exist: $3"
+fi
+SOURCE_SNAPSHOT_ROOT="$(cd -- "$3" && pwd -P)"
 TAG_NAME="java-cef-${COMMIT_SHA}"
 RELEASE_TITLE="JCEF distributions ${COMMIT_SHA}"
 RELEASE_BODY="Automated JCEF distributions for commit ${COMMIT_SHA};${RELEASE_MARKER}"
@@ -830,12 +845,15 @@ VERIFIER_PATH="${SCRIPT_DIRECTORY}/verify_distribution_archive.py"
 if [ ! -f "$VERIFIER_PATH" ] || [ -L "$VERIFIER_PATH" ] || [ ! -r "$VERIFIER_PATH" ]; then
   die "Required sibling distribution verifier is unavailable: ${VERIFIER_PATH}"
 fi
+SOURCES_JAR_HELPER_PATH="${SCRIPT_DIRECTORY}/sources_jar.py"
+if [ ! -f "$SOURCES_JAR_HELPER_PATH" ] || [ -L "$SOURCES_JAR_HELPER_PATH" ] || [ ! -r "$SOURCES_JAR_HELPER_PATH" ]; then
+  die "Required sibling sources JAR helper is unavailable: ${SOURCES_JAR_HELPER_PATH}"
+fi
 
 shopt -s dotglob nullglob
 ARTIFACT_ENTRIES=("${ARTIFACT_DIRECTORY}"/*)
-if [ "${#ARTIFACT_ENTRIES[@]}" -ne 12 ]; then
-  die 'Artifact directory must contain exactly the 12 canonical archive and' \
-    "checksum files; found ${#ARTIFACT_ENTRIES[@]}"
+if [ "${#ARTIFACT_ENTRIES[@]}" -ne "$EXPECTED_ARTIFACT_COUNT" ]; then
+  die "Artifact directory must contain exactly the ${EXPECTED_ARTIFACT_COUNT} canonical release artifacts; found ${#ARTIFACT_ENTRIES[@]}"
 fi
 
 prepare_sanitized_environment
@@ -844,7 +862,7 @@ if HASH_PATH="$(resolve_executable sha256sum)"; then
 elif HASH_PATH="$(resolve_executable shasum)"; then
   HASH_COMMAND='shasum'
 else
-  die 'sha256sum or shasum is required to validate distribution archives'
+  die 'sha256sum or shasum is required to validate release artifacts'
 fi
 CMP_PATH="$(resolve_executable cmp || true)"
 WC_PATH="$(resolve_executable wc || true)"
@@ -856,6 +874,11 @@ if [ -z "$CMP_PATH" ] || [ -z "$WC_PATH" ] || [ -z "$TR_PATH" ] || [ -z "$PYTHON
 fi
 if ! "$SYSTEM_ENV_PATH" "${SANITIZED_ENV_ARGS[@]}" "$PYTHON_PATH" -I -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)'; then
   die 'Python 3.9 or newer is required to validate distribution artifacts'
+fi
+
+binary_jar_path="${ARTIFACT_DIRECTORY}/${BINARY_JAR_NAME}"
+if [ ! -f "$binary_jar_path" ] || [ -L "$binary_jar_path" ]; then
+  die "Missing canonical regular standalone JCEF JAR: ${BINARY_JAR_NAME}"
 fi
 
 for target in "${TARGETS[@]}"; do
@@ -880,14 +903,36 @@ for target in "${TARGETS[@]}"; do
   if ! archive_size="$(file_size "$archive_path")" || ! checksum_size="$(file_size "$checksum_path")" || ! checksum_digest="$(hash_file "$checksum_path")"; then
     die "Unable to calculate asset metadata for ${target}"
   fi
-  if ! "$SYSTEM_ENV_PATH" "${SANITIZED_ENV_ARGS[@]}" "$PYTHON_PATH" -I "$VERIFIER_PATH" --target "$target" --archive "$archive_path" --java-cef-commit "$COMMIT_SHA"; then
+  if [ "$target" = "$BINARY_JAR_SOURCE_TARGET" ]; then
+    if ! "$SYSTEM_ENV_PATH" "${SANITIZED_ENV_ARGS[@]}" "$PYTHON_PATH" -I "$VERIFIER_PATH" --target "$target" --archive "$archive_path" --java-cef-commit "$COMMIT_SHA" --standalone-jcef-jar "$binary_jar_path"; then
+      die "Distribution archive byte verification failed (including standalone JCEF JAR match): ${archive_name}"
+    fi
+  elif ! "$SYSTEM_ENV_PATH" "${SANITIZED_ENV_ARGS[@]}" "$PYTHON_PATH" -I "$VERIFIER_PATH" --target "$target" --archive "$archive_path" --java-cef-commit "$COMMIT_SHA"; then
     die "Distribution archive byte verification failed: ${archive_name}"
   fi
-  append_asset "$archive_name" "$archive_size" "$archive_digest"
-  append_asset "$checksum_name" "$checksum_size" "$checksum_digest"
-  ARCHIVE_PATHS+=("$archive_path")
-  CHECKSUM_PATHS+=("$checksum_path")
+  append_asset "$archive_name" "$archive_path" "$archive_size" "$archive_digest" primary
+  append_asset "$checksum_name" "$checksum_path" "$checksum_size" "$checksum_digest" checksum
 done
+
+if ! binary_jar_size="$(file_size "$binary_jar_path")" || ! binary_jar_digest="$(hash_file "$binary_jar_path")"; then
+  die "Unable to calculate asset metadata for ${BINARY_JAR_NAME}"
+fi
+append_asset "$BINARY_JAR_NAME" "$binary_jar_path" "$binary_jar_size" "$binary_jar_digest" primary
+
+sources_jar_path="${ARTIFACT_DIRECTORY}/${SOURCES_JAR_NAME}"
+if [ ! -f "$sources_jar_path" ] || [ -L "$sources_jar_path" ]; then
+  die "Missing canonical regular sources JAR: ${SOURCES_JAR_NAME}"
+fi
+if ! "$SYSTEM_ENV_PATH" "${SANITIZED_ENV_ARGS[@]}" "$PYTHON_PATH" -I "$SOURCES_JAR_HELPER_PATH" verify --repository-root "$SOURCE_SNAPSHOT_ROOT" --archive "$sources_jar_path"; then
+  die "Sources JAR verification failed: ${SOURCES_JAR_NAME}"
+fi
+if ! sources_jar_size="$(file_size "$sources_jar_path")" || ! sources_jar_digest="$(hash_file "$sources_jar_path")"; then
+  die "Unable to calculate asset metadata for ${SOURCES_JAR_NAME}"
+fi
+append_asset "$SOURCES_JAR_NAME" "$sources_jar_path" "$sources_jar_size" "$sources_jar_digest" primary
+if [ "${#ASSET_NAMES[@]}" -ne "$EXPECTED_ARTIFACT_COUNT" ] || [ "${#ASSET_PATHS[@]}" -ne "$EXPECTED_ARTIFACT_COUNT" ] || [ "${#ASSET_SIZES[@]}" -ne "$EXPECTED_ARTIFACT_COUNT" ] || [ "${#ASSET_DIGESTS[@]}" -ne "$EXPECTED_ARTIFACT_COUNT" ] || [ "${#PRIMARY_ASSET_INDEXES[@]}" -ne "$(( ${#TARGETS[@]} + 2 ))" ] || [ "${#CHECKSUM_ASSET_INDEXES[@]}" -ne "${#TARGETS[@]}" ]; then
+  die 'Internal release asset collection is incomplete or misaligned'
+fi
 
 GH_PATH="$(resolve_executable gh || true)"
 if [ -z "$GH_PATH" ]; then
@@ -937,11 +982,12 @@ fi
 
 create_empty_draft
 
-# Checksums are uploaded only after the complete archive upload succeeds. Each
-# raw-byte request targets the validated draft ID, so tag replacement cannot
-# redirect an upload. The release remains a recoverable draft until all assets
-# verify and the final publication boundary succeeds.
+# Checksums are uploaded only after all primary assets (the six distribution
+# archives and standalone binary/source JARs) succeed. Each raw-byte request
+# targets the validated draft ID, so tag replacement cannot redirect an upload.
+# The release remains a recoverable draft until all assets verify and the final
+# publication boundary succeeds.
 upload_release_assets
 
 publish_verified_draft
-echo "Published all six JCEF distributions in GitHub Release ${TAG_NAME}"
+echo "Published all JCEF release artifacts in GitHub Release ${TAG_NAME}"

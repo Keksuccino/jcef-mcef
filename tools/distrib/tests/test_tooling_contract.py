@@ -410,22 +410,22 @@ class PlatformToolingContractTest(unittest.TestCase):
         REPOSITORY_ROOT / '.github' / 'workflows' / 'build-jcef.yml').read_text(
             encoding='utf-8')
     setup_python_revision = 'a309ff8b426b58ec0e2a45f0f869d46889d02405'
-    self.assertEqual(
-        3,
-        workflow.count(
-            'uses: actions/setup-python@{}'.format(setup_python_revision)))
-    self.assertEqual(3, workflow.count("python-version: '3.12.10'"))
-    self.assertEqual(
-        3, workflow.count('architecture: ${{ matrix.python_architecture }}'))
-    self.assertEqual(3, workflow.count('id: setup-python'))
-    self.assertEqual(
-        3,
-        workflow.count(
-            'PYTHON_EXECUTABLE: ${{ steps.setup-python.outputs.python-path }}'))
-    self.assertEqual(3,
-                     len(re.findall(r'python_architecture:\s+x64\b', workflow)))
-    self.assertEqual(
-        3, len(re.findall(r'python_architecture:\s+arm64\b', workflow)))
+    platform_jobs = ''
+    for job_name in ('linux', 'windows', 'macos'):
+      job = re.search(r'^  {}:\n(.*?)(?=^  [a-z][a-z0-9_-]*:\n|\Z)'.format(job_name), workflow, re.DOTALL | re.MULTILINE)
+      self.assertIsNotNone(job)
+      platform_jobs += job.group(1)
+    self.assertEqual(3, platform_jobs.count('uses: actions/setup-python@{}'.format(setup_python_revision)))
+    self.assertEqual(3, platform_jobs.count("python-version: '3.12.10'"))
+    self.assertEqual(3, platform_jobs.count('architecture: ${{ matrix.python_architecture }}'))
+    self.assertEqual(3, platform_jobs.count('id: setup-python'))
+    self.assertEqual(3, platform_jobs.count('PYTHON_EXECUTABLE: ${{ steps.setup-python.outputs.python-path }}'))
+    x64_platform_count = len(re.findall(r'python_architecture:\s+x64\b', platform_jobs))
+    arm64_platform_count = len(re.findall(r'python_architecture:\s+arm64\b', platform_jobs))
+    self.assertEqual(3, x64_platform_count)
+    self.assertEqual(3, arm64_platform_count)
+    self.assertEqual(4, workflow.count('uses: actions/setup-python@{}'.format(setup_python_revision)))
+    self.assertEqual(4, workflow.count("python-version: '3.12.10'"))
 
 
 class PublicationWorkflowContractTest(unittest.TestCase):
@@ -450,6 +450,7 @@ class PublicationWorkflowContractTest(unittest.TestCase):
     global_permissions = re.search(r'^permissions:\n((?:  [^\n]+\n)+)',
                                    self.workflow, re.MULTILINE)
     self.assertIsNotNone(global_permissions)
+    self.assertEqual(1, self.workflow.count('permissions:'))
     self.assertEqual(['contents: read'], [
         line.strip() for line in global_permissions.group(1).splitlines()
     ])
@@ -459,11 +460,10 @@ class PublicationWorkflowContractTest(unittest.TestCase):
     self.assertNotIn('secrets.', self.workflow)
     self.assertNotIn('publish_distributions.sh', self.workflow)
     self.assertNotIn('actions/download-artifact', self.workflow)
+    self.assertNotIn('needs:', self.workflow)
     jobs = self.workflow.split('\njobs:\n', 1)[1]
-    self.assertEqual(['linux', 'windows', 'macos'],
-                     re.findall(r'^  ([a-z][a-z0-9_-]*):\n', jobs,
-                                re.MULTILINE))
-    for build_job_name in ('linux', 'windows', 'macos'):
+    self.assertEqual(['sources', 'linux', 'windows', 'macos'], re.findall(r'^  ([a-z][a-z0-9_-]*):\n', jobs, re.MULTILINE))
+    for build_job_name in ('sources', 'linux', 'windows', 'macos'):
       build_job = self.job(build_job_name)
       self.assertNotIn('s3cmd', build_job)
       self.assertNotIn('S3_CFG', build_job)
@@ -472,24 +472,67 @@ class PublicationWorkflowContractTest(unittest.TestCase):
     self.assertNotIn('s3cmd', self.workflow)
     self.assertNotIn('S3_CFG', self.workflow)
 
+  def test_sources_job_has_exact_independent_build_shape(self):
+    checkout_revision = 'de0fac2e4500dabe0009e67214ff5f5447ce83dd'
+    setup_python_revision = 'a309ff8b426b58ec0e2a45f0f869d46889d02405'
+    upload_revision = '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'
+    build_command = 'python3 tools/distrib/sources_jar.py build --repository-root . --output binary_distrib/jcef-mcef-sources.jar'
+    expected_job = f"""    name: Java sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@{checkout_revision} # v6.0.2
+      - name: Set up Python 3.12.10
+        uses: actions/setup-python@{setup_python_revision} # v6.2.0
+        with:
+          python-version: '3.12.10'
+          architecture: x64
+      - name: Build Java sources JAR
+        run: {build_command}
+      - name: Publish Java sources workflow artifact
+        uses: actions/upload-artifact@{upload_revision} # v7.0.1
+        with:
+          path: binary_distrib/jcef-mcef-sources.jar
+          archive: false
+          if-no-files-found: error"""
+
+    sources_job = self.job('sources')
+    self.assertEqual(expected_job, sources_job.rstrip())
+    self.assertNotIn('needs:', sources_job)
+    self.assertEqual(1, self.workflow.count(build_command))
+
   def test_all_direct_artifacts_are_uploaded_as_canonical_raw_files(self):
     upload_revision = '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'
     for build_job_name in ('linux', 'windows', 'macos'):
       build_job = self.job(build_job_name)
-      self.assertGreaterEqual(
-          build_job.count(
-              'uses: actions/upload-artifact@{}'.format(upload_revision)), 2)
-      self.assertEqual(
-          1,
-          build_job.count('path: binary_distrib/${{ matrix.target }}.tar.gz\n'))
-      self.assertEqual(
-          1,
-          build_job.count(
-              'path: binary_distrib/${{ matrix.target }}.tar.gz.sha256\n'))
-      self.assertEqual(2, build_job.count('archive: false'))
-      self.assertEqual(2, build_job.count('if-no-files-found: error'))
-    self.assertEqual(6, self.workflow.count('target: '))
-    self.assertEqual(6, self.workflow.count('archive: false'))
+      self.assertNotIn('sources_jar.py', build_job)
+      self.assertNotIn('jcef-mcef-sources.jar', build_job)
+      expected_raw_upload_count = 3 if build_job_name == 'linux' else 2
+      expected_action_count = 3 if build_job_name in ('linux', 'windows') else 2
+      self.assertEqual(expected_action_count, build_job.count('uses: actions/upload-artifact@{}'.format(upload_revision)))
+      self.assertEqual(1, build_job.count('path: binary_distrib/${{ matrix.target }}.tar.gz\n'))
+      self.assertEqual(1, build_job.count('path: binary_distrib/${{ matrix.target }}.tar.gz.sha256\n'))
+      self.assertEqual(expected_raw_upload_count, build_job.count('archive: false'))
+      self.assertEqual(expected_raw_upload_count, build_job.count('if-no-files-found: error'))
+    sources_job = self.job('sources')
+    self.assertEqual(1, sources_job.count('uses: actions/upload-artifact@{}'.format(upload_revision)))
+    self.assertEqual(1, sources_job.count('path: binary_distrib/jcef-mcef-sources.jar\n'))
+    self.assertEqual(1, sources_job.count('archive: false'))
+    self.assertEqual(1, sources_job.count('if-no-files-found: error'))
+    self.assertNotIn('.sha256', sources_job)
+    platform_target_count = self.workflow.count('target: ')
+    self.assertEqual(6, platform_target_count)
+    self.assertEqual(8, self.workflow.count('archive: false'))
+    self.assertEqual(14, platform_target_count * 2 + 2)
+
+  def test_linux_amd64_exports_the_verified_standalone_binary_jar_once(self):
+    linux_job = self.job('linux')
+    self.assertEqual(2, linux_job.count("if: matrix.target == 'linux_amd64'"))
+    self.assertEqual(1, linux_job.count('cp -- binary_distrib/linux_amd64/jcef.jar binary_distrib/jcef-mcef.jar'))
+    self.assertEqual(1, linux_job.count('--standalone-jcef-jar binary_distrib/jcef-mcef.jar'))
+    self.assertEqual(1, linux_job.count('path: binary_distrib/jcef-mcef.jar\n'))
+    for job_name in ('sources', 'windows', 'macos'):
+      self.assertNotIn('jcef-mcef.jar', self.job(job_name))
 
 
 if __name__ == '__main__':

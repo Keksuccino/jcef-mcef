@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-07-28: IDE binary and sources release artifacts
+
+- The release pipeline now adds a matching `jcef-mcef.jar` and `jcef-mcef-sources.jar` pair to every
+  new JCEF release. The binary is the exact platform-neutral Java JAR from the verified
+  `linux_amd64` distribution, and the deterministic sources JAR contains the production Java source
+  tree at `org/cef/...` for direct IDE attachment. Neither standalone JAR contains native runtime
+  files.
+
 ## 2026-07-27: Handler relay and compatibility fixes
 
 - Completed `CefDownloadHandler.canDownload` forwarding through the stable `CefClient` relay.

@@ -42,6 +42,8 @@ MAX_PATH_BYTES = 4_096
 MAX_PATH_DEPTH = 64
 MAX_TOTAL_PATH_BYTES = 16 * 1024 * 1024
 READ_CHUNK_BYTES = 1024 * 1024
+STANDALONE_JCEF_JAR_NAME = 'jcef-mcef.jar'
+MAX_STANDALONE_JCEF_JAR_BYTES = 64 * 1024 * 1024
 
 _COMMIT_PATTERN = re.compile(r'^[0-9a-f]{40}$')
 _DIGEST_PATTERN = re.compile(r'^[0-9a-f]{64}$')
@@ -427,6 +429,71 @@ def _stable_file_status_fields(platform_name=None):
     # source of all archive bytes and is checked again after streaming.
     return ('st_size', 'st_mtime_ns')
   return ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
+
+
+def _regular_file_open_flags():
+  flags = os.O_RDONLY
+  if hasattr(os, 'O_BINARY'):
+    flags |= os.O_BINARY
+  if hasattr(os, 'O_CLOEXEC'):
+    flags |= os.O_CLOEXEC
+  if hasattr(os, 'O_NOFOLLOW'):
+    flags |= os.O_NOFOLLOW
+  if hasattr(os, 'O_NONBLOCK'):
+    flags |= os.O_NONBLOCK
+  return flags
+
+
+def _stream_stable_regular_file(path, expected_name, maximum_size, description):
+  path = Path(path)
+  if path.name != expected_name:
+    raise VerificationError('{} filename must be {}'.format(description, expected_name))
+  try:
+    initial_status = path.lstat()
+  except OSError as exc:
+    raise VerificationError('{} is missing at {}: {}'.format(description, path, exc))
+  if _is_link_like(path, initial_status) or not stat.S_ISREG(initial_status.st_mode):
+    raise VerificationError('{} must be a regular non-link file: {}'.format(description, path))
+  if initial_status.st_size <= 0:
+    raise VerificationError('{} is empty: {}'.format(description, path))
+  if initial_status.st_size > maximum_size:
+    raise VerificationError('{} size {} exceeds limit {}'.format(description, initial_status.st_size, maximum_size))
+
+  file_descriptor = -1
+  try:
+    file_descriptor = os.open(path, _regular_file_open_flags())
+    with os.fdopen(file_descriptor, 'rb') as stream:
+      file_descriptor = -1
+      opened_status = os.fstat(stream.fileno())
+      stable_fields = _stable_file_status_fields()
+      if not stat.S_ISREG(opened_status.st_mode) or any((getattr(initial_status, field) != getattr(opened_status, field) for field in stable_fields)):
+        raise VerificationError('{} changed while it was being opened: {}'.format(description, path))
+      digest = hashlib.sha256()
+      byte_count = 0
+      while True:
+        chunk = stream.read(READ_CHUNK_BYTES)
+        if not chunk:
+          break
+        byte_count += len(chunk)
+        if byte_count > maximum_size:
+          raise VerificationError('{} exceeds limit {} while being read'.format(description, maximum_size))
+        digest.update(chunk)
+      final_status = os.fstat(stream.fileno())
+      if any((getattr(opened_status, field) != getattr(final_status, field) for field in stable_fields)):
+        raise VerificationError('{} changed while it was being read: {}'.format(description, path))
+    final_path_status = path.lstat()
+  except VerificationError:
+    raise
+  except OSError as exc:
+    raise VerificationError('Unable to read {} {}: {}'.format(description, path, exc))
+  finally:
+    if file_descriptor >= 0:
+      os.close(file_descriptor)
+  if _is_link_like(path, final_path_status) or not stat.S_ISREG(final_path_status.st_mode) or any((getattr(opened_status, field) != getattr(final_path_status, field) for field in stable_fields)):
+    raise VerificationError('{} changed while it was being verified: {}'.format(description, path))
+  if byte_count != opened_status.st_size:
+    raise VerificationError('{} size changed while it was being verified: {}'.format(description, path))
+  return ArchiveRecord('file', byte_count, digest.hexdigest())
 
 
 def _is_sparse_member(member):
@@ -844,8 +911,8 @@ def _validate_manifest(manifest, target, expected_commit, records, limits):
   _validate_runtime_files(manifest, target, entries, records, distribution_files, limits)
 
 
-def verify_distribution_archive(archive_path, target, expected_commit, limits=None):
-  """Stream and verify one archive against the exact schema-2 contract."""
+def verify_distribution_archive(archive_path, target, expected_commit, limits=None, standalone_jcef_jar=None):
+  """Stream and verify one archive and its optional standalone Java JAR."""
   if target not in TARGET_RUNTIME_ENTRIES:
     raise VerificationError('Unsupported canonical target: {}'.format(target))
   if not isinstance(expected_commit, str) or _COMMIT_PATTERN.fullmatch(expected_commit) is None:
@@ -856,6 +923,13 @@ def verify_distribution_archive(archive_path, target, expected_commit, limits=No
   records, manifest_contents = _stream_archive(archive_path, target, limits, initial_status)
   manifest = _parse_manifest(manifest_contents)
   _validate_manifest(manifest, target, expected_commit, records, limits)
+  if standalone_jcef_jar is not None:
+    standalone_record = _stream_stable_regular_file(standalone_jcef_jar, STANDALONE_JCEF_JAR_NAME, MAX_STANDALONE_JCEF_JAR_BYTES, 'Standalone JCEF JAR')
+    archived_record = records.get('{}/jcef.jar'.format(target))
+    if archived_record is None or archived_record.kind != 'file':
+      raise VerificationError('Verified distribution is missing its packaged jcef.jar')
+    if standalone_record.size != archived_record.size or standalone_record.digest != archived_record.digest:
+      raise VerificationError('Standalone JCEF JAR does not byte-match the packaged {} jcef.jar'.format(target))
 
 
 def main(argv=None):
@@ -866,9 +940,10 @@ def main(argv=None):
   parser.add_argument('--target', required=True, choices=tuple(TARGET_RUNTIME_ENTRIES), help='Canonical distribution target')
   parser.add_argument('--archive', required=True, help='Path to the canonical target.tar.gz file')
   parser.add_argument('--java-cef-commit', required=True, help='Expected 40-lowercase-hex JCEF source commit')
+  parser.add_argument('--standalone-jcef-jar', help='Optional jcef-mcef.jar that must byte-match the packaged jcef.jar')
   options = parser.parse_args(argv)
   try:
-    verify_distribution_archive(options.archive, options.target, options.java_cef_commit)
+    verify_distribution_archive(options.archive, options.target, options.java_cef_commit, standalone_jcef_jar=options.standalone_jcef_jar)
   except VerificationError as exc:
     print('ERROR: {}'.format(exc), file=sys.stderr)
     return 1

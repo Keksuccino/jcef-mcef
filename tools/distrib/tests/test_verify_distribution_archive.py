@@ -289,6 +289,52 @@ class VerifyDistributionArchiveTest(unittest.TestCase):
     contents = build_valid_archive('linux_amd64')
     self.assert_rejected(contents, 'compressed size', limits=VerificationLimits(max_archive_bytes=len(contents) - 1))
 
+  def test_standalone_jcef_jar_must_exactly_match_packaged_jar(self):
+    target = 'linux_amd64'
+    archive_path = self.verify_bytes(build_valid_archive(target), target)
+    standalone_path = self.root / 'jcef-mcef.jar'
+    standalone_path.write_bytes(canonical_jar_files(target)['jcef.jar'])
+    verify_distribution_archive(archive_path, target, TEST_COMMIT, standalone_jcef_jar=standalone_path)
+
+    packaged_jar = canonical_jar_files(target)['jcef.jar']
+    mismatches = (b'different Java classes', bytes([packaged_jar[0] ^ 1]) + packaged_jar[1:])
+    for mismatch in mismatches:
+      with self.subTest(size=len(mismatch)):
+        standalone_path.write_bytes(mismatch)
+        with self.assertRaisesRegex(VerificationError, 'does not byte-match'):
+          verify_distribution_archive(archive_path, target, TEST_COMMIT, standalone_jcef_jar=standalone_path)
+
+  def test_standalone_jcef_jar_requires_canonical_regular_file(self):
+    target = 'linux_amd64'
+    archive_path = self.verify_bytes(build_valid_archive(target), target)
+    packaged_jar = canonical_jar_files(target)['jcef.jar']
+    wrong_name = self.root / 'jcef.jar'
+    wrong_name.write_bytes(packaged_jar)
+    with self.assertRaisesRegex(VerificationError, 'filename'):
+      verify_distribution_archive(archive_path, target, TEST_COMMIT, standalone_jcef_jar=wrong_name)
+
+    standalone_path = self.root / 'jcef-mcef.jar'
+    standalone_path.symlink_to(wrong_name)
+    with self.assertRaisesRegex(VerificationError, 'regular non-link'):
+      verify_distribution_archive(archive_path, target, TEST_COMMIT, standalone_jcef_jar=standalone_path)
+    standalone_path.unlink()
+    standalone_path.mkdir()
+    with self.assertRaisesRegex(VerificationError, 'regular non-link'):
+      verify_distribution_archive(archive_path, target, TEST_COMMIT, standalone_jcef_jar=standalone_path)
+    standalone_path.rmdir()
+    standalone_path.write_bytes(b'')
+    with self.assertRaisesRegex(VerificationError, 'empty'):
+      verify_distribution_archive(archive_path, target, TEST_COMMIT, standalone_jcef_jar=standalone_path)
+
+  @unittest.skipUnless(hasattr(os, 'mkfifo'), 'FIFO creation requires POSIX')
+  def test_standalone_jcef_jar_fifo_is_rejected_without_opening(self):
+    target = 'linux_amd64'
+    archive_path = self.verify_bytes(build_valid_archive(target), target)
+    standalone_path = self.root / 'jcef-mcef.jar'
+    os.mkfifo(str(standalone_path))
+    with self.assertRaisesRegex(VerificationError, 'regular non-link'):
+      verify_distribution_archive(archive_path, target, TEST_COMMIT, standalone_jcef_jar=standalone_path)
+
   @unittest.skipUnless(hasattr(os, 'mkfifo'), 'FIFO creation requires POSIX')
   def test_fifo_archive_input_is_rejected_without_opening(self):
     path = self.archive_path()

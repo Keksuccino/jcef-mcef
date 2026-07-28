@@ -13,8 +13,11 @@ if [[ $- != *p* ]]; then
 fi
 # Privileged startup prevents Bash from evaluating BASH_ENV and importing
 # exported functions before line 1. Remove named startup/search variables now;
-# credential-bearing children also receive no raw BASH_FUNC_* entries.
-unset BASH_ENV ENV CDPATH GLOBIGNORE
+# Archive tools interpret these environment variables as command-line options.
+# Strip them even though exact-commit source materialization uses raw Git blobs,
+# so no later child can accidentally inherit caller-selected archive behavior.
+unset BASH_ENV ENV CDPATH GLOBIGNORE TAR_OPTIONS TAR_READER_OPTIONS TAR_WRITER_OPTIONS TAPE
+export LC_ALL=C
 
 # Capture an optional explicit credential using the same precedence as gh,
 # then remove every GitHub credential/host variable before the first child
@@ -42,7 +45,22 @@ readonly SYSTEM_ENV_PATH='/usr/bin/env'
 readonly WRAPPER_PATH='tools/distrib/publish_workflow_run.sh'
 readonly PUBLISHER_PATH='tools/distrib/publish_distributions.sh'
 readonly VERIFIER_PATH='tools/distrib/verify_distribution_archive.py'
+readonly SOURCES_JAR_PATH='tools/distrib/sources_jar.py'
+readonly BINARY_JAR_NAME='jcef-mcef.jar'
+readonly SOURCES_JAR_NAME='jcef-mcef-sources.jar'
+readonly SOURCE_TREE_PATH='java/org/cef'
+readonly SOURCE_ARCHIVE_TREE_PATH='org/cef'
+readonly MAX_SOURCE_COUNT=4096
+readonly MAX_SOURCE_SIZE=$((4 * 1024 * 1024))
+readonly MAX_SOURCE_ARCHIVE_SIZE=$((72 * 1024 * 1024))
+readonly MAX_SOURCE_ARCHIVE_PATH_SIZE=1024
+readonly MAX_SOURCE_ARCHIVE_OVERHEAD=$((MAX_SOURCE_COUNT * (76 + 2 * MAX_SOURCE_ARCHIVE_PATH_SIZE) + 22))
+readonly MAX_TOTAL_SOURCE_SIZE=$((MAX_SOURCE_ARCHIVE_SIZE - MAX_SOURCE_ARCHIVE_OVERHEAD))
+readonly MAX_SOURCE_TREE_DEPTH=32
+readonly MAX_SOURCE_TREE_ENTRY_COUNT=8192
+readonly MAX_SOURCE_TREE_LIST_SIZE=$((16 * 1024 * 1024))
 readonly -a EXPECTED_JOBS=(
+  'Java sources'
   'Linux x86_64'
   'Linux arm64'
   'macOS x86_64'
@@ -58,6 +76,8 @@ readonly -a TARGETS=(
   windows_amd64
   windows_arm64
 )
+readonly EXPECTED_JOB_COUNT="${#EXPECTED_JOBS[@]}"
+readonly EXPECTED_ARTIFACT_COUNT="$(( ${#TARGETS[@]} * 2 + 2 ))"
 
 GIT_PATH=''
 GH_PATH=''
@@ -67,6 +87,8 @@ WC_PATH=''
 TR_PATH=''
 CMP_PATH=''
 MKDIR_PATH=''
+CHMOD_PATH=''
+HEAD_PATH=''
 REPOSITORY_ROOT=''
 REPOSITORY_ID=''
 WORKFLOW_ID=''
@@ -77,8 +99,10 @@ VALIDATED_HEAD_SHA=''
 AUTHENTICATED_LOGIN=''
 PRIVATE_ROOT=''
 ARTIFACT_DIRECTORY=''
+SOURCE_SNAPSHOT_ROOT=''
 PUBLISHER_COPY=''
 VERIFIER_COPY=''
+SOURCES_JAR_COPY=''
 
 JOB_NAMES=()
 JOB_IDS=()
@@ -86,7 +110,7 @@ ARTIFACT_IDS=()
 ARTIFACT_NAMES=()
 ARTIFACT_SIZES=()
 ARTIFACT_DIGESTS=()
-SANITIZED_ENV_ARGS=(-u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS -u CDPATH -u GLOBIGNORE -u BASH_XTRACEFD -u PS4 -u ENV_TOKEN_SOURCE -u ENV_TOKEN_CONTENT -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN -u GH_DEBUG -u GH_FORCE_TTY -u GH_PAGER -u PAGER -u GH_REPO)
+SANITIZED_ENV_ARGS=(-u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS -u CDPATH -u GLOBIGNORE -u BASH_XTRACEFD -u PS4 -u ENV_TOKEN_SOURCE -u ENV_TOKEN_CONTENT -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN -u GH_DEBUG -u GH_FORCE_TTY -u GH_PAGER -u PAGER -u GH_REPO -u TAR_OPTIONS -u TAR_READER_OPTIONS -u TAR_WRITER_OPTIONS -u TAPE)
 
 die() {
   echo "ERROR: $*" >&2
@@ -116,8 +140,24 @@ prepare_sanitized_environment() {
         variable_name="${entry%%=*}"
         SANITIZED_ENV_ARGS+=(-u "$variable_name")
         ;;
+      GIT_*=*)
+        # Git assigns behavior to a broad and evolving GIT_* namespace. Strip
+        # every exported member instead of maintaining a bypass-prone allowlist.
+        variable_name="${entry%%=*}"
+        SANITIZED_ENV_ARGS+=(-u "$variable_name")
+        if [[ "$variable_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+          unset "$variable_name"
+        fi
+        ;;
     esac
   done <<< "$environment_output"
+}
+
+git_command() {
+  # Keep this as the only Git boundary. Replacement refs can redefine an exact
+  # commit locally, while global/system configuration can inject helpers or
+  # transport behavior before the trusted source snapshot is materialized.
+  "$SYSTEM_ENV_PATH" "${SANITIZED_ENV_ARGS[@]}" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 "$GIT_PATH" --no-replace-objects "$@"
 }
 
 gh_api() {
@@ -130,6 +170,9 @@ gh_api() {
 
 cleanup() {
   if [ -n "$PRIVATE_ROOT" ] && [ -d "$PRIVATE_ROOT" ]; then
+    if [ -n "$CHMOD_PATH" ] && [ -x "$CHMOD_PATH" ] && [ -n "$SOURCE_SNAPSHOT_ROOT" ] && [ -d "$SOURCE_SNAPSHOT_ROOT" ]; then
+      "$CHMOD_PATH" -R u+w "$SOURCE_SNAPSHOT_ROOT" || true
+    fi
     rm -rf -- "$PRIVATE_ROOT"
   fi
 }
@@ -174,6 +217,9 @@ job_name_is_expected() {
 artifact_name_is_expected() {
   local actual_name="$1"
   local target
+  if [ "$actual_name" = "$BINARY_JAR_NAME" ] || [ "$actual_name" = "$SOURCES_JAR_NAME" ]; then
+    return 0
+  fi
   for target in "${TARGETS[@]}"; do
     if [ "$actual_name" = "${target}.tar.gz" ] || [ "$actual_name" = "${target}.tar.gz.sha256" ]; then
       return 0
@@ -196,22 +242,22 @@ require_unique_value() {
 
 require_pristine_publication_scripts() {
   local relative_path
-  for relative_path in "$WRAPPER_PATH" "$PUBLISHER_PATH" "$VERIFIER_PATH"; do
+  for relative_path in "$WRAPPER_PATH" "$PUBLISHER_PATH" "$VERIFIER_PATH" "$SOURCES_JAR_PATH"; do
     if [ ! -f "$REPOSITORY_ROOT/$relative_path" ] || [ -L "$REPOSITORY_ROOT/$relative_path" ] || [ ! -r "$REPOSITORY_ROOT/$relative_path" ]; then
       die "Publication helper must be a readable regular file: ${relative_path}"
     fi
-    if [ "$relative_path" != "$VERIFIER_PATH" ] && [ ! -x "$REPOSITORY_ROOT/$relative_path" ]; then
+    if { [ "$relative_path" = "$WRAPPER_PATH" ] || [ "$relative_path" = "$PUBLISHER_PATH" ]; } && [ ! -x "$REPOSITORY_ROOT/$relative_path" ]; then
       die "Publication script must be executable: ${relative_path}"
     fi
-    if ! "$GIT_PATH" -C "$REPOSITORY_ROOT" ls-files --error-unmatch -- "$relative_path" >/dev/null 2>&1; then
+    if ! git_command -C "$REPOSITORY_ROOT" ls-files --error-unmatch -- "$relative_path" >/dev/null 2>&1; then
       die "Publication helper is not tracked by HEAD: ${relative_path}"
     fi
-    if ! "$GIT_PATH" -C "$REPOSITORY_ROOT" diff --quiet HEAD -- "$relative_path"; then
+    if ! git_command -C "$REPOSITORY_ROOT" diff --quiet HEAD -- "$relative_path"; then
       die "Publication helper does not match HEAD: ${relative_path}"
     fi
     # Compare the actual bytes as well because Git's working-tree diff honors
     # assume-unchanged and skip-worktree hints that must not bypass publication.
-    if ! "$GIT_PATH" -C "$REPOSITORY_ROOT" show "HEAD:${relative_path}" | "$CMP_PATH" -s - "$REPOSITORY_ROOT/$relative_path"; then
+    if ! git_command -C "$REPOSITORY_ROOT" show "HEAD:${relative_path}" | "$CMP_PATH" -s - "$REPOSITORY_ROOT/$relative_path"; then
       die "Publication helper bytes do not match HEAD: ${relative_path}"
     fi
   done
@@ -219,12 +265,166 @@ require_pristine_publication_scripts() {
 
 prepare_private_directory() {
   PRIVATE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/jcef-publish.XXXXXX")" || die 'Unable to create a private publication directory'
-  chmod 700 "$PRIVATE_ROOT"
+  "$CHMOD_PATH" 700 "$PRIVATE_ROOT"
   # Keep the trusted publisher outside this child directory. The publisher
-  # enables dotglob and intentionally rejects anything beyond 12 artifacts.
+  # enables dotglob and intentionally rejects anything beyond the exact
+  # canonical artifact count.
   ARTIFACT_DIRECTORY="${PRIVATE_ROOT}/artifacts"
+  SOURCE_SNAPSHOT_ROOT="${PRIVATE_ROOT}/source-snapshot"
   if ! "$MKDIR_PATH" -m 700 -- "$ARTIFACT_DIRECTORY"; then
     die 'Unable to create the private artifact directory'
+  fi
+}
+
+prepare_source_snapshot() {
+  local tree_listing
+  local tree_listing_size
+  local tree_entry
+  local metadata
+  local source_mode
+  local source_type
+  local object_id
+  local object_size
+  local metadata_extra
+  local source_path
+  local relative_path
+  local archive_path
+  local -a path_parts
+  local maximum_path_components
+  local destination_path
+  local destination_parent
+  local materialized_size
+  local source_index
+  local source_entry_count=0
+  local java_source_count=0
+  local total_source_size=0
+  local -a source_object_ids=()
+  local -a source_object_sizes=()
+  local -a source_paths=()
+  if [ -z "$PRIVATE_ROOT" ] || [ ! -d "$PRIVATE_ROOT" ] || [ -L "$PRIVATE_ROOT" ]; then
+    die 'Private publication directory is unavailable for the source snapshot'
+  fi
+  if [ -z "$SOURCE_SNAPSHOT_ROOT" ] || [ "${SOURCE_SNAPSHOT_ROOT%/*}" != "$PRIVATE_ROOT" ] || [ -e "$SOURCE_SNAPSHOT_ROOT" ] || [ -L "$SOURCE_SNAPSHOT_ROOT" ]; then
+    die 'Private source snapshot destination is invalid or already exists'
+  fi
+  if [[ ! "$VALIDATED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || [ "$VALIDATED_HEAD_SHA" != "$RUN_SHA" ]; then
+    die 'Validated HEAD is unavailable for the source snapshot'
+  fi
+  if ! "$MKDIR_PATH" -m 700 -- "$SOURCE_SNAPSHOT_ROOT"; then
+    die 'Unable to create the private source snapshot directory'
+  fi
+  tree_listing="${PRIVATE_ROOT}/source-tree.entries"
+  # `git archive` is intentionally forbidden here because export-ignore and
+  # export-subst can be redefined by mutable $GIT_DIR/info/attributes. Enumerate
+  # the committed tree and read each blob by object ID so only exact Git object
+  # bytes can become the release-verification oracle.
+  if ! git_command -C "$REPOSITORY_ROOT" ls-tree -r -t -z -l --full-tree "$VALIDATED_HEAD_SHA" -- "$SOURCE_TREE_PATH" | "$SYSTEM_ENV_PATH" "${SANITIZED_ENV_ARGS[@]}" "$HEAD_PATH" -c "$((MAX_SOURCE_TREE_LIST_SIZE + 1))" > "$tree_listing"; then
+    die "Unable to enumerate ${SOURCE_TREE_PATH} from validated HEAD ${VALIDATED_HEAD_SHA}"
+  fi
+  if ! tree_listing_size="$(file_size "$tree_listing")" || [ "$tree_listing_size" -gt "$MAX_SOURCE_TREE_LIST_SIZE" ]; then
+    die 'Validated HEAD source-tree metadata exceeds its size limit'
+  fi
+  while IFS= read -r -d '' tree_entry; do
+    metadata="${tree_entry%%$'\t'*}"
+    source_path="${tree_entry#*$'\t'}"
+    if [ "$metadata" = "$tree_entry" ] || [ "$source_path" = "$tree_entry" ]; then
+      die 'Validated HEAD source tree contains malformed Git metadata'
+    fi
+    IFS=' ' read -r source_mode source_type object_id object_size metadata_extra <<< "$metadata"
+    if [[ ! "$object_id" =~ ^[0-9a-f]{40}$ ]] || [ -n "$metadata_extra" ]; then
+      die "Validated HEAD source tree contains malformed Git metadata: ${source_path:-unknown}"
+    fi
+    if [ "$source_type" = tree ]; then
+      if [ "$source_mode" != 040000 ] || [ "$object_size" != - ]; then
+        die "Validated HEAD source tree contains a malformed directory: ${source_path:-unknown}"
+      fi
+      case "$source_path" in
+        java|java/org|"$SOURCE_TREE_PATH") continue ;;
+      esac
+      maximum_path_components="$MAX_SOURCE_TREE_DEPTH"
+    elif [ "$source_type" = blob ]; then
+      if { [ "$source_mode" != 100644 ] && [ "$source_mode" != 100755 ]; } || [[ ! "$object_size" =~ ^(0|[1-9][0-9]{0,15})$ ]]; then
+        die "Validated HEAD source tree contains a non-regular entry: ${source_path:-unknown}"
+      fi
+      maximum_path_components="$((MAX_SOURCE_TREE_DEPTH + 1))"
+    else
+      die "Validated HEAD source tree contains a non-regular entry: ${source_path:-unknown}"
+    fi
+    if [[ "$source_path" != "$SOURCE_TREE_PATH/"* ]] || [[ "$source_path" == *\\* ]] || [[ "$source_path" =~ [[:cntrl:]] ]]; then
+      die "Validated HEAD source tree contains an unsafe path: ${source_path:-unknown}"
+    fi
+    case "/${source_path}/" in
+      *//*|*/./*|*/../*) die "Validated HEAD source tree contains a noncanonical path: ${source_path}" ;;
+    esac
+    relative_path="${source_path#"$SOURCE_TREE_PATH/"}"
+    archive_path="${SOURCE_ARCHIVE_TREE_PATH}/${relative_path}"
+    IFS='/' read -r -a path_parts <<< "$relative_path"
+    # LC_ALL=C makes Bash's string length a raw byte length, matching the
+    # helper's UTF-8 archive-path cap even when a committed path is non-ASCII.
+    if [ -z "$relative_path" ] || [ "${#path_parts[@]}" -gt "$maximum_path_components" ] || [ "${#archive_path}" -gt "$MAX_SOURCE_ARCHIVE_PATH_SIZE" ]; then
+      die "Validated HEAD source tree path exceeds its limits: ${source_path}"
+    fi
+    ((source_entry_count += 1))
+    if [ "$source_entry_count" -gt "$MAX_SOURCE_TREE_ENTRY_COUNT" ]; then
+      die 'Validated HEAD source tree exceeds its entry-count limit'
+    fi
+    if [ "$source_type" = tree ]; then
+      continue
+    fi
+    if [[ "$source_path" != *.java ]]; then
+      continue
+    fi
+    ((java_source_count += 1))
+    if [ "$java_source_count" -gt "$MAX_SOURCE_COUNT" ] || [ "$object_size" -gt "$MAX_SOURCE_SIZE" ]; then
+      die "Validated HEAD Java source exceeds its count or file-size limit: ${source_path}"
+    fi
+    total_source_size=$((total_source_size + object_size))
+    if [ "$total_source_size" -gt "$MAX_TOTAL_SOURCE_SIZE" ]; then
+      die 'Validated HEAD Java sources exceed the total size limit'
+    fi
+    source_object_ids+=("$object_id")
+    source_object_sizes+=("$object_size")
+    source_paths+=("$source_path")
+  done < "$tree_listing"
+  if [ "$java_source_count" -eq 0 ]; then
+    die "Validated HEAD does not contain Java sources under ${SOURCE_TREE_PATH}"
+  fi
+  if [ "${#source_object_ids[@]}" -ne "$java_source_count" ] || [ "${#source_object_sizes[@]}" -ne "$java_source_count" ] || [ "${#source_paths[@]}" -ne "$java_source_count" ]; then
+    die 'Validated HEAD Java source metadata collection is misaligned'
+  fi
+
+  # Materialize only after the complete committed tree has passed every bound.
+  # This prevents an oversized late tree entry from consuming directories,
+  # subprocesses, or blob storage before the snapshot is rejected.
+  for ((source_index = 0; source_index < java_source_count; source_index++)); do
+    object_id="${source_object_ids[$source_index]}"
+    object_size="${source_object_sizes[$source_index]}"
+    source_path="${source_paths[$source_index]}"
+    destination_path="${SOURCE_SNAPSHOT_ROOT}/${source_path}"
+    destination_parent="${destination_path%/*}"
+    if ! "$MKDIR_PATH" -p -- "$destination_parent"; then
+      die "Unable to create source snapshot directory for ${source_path}"
+    fi
+    if [ -e "$destination_path" ] || [ -L "$destination_path" ]; then
+      die "Validated HEAD source tree contains a duplicate path: ${source_path}"
+    fi
+    if ! git_command -C "$REPOSITORY_ROOT" cat-file blob "$object_id" > "$destination_path"; then
+      die "Unable to materialize source blob for ${source_path}"
+    fi
+    if [ ! -f "$destination_path" ] || [ -L "$destination_path" ]; then
+      die "Materialized source is not a regular file: ${source_path}"
+    fi
+    if ! materialized_size="$(file_size "$destination_path")" || [ "$materialized_size" != "$object_size" ]; then
+      die "Materialized source size does not match its Git object: ${source_path}"
+    fi
+  done
+  if [ ! -d "$SOURCE_SNAPSHOT_ROOT/java" ] || [ -L "$SOURCE_SNAPSHOT_ROOT/java" ] || [ ! -d "$SOURCE_SNAPSHOT_ROOT/java/org" ] || [ -L "$SOURCE_SNAPSHOT_ROOT/java/org" ] || [ ! -d "$SOURCE_SNAPSHOT_ROOT/$SOURCE_TREE_PATH" ] || [ -L "$SOURCE_SNAPSHOT_ROOT/$SOURCE_TREE_PATH" ]; then
+    die 'Validated HEAD source snapshot does not contain the canonical production source tree'
+  fi
+  # Freeze the materialized tree before credentials reach the publisher. Cleanup
+  # restores owner write access only so the private tree can be removed.
+  if ! "$CHMOD_PATH" -R a-w "$SOURCE_SNAPSHOT_ROOT"; then
+    die 'Unable to make the validated HEAD source snapshot read-only'
   fi
 }
 
@@ -237,26 +437,34 @@ prepare_trusted_publisher() {
   fi
   PUBLISHER_COPY="${PRIVATE_ROOT}/publish_distributions.sh"
   VERIFIER_COPY="${PRIVATE_ROOT}/verify_distribution_archive.py"
+  SOURCES_JAR_COPY="${PRIVATE_ROOT}/sources_jar.py"
   if [[ ! "$VALIDATED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
     die 'Validated HEAD is unavailable for the trusted publisher copy'
   fi
-  if ! "$GIT_PATH" -C "$REPOSITORY_ROOT" show "${VALIDATED_HEAD_SHA}:${PUBLISHER_PATH}" > "$PUBLISHER_COPY"; then
+  if ! git_command -C "$REPOSITORY_ROOT" show "${VALIDATED_HEAD_SHA}:${PUBLISHER_PATH}" > "$PUBLISHER_COPY"; then
     die 'Unable to copy the publisher from HEAD'
   fi
-  if ! "$GIT_PATH" -C "$REPOSITORY_ROOT" show "${VALIDATED_HEAD_SHA}:${VERIFIER_PATH}" > "$VERIFIER_COPY"; then
+  if ! git_command -C "$REPOSITORY_ROOT" show "${VALIDATED_HEAD_SHA}:${VERIFIER_PATH}" > "$VERIFIER_COPY"; then
     die 'Unable to copy the distribution verifier from HEAD'
   fi
-  if [ ! -f "$PUBLISHER_COPY" ] || [ -L "$PUBLISHER_COPY" ] || [ ! -f "$VERIFIER_COPY" ] || [ -L "$VERIFIER_COPY" ]; then
+  if ! git_command -C "$REPOSITORY_ROOT" show "${VALIDATED_HEAD_SHA}:${SOURCES_JAR_PATH}" > "$SOURCES_JAR_COPY"; then
+    die 'Unable to copy the sources JAR helper from HEAD'
+  fi
+  if [ ! -f "$PUBLISHER_COPY" ] || [ -L "$PUBLISHER_COPY" ] || [ ! -f "$VERIFIER_COPY" ] || [ -L "$VERIFIER_COPY" ] || [ ! -f "$SOURCES_JAR_COPY" ] || [ -L "$SOURCES_JAR_COPY" ]; then
     die 'The trusted publication copies are not regular files'
   fi
-  if ! "$GIT_PATH" -C "$REPOSITORY_ROOT" show "${VALIDATED_HEAD_SHA}:${PUBLISHER_PATH}" | "$CMP_PATH" -s - "$PUBLISHER_COPY"; then
+  if ! git_command -C "$REPOSITORY_ROOT" show "${VALIDATED_HEAD_SHA}:${PUBLISHER_PATH}" | "$CMP_PATH" -s - "$PUBLISHER_COPY"; then
     die 'The trusted publisher copy does not byte-match HEAD'
   fi
-  if ! "$GIT_PATH" -C "$REPOSITORY_ROOT" show "${VALIDATED_HEAD_SHA}:${VERIFIER_PATH}" | "$CMP_PATH" -s - "$VERIFIER_COPY"; then
+  if ! git_command -C "$REPOSITORY_ROOT" show "${VALIDATED_HEAD_SHA}:${VERIFIER_PATH}" | "$CMP_PATH" -s - "$VERIFIER_COPY"; then
     die 'The trusted distribution verifier copy does not byte-match HEAD'
   fi
-  chmod 400 "$PUBLISHER_COPY"
-  chmod 400 "$VERIFIER_COPY"
+  if ! git_command -C "$REPOSITORY_ROOT" show "${VALIDATED_HEAD_SHA}:${SOURCES_JAR_PATH}" | "$CMP_PATH" -s - "$SOURCES_JAR_COPY"; then
+    die 'The trusted sources JAR helper copy does not byte-match HEAD'
+  fi
+  "$CHMOD_PATH" 400 "$PUBLISHER_COPY"
+  "$CHMOD_PATH" 400 "$VERIFIER_COPY"
+  "$CHMOD_PATH" 400 "$SOURCES_JAR_COPY"
 }
 
 invoke_trusted_publisher() {
@@ -266,13 +474,19 @@ invoke_trusted_publisher() {
   if [ -z "$VERIFIER_COPY" ] || [ ! -f "$VERIFIER_COPY" ] || [ -L "$VERIFIER_COPY" ] || [ ! -r "$VERIFIER_COPY" ] || [ "${VERIFIER_COPY%/*}" != "${PUBLISHER_COPY%/*}" ]; then
     die 'Trusted sibling distribution verifier copy is unavailable'
   fi
+  if [ -z "$SOURCES_JAR_COPY" ] || [ ! -f "$SOURCES_JAR_COPY" ] || [ -L "$SOURCES_JAR_COPY" ] || [ ! -r "$SOURCES_JAR_COPY" ] || [ "${SOURCES_JAR_COPY%/*}" != "${PUBLISHER_COPY%/*}" ]; then
+    die 'Trusted sibling sources JAR helper copy is unavailable'
+  fi
+  if [ -z "$SOURCE_SNAPSHOT_ROOT" ] || [ ! -d "$SOURCE_SNAPSHOT_ROOT/$SOURCE_TREE_PATH" ] || [ -L "$SOURCE_SNAPSHOT_ROOT" ] || [ -L "$SOURCE_SNAPSHOT_ROOT/java" ] || [ -L "$SOURCE_SNAPSHOT_ROOT/java/org" ] || [ -L "$SOURCE_SNAPSHOT_ROOT/$SOURCE_TREE_PATH" ]; then
+    die 'Trusted validated-HEAD source snapshot is unavailable'
+  fi
   # Give Bash the private path so it owns and protects its parser input. An
   # inherited descriptor would remain shared with publisher descendants, which
   # could advance the shared open-file offset while Bash is still parsing.
   if [ -n "$ENV_TOKEN_SOURCE" ]; then
-    GH_TOKEN="$ENV_TOKEN_CONTENT" GH_HOST=github.com GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 "$SYSTEM_ENV_PATH" "${SANITIZED_ENV_ARGS[@]}" /bin/bash -p "$PUBLISHER_COPY" "$RUN_SHA" "$ARTIFACT_DIRECTORY"
+    GH_TOKEN="$ENV_TOKEN_CONTENT" GH_HOST=github.com GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 "$SYSTEM_ENV_PATH" "${SANITIZED_ENV_ARGS[@]}" /bin/bash -p "$PUBLISHER_COPY" "$RUN_SHA" "$ARTIFACT_DIRECTORY" "$SOURCE_SNAPSHOT_ROOT"
   else
-    GH_HOST=github.com GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 "$SYSTEM_ENV_PATH" "${SANITIZED_ENV_ARGS[@]}" /bin/bash -p "$PUBLISHER_COPY" "$RUN_SHA" "$ARTIFACT_DIRECTORY"
+    GH_HOST=github.com GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 "$SYSTEM_ENV_PATH" "${SANITIZED_ENV_ARGS[@]}" /bin/bash -p "$PUBLISHER_COPY" "$RUN_SHA" "$ARTIFACT_DIRECTORY" "$SOURCE_SNAPSHOT_ROOT"
   fi
 }
 
@@ -280,16 +494,16 @@ refresh_and_validate_master() {
   local origin_url
   local head_sha
   local origin_master_sha
-  origin_url="$("$GIT_PATH" -C "$REPOSITORY_ROOT" remote get-url origin)" || die 'Unable to inspect the origin remote'
+  origin_url="$(git_command -C "$REPOSITORY_ROOT" remote get-url origin)" || die 'Unable to inspect the origin remote'
   if [ "$origin_url" != "$REPOSITORY_URL" ]; then
     die "origin must be ${REPOSITORY_URL}; found ${origin_url:-no URL}"
   fi
   require_pristine_publication_scripts
-  if ! "$GIT_PATH" -C "$REPOSITORY_ROOT" fetch --quiet --no-tags origin '+refs/heads/master:refs/remotes/origin/master'; then
+  if ! git_command -C "$REPOSITORY_ROOT" fetch --quiet --no-tags origin '+refs/heads/master:refs/remotes/origin/master'; then
     die 'Unable to fetch origin/master'
   fi
-  head_sha="$("$GIT_PATH" -C "$REPOSITORY_ROOT" rev-parse --verify 'HEAD^{commit}')" || die 'Unable to resolve HEAD'
-  origin_master_sha="$("$GIT_PATH" -C "$REPOSITORY_ROOT" rev-parse --verify 'refs/remotes/origin/master^{commit}')" || die 'Unable to resolve freshly fetched origin/master'
+  head_sha="$(git_command -C "$REPOSITORY_ROOT" rev-parse --verify 'HEAD^{commit}')" || die 'Unable to resolve HEAD'
+  origin_master_sha="$(git_command -C "$REPOSITORY_ROOT" rev-parse --verify 'refs/remotes/origin/master^{commit}')" || die 'Unable to resolve freshly fetched origin/master'
   if [[ ! "$head_sha" =~ ^[0-9a-f]{40}$ ]] || [ "$head_sha" != "$origin_master_sha" ]; then
     die "HEAD must exactly match freshly fetched origin/master; HEAD=${head_sha:-unknown}, origin/master=${origin_master_sha:-unknown}"
   fi
@@ -331,7 +545,7 @@ load_run_identity() {
     ''|0|*[!0-9]*) die "Workflow run ${RUN_ID} has an invalid attempt" ;;
   esac
   local head_sha
-  head_sha="$("$GIT_PATH" -C "$REPOSITORY_ROOT" rev-parse --verify 'HEAD^{commit}')" || die 'Unable to resolve HEAD'
+  head_sha="$(git_command -C "$REPOSITORY_ROOT" rev-parse --verify 'HEAD^{commit}')" || die 'Unable to resolve HEAD'
   if [ "$RUN_SHA" != "$head_sha" ]; then
     die "Workflow run ${RUN_ID} targets ${RUN_SHA}, not current HEAD ${head_sha}"
   fi
@@ -381,8 +595,8 @@ load_and_validate_jobs() {
   fi
   while IFS='|' read -r kind job_id job_name job_status job_conclusion job_attempt job_run_id job_head_sha job_head_branch job_workflow_name extra; do
     if [ "$kind" = meta ]; then
-      if [ "$meta_seen" != false ] || [ "$job_id" != "${#EXPECTED_JOBS[@]}" ] || [ -n "$job_name" ] || [ -n "$job_status" ] || [ -n "$job_conclusion" ] || [ -n "$job_attempt" ] || [ -n "$job_run_id" ] || [ -n "$job_head_sha" ] || [ -n "$job_head_branch" ] || [ -n "$job_workflow_name" ] || [ -n "$extra" ]; then
-        die "Workflow run ${RUN_ID} must contain exactly six jobs"
+      if [ "$meta_seen" != false ] || [ "$job_id" != "$EXPECTED_JOB_COUNT" ] || [ -n "$job_name" ] || [ -n "$job_status" ] || [ -n "$job_conclusion" ] || [ -n "$job_attempt" ] || [ -n "$job_run_id" ] || [ -n "$job_head_sha" ] || [ -n "$job_head_branch" ] || [ -n "$job_workflow_name" ] || [ -n "$extra" ]; then
+        die "Workflow run ${RUN_ID} must contain exactly ${EXPECTED_JOB_COUNT} jobs"
       fi
       meta_seen=true
       continue
@@ -403,7 +617,7 @@ load_and_validate_jobs() {
     JOB_IDS+=("$job_id")
   done <<< "$jobs_output"
   if [ "$meta_seen" != true ] || [ "${#JOB_NAMES[@]}" -ne "${#EXPECTED_JOBS[@]}" ]; then
-    die "Workflow run ${RUN_ID} does not contain the exact six successful platform jobs"
+    die "Workflow run ${RUN_ID} does not contain the exact ${EXPECTED_JOB_COUNT} successful build jobs"
   fi
 }
 
@@ -432,8 +646,8 @@ load_and_validate_artifacts() {
   fi
   while IFS='|' read -r kind artifact_id artifact_name artifact_size artifact_digest artifact_expired workflow_run_id repository_id head_repository_id head_branch head_sha extra; do
     if [ "$kind" = meta ]; then
-      if [ "$meta_seen" != false ] || [ "$artifact_id" != 12 ] || [ -n "$artifact_name" ] || [ -n "$artifact_size" ] || [ -n "$artifact_digest" ] || [ -n "$artifact_expired" ] || [ -n "$workflow_run_id" ] || [ -n "$repository_id" ] || [ -n "$head_repository_id" ] || [ -n "$head_branch" ] || [ -n "$head_sha" ] || [ -n "$extra" ]; then
-        die "Workflow run ${RUN_ID} must contain exactly 12 artifacts"
+      if [ "$meta_seen" != false ] || [ "$artifact_id" != "$EXPECTED_ARTIFACT_COUNT" ] || [ -n "$artifact_name" ] || [ -n "$artifact_size" ] || [ -n "$artifact_digest" ] || [ -n "$artifact_expired" ] || [ -n "$workflow_run_id" ] || [ -n "$repository_id" ] || [ -n "$head_repository_id" ] || [ -n "$head_branch" ] || [ -n "$head_sha" ] || [ -n "$extra" ]; then
+        die "Workflow run ${RUN_ID} must contain exactly ${EXPECTED_ARTIFACT_COUNT} artifacts"
       fi
       meta_seen=true
       continue
@@ -455,8 +669,8 @@ load_and_validate_artifacts() {
     ARTIFACT_SIZES+=("$artifact_size")
     ARTIFACT_DIGESTS+=("${artifact_digest#sha256:}")
   done <<< "$artifacts_output"
-  if [ "$meta_seen" != true ] || [ "${#ARTIFACT_NAMES[@]}" -ne 12 ]; then
-    die "Workflow run ${RUN_ID} does not contain the exact 12 canonical artifacts"
+  if [ "$meta_seen" != true ] || [ "${#ARTIFACT_NAMES[@]}" -ne "$EXPECTED_ARTIFACT_COUNT" ]; then
+    die "Workflow run ${RUN_ID} does not contain the exact ${EXPECTED_ARTIFACT_COUNT} canonical artifacts"
   fi
 }
 
@@ -516,8 +730,10 @@ WC_PATH="$(resolve_executable wc || true)"
 TR_PATH="$(resolve_executable tr || true)"
 CMP_PATH="$(resolve_executable cmp || true)"
 MKDIR_PATH="$(resolve_executable mkdir || true)"
-if [ -z "$GIT_PATH" ] || [ -z "$GH_PATH" ] || [ -z "$WC_PATH" ] || [ -z "$TR_PATH" ] || [ -z "$CMP_PATH" ] || [ -z "$MKDIR_PATH" ]; then
-  die 'git, gh, cmp, mkdir, wc and tr are required for workflow-run publication'
+CHMOD_PATH="$(resolve_executable chmod || true)"
+HEAD_PATH="$(resolve_executable head || true)"
+if [ -z "$GIT_PATH" ] || [ -z "$GH_PATH" ] || [ -z "$WC_PATH" ] || [ -z "$TR_PATH" ] || [ -z "$CMP_PATH" ] || [ -z "$MKDIR_PATH" ] || [ -z "$CHMOD_PATH" ] || [ -z "$HEAD_PATH" ]; then
+  die 'git, gh, chmod, cmp, head, mkdir, wc and tr are required for workflow-run publication'
 fi
 if HASH_PATH="$(resolve_executable sha256sum)"; then
   HASH_KIND=sha256sum
@@ -528,7 +744,7 @@ else
 fi
 
 SCRIPT_DIRECTORY="$(cd -- "$(dirname -- "$0")" && pwd -P)"
-REPOSITORY_ROOT="$("$GIT_PATH" -C "$SCRIPT_DIRECTORY/../.." rev-parse --show-toplevel)" || die 'Unable to resolve the repository root'
+REPOSITORY_ROOT="$(git_command -C "$SCRIPT_DIRECTORY/../.." rev-parse --show-toplevel)" || die 'Unable to resolve the repository root'
 EXPECTED_ROOT="$(cd -- "$SCRIPT_DIRECTORY/../.." && pwd -P)"
 if [ "$REPOSITORY_ROOT" != "$EXPECTED_ROOT" ]; then
   die 'Publication wrapper must run from its tracked repository location'
@@ -537,10 +753,10 @@ fi
 # Trust boundary: the local caller chooses the wrapper bytes that /bin/bash
 # begins interpreting, so a running script cannot retroactively authenticate
 # its own startup. Before exposing credentials we verify the checked-out
-# wrapper and publication helpers against HEAD and create a private artifact
-# directory. The publisher and verifier are copied from HEAD only at the final
-# delegation boundary so no intermediary child can replace either one before
-# validation.
+# wrapper and publication helpers against HEAD and create a private publication
+# directory. The source snapshot, publisher, and verification helpers are
+# materialized from validated HEAD only at the final delegation boundary so no
+# mutable worktree file can redefine release verification.
 refresh_and_validate_master
 prepare_private_directory
 load_repository_identity
@@ -552,10 +768,12 @@ load_and_validate_artifacts
 download_and_validate_artifacts
 
 # Artifact downloads may be long-running. Repeat the fetch and source checks
-# before delegation, then copy the HEAD-derived publication helpers immediately
-# before invocation. Later worktree replacement cannot change the private copies.
+# before delegation, then materialize the HEAD-derived source snapshot and
+# publication helpers immediately before invocation. Later worktree replacement
+# cannot change the private copies.
 refresh_and_validate_master
 revalidate_run_identity
+prepare_source_snapshot
 prepare_trusted_publisher
 echo "Publishing validated workflow run ${RUN_ID} for ${RUN_SHA} as the authenticated GitHub user"
 invoke_trusted_publisher

@@ -23,23 +23,26 @@ if str(TEST_ROOT) not in sys.path:
 
 from distribution_archive_test_util import build_tar_gz  # noqa: E402
 from distribution_archive_test_util import build_valid_archive  # noqa: E402
+from distribution_archive_test_util import canonical_jar_files  # noqa: E402
 from distribution_archive_test_util import canonical_members  # noqa: E402
 from distribution_archive_test_util import write_valid_archive  # noqa: E402
+from sources_jar import build_sources_jar  # noqa: E402
 
 PUBLISHER = DISTRIB_ROOT / 'publish_distributions.sh'
+SOURCE_ROOT = Path(__file__).resolve().parents[3]
 COMMIT_SHA = '0123456789abcdef0123456789abcdef01234567'
 WRONG_SHA = '89abcdef0123456789abcdef0123456789abcdef'
 REPOSITORY = 'Keksuccino/jcef-mcef'
 TAG_NAME = 'java-cef-{}'.format(COMMIT_SHA)
 RELEASE_TITLE = 'JCEF distributions {}'.format(COMMIT_SHA)
-RELEASE_BODY = 'Automated JCEF distributions for commit {};managed-by=tools/distrib/publish_distributions.sh;schema=1'.format(
-    COMMIT_SHA)
+RELEASE_BODY = 'Automated JCEF distributions for commit {};managed-by=tools/distrib/publish_distributions.sh;schema=2'.format(COMMIT_SHA)
 TARGETS = ('linux_amd64', 'linux_arm64', 'macos_amd64', 'macos_arm64',
            'windows_amd64', 'windows_arm64')
 ARCHIVE_NAMES = tuple('{}.tar.gz'.format(target) for target in TARGETS)
 CHECKSUM_NAMES = tuple('{}.tar.gz.sha256'.format(target) for target in TARGETS)
-ASSET_NAMES = tuple(
-    name for pair in zip(ARCHIVE_NAMES, CHECKSUM_NAMES) for name in pair)
+BINARY_JAR_NAME = 'jcef-mcef.jar'
+SOURCES_JAR_NAME = 'jcef-mcef-sources.jar'
+ASSET_NAMES = tuple(name for pair in zip(ARCHIVE_NAMES, CHECKSUM_NAMES) for name in pair) + (BINARY_JAR_NAME, SOURCES_JAR_NAME)
 TOKEN = 'github-actions-test-token'
 MODIFYING_OPERATIONS = frozenset(
     ('create-ref', 'create-release', 'delete-release', 'upload-release',
@@ -437,7 +440,7 @@ elif operation == 'upload-release':
     raise SystemExit(0)
   if should_fail:
     fail('injected upload failure after write', 73)
-  if len(release['assets']) == 12:
+  if len(release['assets']) == 14:
     mutation = os.environ.get('FAKE_MUTATE_AFTER_UPLOAD')
     if mutation == 'metadata':
       release['title'] = 'tampered during upload'
@@ -529,8 +532,7 @@ os.execv('PYTHON_EXECUTABLE', ['PYTHON_EXECUTABLE'] + arguments)
 '''
 
 
-@unittest.skipUnless(os.name == 'posix' and Path('/bin/bash').is_file(),
-                     'publisher integration tests require POSIX /bin/bash')
+@unittest.skipUnless(os.name == 'posix' and Path('/bin/bash').is_file(), 'publisher integration tests require POSIX /bin/bash')
 class PublishDistributionsTest(unittest.TestCase):
 
   def setUp(self):
@@ -580,6 +582,8 @@ class PublishDistributionsTest(unittest.TestCase):
       checksum = '{}  {}'.format(digest, archive_name).encode('ascii')
       (self.artifact_directory /
        '{}.sha256'.format(archive_name)).write_bytes(checksum + line_ending)
+    (self.artifact_directory / BINARY_JAR_NAME).write_bytes(canonical_jar_files('linux_amd64')['jcef.jar'])
+    build_sources_jar(SOURCE_ROOT, self.artifact_directory / SOURCES_JAR_NAME)
 
   def write_state(self, state):
     self.state_path.write_text(
@@ -631,21 +635,8 @@ class PublishDistributionsTest(unittest.TestCase):
     environment.update(updates)
     return environment
 
-  def run_publisher(self,
-                    commit_sha=COMMIT_SHA,
-                    environment=None,
-                    artifact_directory=None,
-                    cwd=None):
-    return subprocess.run(
-        [
-            str(PUBLISHER), commit_sha,
-            str(artifact_directory or self.artifact_directory)
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        env=environment or self.environment(),
-        cwd=cwd)
+  def run_publisher(self, commit_sha=COMMIT_SHA, environment=None, artifact_directory=None, source_snapshot_root=SOURCE_ROOT, cwd=None):
+    return subprocess.run([str(PUBLISHER), commit_sha, str(artifact_directory or self.artifact_directory), str(source_snapshot_root)], check=False, capture_output=True, text=True, env=environment or self.environment(), cwd=cwd)
 
   def read_log(self):
     if not self.log_path.exists():
@@ -731,7 +722,7 @@ class PublishDistributionsTest(unittest.TestCase):
     self.assertEqual(0, result.returncode, result.stderr)
     self.assert_exact_published_release()
     local_tools = self.local_tool_log.read_text(encoding='utf-8').splitlines()
-    self.assertEqual(7, local_tools.count('python3-isolated'))
+    self.assertEqual(8, local_tools.count('python3-isolated'))
     records = self.read_log()
     self.assertTrue(
         all(record['gh_token_matches'] and not record['github_token_present']
@@ -739,7 +730,7 @@ class PublishDistributionsTest(unittest.TestCase):
     upload_records = [
         record for record in records if record['operation'] == 'upload-release'
     ]
-    expected_upload_names = ARCHIVE_NAMES + CHECKSUM_NAMES
+    expected_upload_names = ARCHIVE_NAMES + (BINARY_JAR_NAME, SOURCES_JAR_NAME) + CHECKSUM_NAMES
     self.assertEqual(len(expected_upload_names), len(upload_records))
     for record, expected_name in zip(upload_records, expected_upload_names):
       arguments = record['arguments']
@@ -868,37 +859,24 @@ class PublishDistributionsTest(unittest.TestCase):
     self.assert_exact_published_release()
 
   def test_non_privileged_bash_invocation_is_rejected_before_gh(self):
-    result = subprocess.run(
-        ['/bin/bash',
-         str(PUBLISHER), COMMIT_SHA,
-         str(self.artifact_directory)],
-        check=False,
-        capture_output=True,
-        text=True,
-        env=self.environment())
+    result = subprocess.run(['/bin/bash', str(PUBLISHER), COMMIT_SHA, str(self.artifact_directory), str(SOURCE_ROOT)], check=False, capture_output=True, text=True, env=self.environment())
     self.assertNotEqual(0, result.returncode)
     self.assertIn('execute publish_distributions.sh directly', result.stderr)
     self.assertFalse(self.log_path.exists())
 
-  def test_bare_path_invocation_resolves_only_its_sibling_verifier(self):
+  def test_bare_path_invocation_resolves_only_its_sibling_verification_helpers(self):
     publication_bin = self.root / 'publication-bin'
     publication_bin.mkdir()
     publisher_copy = publication_bin / PUBLISHER.name
     verifier_copy = publication_bin / 'verify_distribution_archive.py'
+    sources_jar_helper_copy = publication_bin / 'sources_jar.py'
     shutil.copy2(PUBLISHER, publisher_copy)
     shutil.copy2(DISTRIB_ROOT / verifier_copy.name, verifier_copy)
+    shutil.copy2(DISTRIB_ROOT / sources_jar_helper_copy.name, sources_jar_helper_copy)
     publisher_copy.chmod(0o755)
     environment = self.environment()
-    environment['PATH'] = '{}{}{}'.format(publication_bin, os.pathsep,
-                                          environment['PATH'])
-    result = subprocess.run(
-        [PUBLISHER.name, COMMIT_SHA,
-         str(self.artifact_directory)],
-        check=False,
-        capture_output=True,
-        text=True,
-        env=environment,
-        cwd=self.root)
+    environment['PATH'] = '{}{}{}'.format(publication_bin, os.pathsep, environment['PATH'])
+    result = subprocess.run([PUBLISHER.name, COMMIT_SHA, str(self.artifact_directory), str(SOURCE_ROOT)], check=False, capture_output=True, text=True, env=environment, cwd=self.root)
     self.assertEqual(0, result.returncode, result.stderr)
     self.assert_exact_published_release()
 
@@ -906,15 +884,22 @@ class PublishDistributionsTest(unittest.TestCase):
     publisher_copy = self.root / PUBLISHER.name
     shutil.copy2(PUBLISHER, publisher_copy)
     publisher_copy.chmod(0o755)
-    result = subprocess.run(
-        [str(publisher_copy), COMMIT_SHA,
-         str(self.artifact_directory)],
-        check=False,
-        capture_output=True,
-        text=True,
-        env=self.environment())
+    result = subprocess.run([str(publisher_copy), COMMIT_SHA, str(self.artifact_directory), str(SOURCE_ROOT)], check=False, capture_output=True, text=True, env=self.environment())
     self.assertNotEqual(0, result.returncode)
     self.assertIn('Required sibling distribution verifier', result.stderr)
+    self.assertFalse(self.log_path.exists())
+
+  def test_publisher_copy_without_sibling_sources_jar_helper_fails_before_gh(self):
+    publication_bin = self.root / 'publication-bin'
+    publication_bin.mkdir()
+    publisher_copy = publication_bin / PUBLISHER.name
+    verifier_copy = publication_bin / 'verify_distribution_archive.py'
+    shutil.copy2(PUBLISHER, publisher_copy)
+    shutil.copy2(DISTRIB_ROOT / verifier_copy.name, verifier_copy)
+    publisher_copy.chmod(0o755)
+    result = subprocess.run([str(publisher_copy), COMMIT_SHA, str(self.artifact_directory), str(SOURCE_ROOT)], check=False, capture_output=True, text=True, env=self.environment())
+    self.assertNotEqual(0, result.returncode)
+    self.assertIn('Required sibling sources JAR helper', result.stderr)
     self.assertFalse(self.log_path.exists())
 
   def test_artifact_directory_with_leading_dash_basename_is_option_safe(self):
@@ -1563,6 +1548,26 @@ class PublishDistributionsTest(unittest.TestCase):
     self.assertFalse(
         any(name.endswith('.sha256') for name in state['release']['assets']))
 
+  def test_binary_jar_upload_failure_leaves_archives_only_in_draft(self):
+    result = self.run_publisher(environment=self.environment(FAKE_GH_FAIL_UPLOAD=BINARY_JAR_NAME))
+    self.assertNotEqual(0, result.returncode)
+    self.assertIn('Primary asset upload failed', result.stderr)
+    state = self.read_state()
+    self.assertTrue(state['release']['draft'])
+    self.assertEqual(set(ARCHIVE_NAMES), set(state['release']['assets']))
+    self.assertFalse(any(name.endswith('.sha256') for name in state['release']['assets']))
+    self.assertNotIn('publish-release', self.operations())
+
+  def test_sources_jar_upload_failure_leaves_prior_primary_assets_in_draft(self):
+    result = self.run_publisher(environment=self.environment(FAKE_GH_FAIL_UPLOAD=SOURCES_JAR_NAME))
+    self.assertNotEqual(0, result.returncode)
+    self.assertIn('Primary asset upload failed', result.stderr)
+    state = self.read_state()
+    self.assertTrue(state['release']['draft'])
+    self.assertEqual(set(ARCHIVE_NAMES + (BINARY_JAR_NAME,)), set(state['release']['assets']))
+    self.assertFalse(any(name.endswith('.sha256') for name in state['release']['assets']))
+    self.assertNotIn('publish-release', self.operations())
+
   def test_replaced_draft_id_cannot_receive_first_asset_upload(self):
     state = self.read_state()
     state['replace_id_before_first_upload'] = True
@@ -1571,7 +1576,7 @@ class PublishDistributionsTest(unittest.TestCase):
     result = self.run_publisher()
 
     self.assertNotEqual(0, result.returncode)
-    self.assertIn('Archive upload failed', result.stderr)
+    self.assertIn('Primary asset upload failed', result.stderr)
     replacement = self.read_state()['release']
     self.assertEqual(999, replacement['id'])
     self.assertEqual({}, replacement['assets'])
@@ -1851,10 +1856,10 @@ class PublishDistributionsTest(unittest.TestCase):
     self.assertNotEqual(0, result.returncode)
     self.assertEqual([], self.read_log())
 
-  def test_canonical_archive_or_checksum_symlink_is_rejected_before_gh(self):
+  def test_canonical_release_asset_symlink_is_rejected_before_gh(self):
     replacement = self.root / 'replacement'
     replacement.write_bytes(b'replacement')
-    for asset_name in (ARCHIVE_NAMES[0], CHECKSUM_NAMES[0]):
+    for asset_name in (ARCHIVE_NAMES[0], CHECKSUM_NAMES[0], BINARY_JAR_NAME, SOURCES_JAR_NAME):
       with self.subTest(asset_name=asset_name):
         asset_path = self.artifact_directory / asset_name
         asset_path.unlink()
@@ -1864,6 +1869,38 @@ class PublishDistributionsTest(unittest.TestCase):
         self.assertEqual([], self.read_log())
         asset_path.unlink()
         self.create_artifacts()
+
+  def test_invalid_standalone_jcef_jar_fails_before_any_gh_call(self):
+    binary_jar_path = self.artifact_directory / BINARY_JAR_NAME
+    binary_jar_path.write_bytes(b'not the packaged JCEF JAR')
+
+    result = self.run_publisher()
+
+    self.assertNotEqual(0, result.returncode)
+    self.assertIn('including standalone JCEF JAR match', result.stderr)
+    self.assertEqual([], self.read_log())
+
+  def test_invalid_sources_jar_fails_before_any_gh_call(self):
+    sources_jar_path = self.artifact_directory / SOURCES_JAR_NAME
+    sources_jar_path.write_bytes(b'not the canonical sources JAR')
+    before = self.state_path.read_bytes()
+
+    result = self.run_publisher()
+
+    self.assertNotEqual(0, result.returncode)
+    self.assertIn('Sources JAR verification failed', result.stderr)
+    self.assertEqual(before, self.state_path.read_bytes())
+    self.assertEqual([], self.read_log())
+
+    self.create_artifacts()
+    mismatched_snapshot_root = self.root / 'mismatched-source-snapshot'
+    mismatched_source = mismatched_snapshot_root / 'java' / 'org' / 'cef' / 'CefApp.java'
+    mismatched_source.parent.mkdir(parents=True)
+    mismatched_source.write_text('package org.cef;\n', encoding='utf-8')
+    result = self.run_publisher(source_snapshot_root=mismatched_snapshot_root)
+    self.assertNotEqual(0, result.returncode)
+    self.assertIn('Sources JAR verification failed', result.stderr)
+    self.assertEqual([], self.read_log())
 
   def test_wrong_target_name_or_digest_fails_before_gh(self):
     checksum_path = self.artifact_directory / CHECKSUM_NAMES[1]
@@ -1937,6 +1974,10 @@ class PublishDistributionsTest(unittest.TestCase):
     self.assertNotEqual(0, result.returncode)
     self.assertIn('does not exist', result.stderr)
     self.assertEqual([], self.read_log())
+    result = self.run_publisher(source_snapshot_root=self.root / 'missing-source-snapshot')
+    self.assertNotEqual(0, result.returncode)
+    self.assertIn('Source snapshot root does not exist', result.stderr)
+    self.assertEqual([], self.read_log())
     no_gh_bin = self.root / 'no-gh-bin'
     no_gh_bin.mkdir()
     for command_name in ('sha256sum', 'shasum', 'cmp', 'sleep', 'wc', 'tr'):
@@ -1950,6 +1991,12 @@ class PublishDistributionsTest(unittest.TestCase):
         PATH=str(no_gh_bin)))
     self.assertNotEqual(0, result.returncode)
     self.assertIn('gh is required', result.stderr)
+    self.assertEqual([], self.read_log())
+
+  def test_source_snapshot_root_argument_is_required_before_any_gh_call(self):
+    result = subprocess.run([str(PUBLISHER), COMMIT_SHA, str(self.artifact_directory)], check=False, capture_output=True, text=True, env=self.environment())
+    self.assertNotEqual(0, result.returncode)
+    self.assertIn('<source-snapshot-root>', result.stderr)
     self.assertEqual([], self.read_log())
 
 

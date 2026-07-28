@@ -207,12 +207,54 @@ The archive has exactly one canonical target root and is directly usable as
 MCEF's `jcef.path`. The generic sample launchers select JCEF's internal message
 pump; MCEF continues to select and drive its external message pump itself.
 
+## Package Java IDE artifacts
+
+The platform-independent IDE sources JAR contains the production Java sources
+under `java/org/cef`, rooted at `org/cef` inside the archive. Build it with the
+same command used by CI:
+
+```sh
+python3 tools/distrib/sources_jar.py build --repository-root . --output binary_distrib/jcef-mcef-sources.jar
+```
+
+The builder emits deterministic stored ZIP entries and verifies the completed
+JAR before atomically replacing the output. To verify an existing artifact
+against the current checkout without rebuilding it, run:
+
+```sh
+python3 tools/distrib/sources_jar.py verify --repository-root . --archive binary_distrib/jcef-mcef-sources.jar
+```
+
+Verification requires the exact canonical source membership, ordering, paths,
+contents, timestamps, permissions, ZIP encoding, and safety limits. The JAR
+must therefore match the production sources in the repository being verified;
+it is not accepted merely because it is a readable ZIP file.
+
+The helper intentionally requires descriptor-relative, no-follow source-tree
+traversal on Linux, macOS, and other Python platforms that support it, and
+fails closed where that traversal is unavailable. CI builds the JAR on Ubuntu.
+
+The matching `jcef-mcef.jar` is not compiled through a separate, potentially
+divergent build path. After the `linux_amd64` job has compiled, tested, and
+packaged its distribution, CI copies that distribution's exact `jcef.jar`
+bytes under the standalone name and verifies the copy against the fully
+validated `linux_amd64.tar.gz`. Its `Automatic-Module-Name` remains `jcef`.
+The JAR contains the platform-neutral Java API only; running JCEF still
+requires the matching native platform distribution and any applicable JogAmp
+dependencies.
+
 ## Continuous integration
 
 `.github/workflows/build-jcef.yml` builds, tests, packages, checksums, and
-publishes workflow artifacts for all six targets on native GitHub-hosted
-runners. The workflow has read-only repository permissions and never creates
-tags or releases. AppVeyor independently covers `windows_amd64`.
+publishes workflow artifacts through seven independent jobs: six native target
+jobs and one `Java sources` job on Ubuntu. Those jobs produce exactly fourteen
+canonical raw artifacts: one archive and one checksum for each of the six
+targets, plus `jcef-mcef.jar` and `jcef-mcef-sources.jar`. The standalone JARs
+have no checksum sidecars. The binary JAR is the renamed, byte-identical
+`jcef.jar` from the `linux_amd64` distribution; the sources JAR remains separate
+from every platform archive. The workflow has read-only repository permissions
+and never creates tags or releases. AppVeyor independently covers
+`windows_amd64`.
 
 Publishing is a separate maintainer operation. Immutable releases must be
 enabled for the repository, `gh` must be authenticated as a maintainer that can
@@ -228,10 +270,18 @@ Execute the script directly as shown; do not prefix the command with `bash`.
 Its privileged Bash startup prevents caller-controlled startup files and
 exported shell functions from crossing the publication credential boundary.
 
-The publisher accepts only the exact six successful platform jobs and twelve
-canonical, non-expired raw artifacts. It downloads every artifact by ID,
-verifies its GitHub-reported size and SHA-256 digest, checks each archive
-against its checksum sidecar, and then creates the current Latest immutable
-release named `java-cef-<commit-sha>`. No personal token is stored in the repository;
-the tool uses the authenticated `gh` credential store unless `GH_TOKEN` or
+The publisher accepts only the exact seven successful build jobs and fourteen
+canonical, non-expired raw artifacts. It downloads every artifact by ID and
+verifies its GitHub-reported size and SHA-256 digest. It then checks each target
+archive against its checksum sidecar, verifies `jcef-mcef.jar` byte-for-byte
+against the packaged `linux_amd64/jcef.jar`, and verifies the source JAR
+byte-for-byte against a private, read-only snapshot of the production sources
+materialized from the exact validated commit's raw Git tree and blob objects
+by the commit-matched publication tooling. Raw blob reads deliberately bypass
+`export-ignore`, `export-subst`, and mutable local Git attributes. The publisher
+never uses mutable worktree sources as the release-verification baseline. Only
+after all fourteen artifacts pass does it publish the complete
+set together in the current Latest immutable release named
+`java-cef-<commit-sha>`. No personal token is stored in the repository; the
+tool uses the authenticated `gh` credential store unless `GH_TOKEN` or
 `GITHUB_TOKEN` is deliberately supplied for that invocation.

@@ -29,25 +29,55 @@ REPOSITORY_ID = '1077297601'
 WORKFLOW_ID = '319104439'
 GH_TOKEN = 'preferred-gh-token'
 GITHUB_TOKEN = 'fallback-github-token'
-JOB_NAMES = ('Linux x86_64', 'Linux arm64', 'macOS x86_64', 'macOS arm64',
-             'Windows x86_64', 'Windows arm64')
+JOB_NAMES = ('Java sources', 'Linux x86_64', 'Linux arm64', 'macOS x86_64', 'macOS arm64', 'Windows x86_64', 'Windows arm64')
 TARGETS = ('linux_amd64', 'linux_arm64', 'macos_amd64', 'macos_arm64',
            'windows_amd64', 'windows_arm64')
+BINARY_JAR_NAME = 'jcef-mcef.jar'
+SOURCES_JAR_NAME = 'jcef-mcef-sources.jar'
 FAKE_VERIFIER = 'trusted-verifier-from-head\n'
+FAKE_SOURCES_JAR_HELPER = 'trusted-sources-jar-helper-from-head\n'
 
 FAKE_GIT = r'''#!/usr/bin/env python3
+import base64
+import hashlib
 import json
 import os
 from pathlib import Path
 import sys
 
-arguments = sys.argv[1:]
+raw_arguments = sys.argv[1:]
 SENSITIVE_ENVIRONMENT = ('GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN', 'ENV_TOKEN_SOURCE', 'ENV_TOKEN_CONTENT')
+EXPECTED_GIT_ENVIRONMENT = {'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1', 'GIT_OPTIONAL_LOCKS': '0', 'GIT_TERMINAL_PROMPT': '0'}
+TAR_ENVIRONMENT = ('TAR_OPTIONS', 'TAR_READER_OPTIONS', 'TAR_WRITER_OPTIONS', 'TAPE')
+
+def head_blobs():
+  head_root = Path(os.environ['FAKE_HEAD_ROOT'])
+  source_root = head_root / 'java' / 'org' / 'cef'
+  blobs = {}
+  for path in sorted(source_root.rglob('*')):
+    if not path.is_file():
+      continue
+    contents = path.read_bytes()
+    object_id = hashlib.sha1(b'blob ' + str(len(contents)).encode('ascii') + b'\0' + contents).hexdigest()
+    blobs[path.relative_to(head_root).as_posix()] = (object_id, contents)
+  return blobs
+
 sensitive_environment = {name: os.environ.get(name) for name in SENSITIVE_ENVIRONMENT}
+git_environment = {name: value for name, value in os.environ.items() if name.startswith('GIT_')}
+unsafe_environment = sorted(name for name in TAR_ENVIRONMENT if name in os.environ)
+if git_environment != EXPECTED_GIT_ENVIRONMENT:
+  unsafe_environment.append('GIT_ENVIRONMENT_MISMATCH')
 with Path(os.environ['FAKE_GIT_LOG']).open('a', encoding='utf-8') as stream:
-  stream.write(json.dumps({'arguments': arguments, 'gh_token': os.environ.get('GH_TOKEN'), 'github_token': os.environ.get('GITHUB_TOKEN'), 'gh_host': os.environ.get('GH_HOST'), 'sensitive_environment': sensitive_environment}, sort_keys=True) + '\n')
+  stream.write(json.dumps({'arguments': raw_arguments, 'gh_token': os.environ.get('GH_TOKEN'), 'github_token': os.environ.get('GITHUB_TOKEN'), 'gh_host': os.environ.get('GH_HOST'), 'sensitive_environment': sensitive_environment, 'git_environment': git_environment, 'unsafe_environment': unsafe_environment}, sort_keys=True) + '\n')
 with Path(os.environ['FAKE_SUBPROCESS_LOG']).open('a', encoding='utf-8') as stream:
-  stream.write(json.dumps({'tool': 'git', 'gh_token': os.environ.get('GH_TOKEN'), 'github_token': os.environ.get('GITHUB_TOKEN'), 'gh_host': os.environ.get('GH_HOST'), 'sensitive_environment': sensitive_environment}, sort_keys=True) + '\n')
+  stream.write(json.dumps({'tool': 'git', 'gh_token': os.environ.get('GH_TOKEN'), 'github_token': os.environ.get('GITHUB_TOKEN'), 'gh_host': os.environ.get('GH_HOST'), 'sensitive_environment': sensitive_environment, 'unsafe_environment': unsafe_environment}, sort_keys=True) + '\n')
+if unsafe_environment:
+  print('unsafe Git or tar environment reached fake git: {!r}'.format(unsafe_environment), file=sys.stderr)
+  raise SystemExit(86)
+if raw_arguments[:1] != ['--no-replace-objects']:
+  print('fake git did not receive --no-replace-objects first', file=sys.stderr)
+  raise SystemExit(87)
+arguments = raw_arguments[1:]
 if arguments[:1] == ['-C']:
   if Path(arguments[1]).resolve() != Path(os.environ['FAKE_ROOT']).resolve():
     raise SystemExit(89)
@@ -77,6 +107,42 @@ elif arguments[0:1] == ['show'] and ':' in arguments[1]:
 elif arguments[0:1] == ['fetch']:
   if os.environ.get('FAKE_FETCH_FAILURE') == '1':
     raise SystemExit(1)
+elif arguments == ['ls-tree', '-r', '-t', '-z', '-l', '--full-tree', os.environ['FAKE_RUN_SHA'], '--', 'java/org/cef']:
+  if os.environ.get('FAKE_GIT_LS_TREE_FAILURE') == '1':
+    raise SystemExit(1)
+  if os.environ.get('FAKE_GIT_TREE_OVERRIDE'):
+    sys.stdout.buffer.write(base64.b64decode(os.environ['FAKE_GIT_TREE_OVERRIDE'].encode('ascii')))
+    raise SystemExit(0)
+  if os.environ.get('FAKE_GIT_TREE_EXTRA_COUNT'):
+    for index in range(int(os.environ['FAKE_GIT_TREE_EXTRA_COUNT'])):
+      relative_path = 'java/org/cef/non-java/{:05d}.txt'.format(index)
+      object_id = hashlib.sha1(relative_path.encode('utf-8')).hexdigest()
+      sys.stdout.buffer.write('100644 blob {} 0\t{}'.format(object_id, relative_path).encode('utf-8') + b'\0')
+    raise SystemExit(0)
+  if os.environ.get('FAKE_GIT_TREE_PADDING_SIZE'):
+    sys.stdout.buffer.write(b'x' * int(os.environ['FAKE_GIT_TREE_PADDING_SIZE']))
+    raise SystemExit(0)
+  blobs = head_blobs()
+  directories = {'java', 'java/org', 'java/org/cef'}
+  for relative_path in blobs:
+    parent = Path(relative_path).parent
+    while parent.as_posix().startswith('java/org/cef/'):
+      directories.add(parent.as_posix())
+      parent = parent.parent
+  for relative_path in sorted(directories):
+    object_id = hashlib.sha1(('tree:' + relative_path).encode('utf-8')).hexdigest()
+    sys.stdout.buffer.write('040000 tree {} -\t{}'.format(object_id, relative_path).encode('utf-8') + b'\0')
+  for relative_path, (object_id, contents) in blobs.items():
+    sys.stdout.buffer.write('100644 blob {} {}\t{}'.format(object_id, len(contents), relative_path).encode('utf-8') + b'\0')
+elif arguments[0:2] == ['cat-file', 'blob'] and len(arguments) == 3:
+  if os.environ.get('FAKE_GIT_CAT_FILE_FAILURE') == '1':
+    raise SystemExit(1)
+  requested_object_id = arguments[2]
+  for object_id, contents in head_blobs().values():
+    if object_id == requested_object_id:
+      sys.stdout.buffer.write(contents)
+      raise SystemExit(0)
+  raise SystemExit(1)
 elif arguments == ['rev-parse', '--verify', 'HEAD^{commit}']:
   print(os.environ.get('FAKE_HEAD_SHA', os.environ['FAKE_RUN_SHA']))
 elif arguments == ['rev-parse', '--verify', 'refs/remotes/origin/master^{commit}']:
@@ -98,6 +164,10 @@ unsafe_shell_environment = [name for name in os.environ if name in ('BASH_ENV', 
 if unsafe_shell_environment:
   print('unsafe shell environment reached fake gh: {!r}'.format(unsafe_shell_environment), file=sys.stderr)
   raise SystemExit(94)
+unsafe_tool_environment = sorted(name for name in os.environ if name.startswith('GIT_') or name in ('TAR_OPTIONS', 'TAR_READER_OPTIONS', 'TAR_WRITER_OPTIONS', 'TAPE'))
+if unsafe_tool_environment:
+  print('unsafe Git or tar environment reached fake gh: {!r}'.format(unsafe_tool_environment), file=sys.stderr)
+  raise SystemExit(96)
 unexpected_credentials = [name for name in ('GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN', 'ENV_TOKEN_SOURCE', 'ENV_TOKEN_CONTENT') if name in os.environ]
 if unexpected_credentials:
   print('unexpected credentials reached fake gh: {!r}'.format(unexpected_credentials), file=sys.stderr)
@@ -135,6 +205,13 @@ elif endpoint == 'repos/Keksuccino/jcef-mcef/actions/runs/' + state['run_id']:
     verifier = Path(os.environ['FAKE_ROOT']) / 'tools' / 'distrib' / 'verify_distribution_archive.py'
     verifier.write_bytes(base64.b64decode(state['replacement_verifier'].encode('ascii')))
     verifier.chmod(0o644)
+  if state['run_call_count'] == state.get('replace_sources_jar_helper_on_run_call'):
+    helper = Path(os.environ['FAKE_ROOT']) / 'tools' / 'distrib' / 'sources_jar.py'
+    helper.write_bytes(base64.b64decode(state['replacement_sources_jar_helper'].encode('ascii')))
+    helper.chmod(0o644)
+  if state['run_call_count'] == state.get('replace_source_on_run_call'):
+    source = Path(os.environ['FAKE_ROOT']) / 'java' / 'org' / 'cef' / 'CefApp.java'
+    source.write_bytes(base64.b64decode(state['replacement_source'].encode('ascii')))
   Path(os.environ['FAKE_STATE']).write_text(json.dumps(state), encoding='utf-8')
 elif endpoint == 'repos/Keksuccino/jcef-mcef/immutable-releases':
   print(state.get('immutable_output', 'boolean|true'))
@@ -181,7 +258,7 @@ if [ "${FAKE_INSPECT_PUBLISHER_FDS-}" = 1 ]; then
   inspect-publisher-fds "$0"
 fi
 
-if /usr/bin/env | /usr/bin/grep -E '^(BASH_ENV|ENV|SHELLOPTS|BASHOPTS|CDPATH|GLOBIGNORE|BASH_XTRACEFD|PS4|BASH_FUNC_[^=]*)=' >/dev/null; then
+if /usr/bin/env | /usr/bin/grep -E '^(BASH_ENV|ENV|SHELLOPTS|BASHOPTS|CDPATH|GLOBIGNORE|BASH_XTRACEFD|PS4|BASH_FUNC_[^=]*|GIT_[^=]*|TAR_OPTIONS|TAR_READER_OPTIONS|TAR_WRITER_OPTIONS|TAPE)=' >/dev/null; then
   exit 95
 fi
 
@@ -194,6 +271,7 @@ mode_of() {
 }
 
 artifact_directory="$2"
+source_snapshot_root="$3"
 private_root="${artifact_directory%/*}"
 directory_mode="$(mode_of "$artifact_directory")"
 private_root_mode="$(mode_of "$private_root")"
@@ -204,6 +282,23 @@ if [ ! -f "$verifier_path" ] || [ -L "$verifier_path" ] || [ ! -r "$verifier_pat
 fi
 verifier_mode="$(mode_of "$verifier_path")"
 verifier_contents="$(< "$verifier_path")"
+sources_jar_helper_path="${0%/*}/sources_jar.py"
+if [ ! -f "$sources_jar_helper_path" ] || [ -L "$sources_jar_helper_path" ] || [ ! -r "$sources_jar_helper_path" ]; then
+  exit 93
+fi
+sources_jar_helper_mode="$(mode_of "$sources_jar_helper_path")"
+sources_jar_helper_contents="$(< "$sources_jar_helper_path")"
+source_path="${source_snapshot_root}/java/org/cef/CefApp.java"
+source_nested_path="${source_snapshot_root}/java/org/cef/network/CefRequest.java"
+if [ ! -f "$source_path" ] || [ -L "$source_path" ] || [ ! -f "$source_nested_path" ] || [ -L "$source_nested_path" ]; then
+  exit 93
+fi
+source_snapshot_root_mode="$(mode_of "$source_snapshot_root")"
+source_java_mode="$(mode_of "$source_snapshot_root/java")"
+source_cef_mode="$(mode_of "$source_snapshot_root/java/org/cef")"
+source_mode="$(mode_of "$source_path")"
+source_contents="$(< "$source_path")"
+source_nested_contents="$(< "$source_nested_path")"
 shopt -s dotglob nullglob
 artifact_paths=("${artifact_directory}"/*)
 {
@@ -211,12 +306,22 @@ artifact_paths=("${artifact_directory}"/*)
   printf 'sha=%s\n' "$1"
   printf 'script_path=%s\n' "$0"
   printf 'directory=%s\n' "$artifact_directory"
+  printf 'source_snapshot_root=%s\n' "$source_snapshot_root"
   printf 'mode=%s\n' "$directory_mode"
   printf 'private_root_mode=%s\n' "$private_root_mode"
   printf 'script_mode=%s\n' "$script_mode"
   printf 'verifier_path=%s\n' "$verifier_path"
   printf 'verifier_mode=%s\n' "$verifier_mode"
   printf 'verifier_contents=%s\n' "$verifier_contents"
+  printf 'sources_jar_helper_path=%s\n' "$sources_jar_helper_path"
+  printf 'sources_jar_helper_mode=%s\n' "$sources_jar_helper_mode"
+  printf 'sources_jar_helper_contents=%s\n' "$sources_jar_helper_contents"
+  printf 'source_snapshot_root_mode=%s\n' "$source_snapshot_root_mode"
+  printf 'source_java_mode=%s\n' "$source_java_mode"
+  printf 'source_cef_mode=%s\n' "$source_cef_mode"
+  printf 'source_mode=%s\n' "$source_mode"
+  printf 'source_contents=%s\n' "$source_contents"
+  printf 'source_nested_contents=%s\n' "$source_nested_contents"
   printf 'gh_token=%s\n' "$captured_gh_token"
   printf 'github_token=%s\n' "$captured_github_token"
   printf 'gh_host=%s\n' "$captured_gh_host"
@@ -228,7 +333,7 @@ artifact_paths=("${artifact_directory}"/*)
     printf 'file=%s\n' "${artifact_path##*/}"
   done
 } > "$FAKE_PUBLISHER_LOG"
-if [ "$1" != "$FAKE_RUN_SHA" ] || [ "${#artifact_paths[@]}" -ne 12 ] || [ "$verifier_contents" != 'trusted-verifier-from-head' ]; then
+if [ "$1" != "$FAKE_RUN_SHA" ] || [ "${#artifact_paths[@]}" -ne 14 ] || [ "${source_snapshot_root%/*}" != "$private_root" ] || [ "$source_snapshot_root" = "$(cd "$FAKE_ROOT" && pwd -P)" ] || [ "$verifier_contents" != 'trusted-verifier-from-head' ] || [ "$sources_jar_helper_contents" != 'trusted-sources-jar-helper-from-head' ] || [ "$source_contents" != 'trusted-source-from-head' ] || [ "$source_nested_contents" != 'trusted-nested-source-from-head' ]; then
   exit 94
 fi
 '''
@@ -269,16 +374,19 @@ import sys
 
 tool = Path(sys.argv[0]).name
 SENSITIVE_ENVIRONMENT = ('GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN', 'ENV_TOKEN_SOURCE', 'ENV_TOKEN_CONTENT')
-record = {'tool': tool, 'gh_token': os.environ.get('GH_TOKEN'), 'github_token': os.environ.get('GITHUB_TOKEN'), 'gh_host': os.environ.get('GH_HOST'), 'sensitive_environment': {name: os.environ.get(name) for name in SENSITIVE_ENVIRONMENT}}
+unsafe_environment = sorted(name for name in os.environ if name.startswith('GIT_') or name in ('TAR_OPTIONS', 'TAR_READER_OPTIONS', 'TAR_WRITER_OPTIONS', 'TAPE'))
+record = {'tool': tool, 'gh_token': os.environ.get('GH_TOKEN'), 'github_token': os.environ.get('GITHUB_TOKEN'), 'gh_host': os.environ.get('GH_HOST'), 'sensitive_environment': {name: os.environ.get(name) for name in SENSITIVE_ENVIRONMENT}, 'unsafe_environment': unsafe_environment}
 with Path(os.environ['FAKE_SUBPROCESS_LOG']).open('a', encoding='utf-8') as stream:
   stream.write(json.dumps(record, sort_keys=True) + '\n')
+if unsafe_environment:
+  print('unsafe Git or tar environment reached fake {}: {!r}'.format(tool, unsafe_environment), file=sys.stderr)
+  raise SystemExit(97)
 real_path = os.environ['FAKE_REAL_' + tool.upper().replace('-', '_')]
 os.execv(real_path, [real_path] + sys.argv[1:])
 '''
 
 
-@unittest.skipUnless(os.name == 'posix' and Path('/bin/bash').is_file(),
-                     'workflow publisher tests require POSIX /bin/bash')
+@unittest.skipUnless(os.name == 'posix' and Path('/bin/bash').is_file(), 'workflow publisher tests require POSIX /bin/bash')
 class PublishWorkflowRunTest(unittest.TestCase):
 
   def setUp(self):
@@ -308,6 +416,24 @@ class PublishWorkflowRunTest(unittest.TestCase):
     self.head_verifier = self.head_distrib / 'verify_distribution_archive.py'
     self.head_verifier.write_text(FAKE_VERIFIER, encoding='utf-8')
     self.head_verifier.chmod(0o644)
+    self.sources_jar_helper = self.distrib / 'sources_jar.py'
+    self.sources_jar_helper.write_text(FAKE_SOURCES_JAR_HELPER, encoding='utf-8')
+    self.sources_jar_helper.chmod(0o644)
+    self.head_sources_jar_helper = self.head_distrib / 'sources_jar.py'
+    self.head_sources_jar_helper.write_text(FAKE_SOURCES_JAR_HELPER, encoding='utf-8')
+    self.head_sources_jar_helper.chmod(0o644)
+    self.live_source = self.root / 'java' / 'org' / 'cef' / 'CefApp.java'
+    self.live_nested_source = self.root / 'java' / 'org' / 'cef' / 'network' / 'CefRequest.java'
+    self.head_source = self.root / '.head' / 'java' / 'org' / 'cef' / 'CefApp.java'
+    self.head_nested_source = self.root / '.head' / 'java' / 'org' / 'cef' / 'network' / 'CefRequest.java'
+    self.live_source.parent.mkdir(parents=True)
+    self.live_nested_source.parent.mkdir(parents=True)
+    self.head_source.parent.mkdir(parents=True)
+    self.head_nested_source.parent.mkdir(parents=True)
+    self.live_source.write_text('mutable-worktree-source\n', encoding='utf-8')
+    self.live_nested_source.write_text('mutable-worktree-nested-source\n', encoding='utf-8')
+    self.head_source.write_text('trusted-source-from-head\n', encoding='utf-8')
+    self.head_nested_source.write_text('trusted-nested-source-from-head\n', encoding='utf-8')
     self.git_log = self.root / 'git.log'
     self.git_show_count = self.root / 'git-show-count'
     self.gh_log = self.root / 'gh.log'
@@ -321,8 +447,7 @@ class PublishWorkflowRunTest(unittest.TestCase):
     self.write_executable('gh', FAKE_GH)
     self.write_executable('inspect-publisher-fds', FAKE_FD_INSPECTOR)
     self.real_tools = {}
-    for tool in ('chmod', 'cmp', 'dirname', 'mkdir', 'mktemp', 'mv', 'rm',
-                 'stat', 'tr', 'wc'):
+    for tool in ('chmod', 'cmp', 'dirname', 'head', 'mkdir', 'mktemp', 'mv', 'rm', 'stat', 'tr', 'wc'):
       self.write_forwarder(tool)
     if shutil.which('sha256sum'):
       self.write_forwarder('sha256sum')
@@ -388,6 +513,13 @@ class PublishWorkflowRunTest(unittest.TestCase):
         })
         contents[str(artifact_id)] = base64.b64encode(data).decode('ascii')
         artifact_id += 1
+    binary_jar = b'canonical-jcef-mcef-binary-jar'
+    artifacts.append({'id': artifact_id, 'name': BINARY_JAR_NAME, 'size': len(binary_jar), 'digest': 'sha256:' + hashlib.sha256(binary_jar).hexdigest(), 'expired': False, 'run_id': int(RUN_ID), 'repository_id': int(REPOSITORY_ID), 'head_repository_id': int(REPOSITORY_ID), 'head_branch': 'master', 'head_sha': RUN_SHA})
+    contents[str(artifact_id)] = base64.b64encode(binary_jar).decode('ascii')
+    artifact_id += 1
+    sources_jar = b'canonical-jcef-mcef-sources-jar'
+    artifacts.append({'id': artifact_id, 'name': SOURCES_JAR_NAME, 'size': len(sources_jar), 'digest': 'sha256:' + hashlib.sha256(sources_jar).hexdigest(), 'expired': False, 'run_id': int(RUN_ID), 'repository_id': int(REPOSITORY_ID), 'head_repository_id': int(REPOSITORY_ID), 'head_branch': 'master', 'head_sha': RUN_SHA})
+    contents[str(artifact_id)] = base64.b64encode(sources_jar).decode('ascii')
     return {
         'repository_id': REPOSITORY_ID,
         'workflow_id': WORKFLOW_ID,
@@ -497,6 +629,7 @@ class PublishWorkflowRunTest(unittest.TestCase):
       self.assertIsNone(record['github_token'], record)
       self.assertIsNone(record['gh_host'], record)
       self.assertTrue(all(value is None for value in record['sensitive_environment'].values()), record)
+      self.assertEqual([], record['unsafe_environment'], record)
 
   def assert_rejected_before_publisher(self, expected_error=None):
     self.write_state()
@@ -516,14 +649,29 @@ class PublishWorkflowRunTest(unittest.TestCase):
     self.assertEqual('700', record['private_root_mode'])
     self.assertEqual('400', record['script_mode'])
     self.assertEqual('400', record['verifier_mode'])
+    self.assertEqual('400', record['sources_jar_helper_mode'])
     self.assertEqual('trusted-verifier-from-head', record['verifier_contents'])
+    self.assertEqual('trusted-sources-jar-helper-from-head', record['sources_jar_helper_contents'])
+    source_snapshot = Path(record['source_snapshot_root'])
+    private_root = Path(record['script_path']).parent
+    self.assertEqual('source-snapshot', source_snapshot.name)
+    self.assertEqual(private_root, source_snapshot.parent)
+    self.assertNotEqual(self.root.resolve(), source_snapshot)
+    self.assertEqual('trusted-source-from-head', record['source_contents'])
+    self.assertEqual('trusted-nested-source-from-head', record['source_nested_contents'])
+    for mode_name in ('source_snapshot_root_mode', 'source_java_mode', 'source_cef_mode', 'source_mode'):
+      self.assertEqual(0, int(record[mode_name], 8) & 0o222, mode_name)
     self.assertEqual(Path(record['directory']).parent, Path(record['script_path']).parent)
     self.assertEqual(Path(record['script_path']).parent, Path(record['verifier_path']).parent)
+    self.assertEqual(Path(record['script_path']).parent, Path(record['sources_jar_helper_path']).parent)
     self.assertNotEqual(Path(record['directory']), Path(record['script_path']).parent)
     self.assertEqual('publish_distributions.sh', Path(record['script_path']).name)
     self.assertFalse(Path(record['script_path']).exists())
     self.assertEqual('verify_distribution_archive.py', Path(record['verifier_path']).name)
     self.assertFalse(Path(record['verifier_path']).exists())
+    self.assertEqual('sources_jar.py', Path(record['sources_jar_helper_path']).name)
+    self.assertFalse(Path(record['sources_jar_helper_path']).exists())
+    self.assertFalse(source_snapshot.exists())
     self.assertEqual(
         sorted(artifact['name']
                for artifact in self.state['artifacts']), record['files'])
@@ -555,6 +703,9 @@ class PublishWorkflowRunTest(unittest.TestCase):
     ]
     self.assertEqual(2,
                      sum(1 for arguments in git_calls if 'fetch' in arguments))
+    self.assertEqual(1, sum(1 for arguments in git_calls if arguments[3:] == ['ls-tree', '-r', '-t', '-z', '-l', '--full-tree', RUN_SHA, '--', 'java/org/cef']))
+    self.assertEqual(2, sum(1 for arguments in git_calls if arguments[3:5] == ['cat-file', 'blob']))
+    self.assertFalse(any('archive' in arguments[3:] for arguments in git_calls))
 
   def assert_explicit_credential_flow(self, environment, expected_token):
     result = self.run_wrapper(environment=environment)
@@ -591,6 +742,27 @@ class PublishWorkflowRunTest(unittest.TestCase):
     self.assertFalse(self.gh_log.exists())
     self.assertFalse(self.subprocess_log.exists())
     self.assertFalse(self.publisher_log.exists())
+
+  def test_git_and_archive_environment_cannot_redirect_source_snapshot(self):
+    hostile_environment = {'GIT_DIR': str(self.root / 'attacker-git-dir'), 'GIT_WORK_TREE': str(self.root / 'attacker-work-tree'), 'GIT_COMMON_DIR': str(self.root / 'attacker-common-dir'), 'GIT_INDEX_FILE': str(self.root / 'attacker-index'), 'GIT_OBJECT_DIRECTORY': str(self.root / 'attacker-objects'), 'GIT_ALTERNATE_OBJECT_DIRECTORIES': str(self.root / 'attacker-alternates'), 'GIT_ATTR_SOURCE': 'deadbeef', 'GIT_REPLACE_REF_BASE': 'refs/attacker/replace/', 'GIT_EXEC_PATH': str(self.root / 'attacker-git-exec'), 'GIT_SSL_NO_VERIFY': '1', 'GIT_CONFIG_GLOBAL': str(self.root / 'attacker-gitconfig'), 'GIT_CONFIG_NOSYSTEM': '0', 'GIT_CONFIG_COUNT': '1', 'GIT_CONFIG_KEY_0': 'core.fsmonitor', 'GIT_CONFIG_VALUE_0': 'attacker-command', 'GIT_OPTIONAL_LOCKS': '1', 'GIT_TERMINAL_PROMPT': '1', 'TAR_OPTIONS': '--to-command=/usr/bin/false', 'TAR_READER_OPTIONS': 'attacker-reader-options', 'TAR_WRITER_OPTIONS': 'attacker-writer-options', 'TAPE': str(self.root / 'attacker-tape')}
+    result = self.run_wrapper(environment=self.environment(**hostile_environment))
+    self.assertEqual(0, result.returncode, result.stderr)
+    self.assertEqual('trusted-source-from-head', self.publisher_record()['source_contents'])
+    self.assert_no_credentials_in_non_gh_subprocesses()
+
+  def test_mutable_git_attributes_cannot_redefine_the_head_source_snapshot(self):
+    attributes = self.root / '.git' / 'info' / 'attributes'
+    attributes.parent.mkdir(parents=True)
+    attributes.write_text('java/org/cef/CefApp.java export-ignore\njava/org/cef/network/CefRequest.java export-subst\n', encoding='utf-8')
+    result = self.run_wrapper()
+    self.assertEqual(0, result.returncode, result.stderr)
+    record = self.publisher_record()
+    self.assertEqual('trusted-source-from-head', record['source_contents'])
+    self.assertEqual('trusted-nested-source-from-head', record['source_nested_contents'])
+    git_calls = [json.loads(line)['arguments'] for line in self.git_log.read_text(encoding='utf-8').splitlines()]
+    self.assertTrue(any(arguments[3:4] == ['ls-tree'] for arguments in git_calls))
+    self.assertTrue(any(arguments[3:5] == ['cat-file', 'blob'] for arguments in git_calls))
+    self.assertFalse(any('archive' in arguments[3:] for arguments in git_calls))
 
   def test_privileged_startup_blocks_bash_env_and_exported_gh_function(self):
     bash_environment = self.root / 'malicious-bash-env'
@@ -683,6 +855,85 @@ class PublishWorkflowRunTest(unittest.TestCase):
     self.assertEqual('trusted-verifier-from-head', record['verifier_contents'])
     self.assertEqual(replacement, self.verifier.read_bytes())
 
+  def test_worktree_sources_jar_helper_replacement_after_final_check_cannot_change_head_copy(self):
+    replacement = b'worktree-sources-jar-helper-replacement\n'
+    self.state['replace_sources_jar_helper_on_run_call'] = 2
+    self.state['replacement_sources_jar_helper'] = base64.b64encode(replacement).decode('ascii')
+    self.write_state()
+    result = self.run_wrapper()
+    self.assertEqual(0, result.returncode, result.stderr)
+    record = self.publisher_record()
+    self.assertEqual('trusted-sources-jar-helper-from-head', record['sources_jar_helper_contents'])
+    self.assertEqual(replacement, self.sources_jar_helper.read_bytes())
+
+  def test_worktree_source_replacement_after_final_check_cannot_change_head_snapshot(self):
+    replacement = b'concurrent-worktree-source-replacement\n'
+    self.state['replace_source_on_run_call'] = 2
+    self.state['replacement_source'] = base64.b64encode(replacement).decode('ascii')
+    self.write_state()
+    result = self.run_wrapper()
+    self.assertEqual(0, result.returncode, result.stderr)
+    record = self.publisher_record()
+    self.assertEqual('trusted-source-from-head', record['source_contents'])
+    self.assertEqual(replacement, self.live_source.read_bytes())
+    self.assertFalse(Path(record['source_snapshot_root']).exists())
+
+  def test_source_snapshot_enumeration_or_blob_failure_is_cleaned_before_publisher(self):
+    for failure_variable in ('FAKE_GIT_LS_TREE_FAILURE', 'FAKE_GIT_CAT_FILE_FAILURE'):
+      with self.subTest(failure_variable=failure_variable):
+        self.state = self.canonical_state()
+        self.write_state()
+        for path in (self.git_log, self.gh_log, self.subprocess_log, self.publisher_log):
+          if path.exists():
+            path.unlink()
+        result = self.run_wrapper(environment=self.environment(**{failure_variable: '1'}))
+        self.assertNotEqual(0, result.returncode)
+        expected_error = 'Unable to enumerate java/org/cef' if failure_variable == 'FAKE_GIT_LS_TREE_FAILURE' else 'Unable to materialize source blob'
+        self.assertIn(expected_error, result.stderr)
+        self.assertFalse(self.publisher_log.exists())
+        self.assertEqual([], list(self.temp_root.iterdir()))
+
+  def test_source_snapshot_rejects_unbounded_or_noncanonical_git_tree_metadata(self):
+    object_id = '1' * 40
+    deep_path = 'java/org/cef/' + '/'.join('d{}'.format(index) for index in range(33))
+    long_path = 'java/org/cef/' + ('é' * 510) + '.java'
+    cases = (
+        ('nonregular', '120000 blob {} 6\tjava/org/cef/Link.java\0'.format(object_id).encode('utf-8'), 'non-regular entry'),
+        ('oversized-source', '100644 blob {} 4194305\tjava/org/cef/Huge.java\0'.format(object_id).encode('utf-8'), 'count or file-size limit'),
+        ('deep-path', '040000 tree {} -\t{}\0'.format(object_id, deep_path).encode('utf-8'), 'path exceeds its limits'),
+        ('long-utf8-path', '100644 blob {} 0\t{}\0'.format(object_id, long_path).encode('utf-8'), 'path exceeds its limits'),
+        ('oversized-size-field', '100644 blob {} 99999999999999999\tjava/org/cef/Huge.java\0'.format(object_id).encode('utf-8'), 'non-regular entry'),
+    )
+    for name, tree_bytes, expected_error in cases:
+      with self.subTest(name=name):
+        self.state = self.canonical_state()
+        self.write_state()
+        for path in (self.git_log, self.gh_log, self.subprocess_log, self.publisher_log):
+          if path.exists():
+            path.unlink()
+        encoded_tree = base64.b64encode(tree_bytes).decode('ascii')
+        result = self.run_wrapper(environment=self.environment(FAKE_GIT_TREE_OVERRIDE=encoded_tree))
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn(expected_error, result.stderr)
+        self.assertFalse(self.publisher_log.exists())
+        self.assertEqual([], list(self.temp_root.iterdir()))
+
+    self.state = self.canonical_state()
+    self.write_state()
+    result = self.run_wrapper(environment=self.environment(FAKE_GIT_TREE_EXTRA_COUNT='8193'))
+    self.assertNotEqual(0, result.returncode)
+    self.assertIn('entry-count limit', result.stderr)
+    self.assertFalse(self.publisher_log.exists())
+    self.assertEqual([], list(self.temp_root.iterdir()))
+
+    self.state = self.canonical_state()
+    self.write_state()
+    result = self.run_wrapper(environment=self.environment(FAKE_GIT_TREE_PADDING_SIZE=str(16 * 1024 * 1024 + 2)))
+    self.assertNotEqual(0, result.returncode)
+    self.assertRegex(result.stderr, 'Unable to enumerate java/org/cef|metadata exceeds its size limit')
+    self.assertFalse(self.publisher_log.exists())
+    self.assertEqual([], list(self.temp_root.iterdir()))
+
   def test_invalid_run_id_fails_before_git_or_github(self):
     for run_id in ('', '0', '-1', '1.0', 'abc', ' 1', '1\n2'):
       with self.subTest(run_id=repr(run_id)):
@@ -697,27 +948,25 @@ class PublishWorkflowRunTest(unittest.TestCase):
         self.assertFalse(self.subprocess_log.exists())
         self.assertFalse(self.publisher_log.exists())
 
+  def test_missing_sources_jar_helper_fails_before_github_or_publisher(self):
+    self.sources_jar_helper.unlink()
+    result = self.run_wrapper()
+    self.assertNotEqual(0, result.returncode)
+    self.assertIn('tools/distrib/sources_jar.py', result.stderr)
+    self.assertFalse(self.gh_log.exists())
+    self.assertFalse(self.publisher_log.exists())
+
+  def test_missing_mkdir_fails_before_git_github_or_publisher(self):
+    (self.fake_bin / 'mkdir').unlink()
+    result = self.run_wrapper(environment=self.environment(PATH=str(self.fake_bin)))
+    self.assertNotEqual(0, result.returncode)
+    self.assertIn('mkdir', result.stderr)
+    self.assertFalse(self.git_log.exists())
+    self.assertFalse(self.gh_log.exists())
+    self.assertFalse(self.publisher_log.exists())
+
   def test_checkout_and_run_identity_fail_closed(self):
-    cases = (({
-        'FAKE_ORIGIN_URL': 'https://github.com/attacker/repo.git'
-    }, None), ({
-        'FAKE_HEAD_SHA': '8' * 40
-    }, None), ({
-        'FAKE_ORIGIN_SHA': '8' * 40
-    }, None), ({
-        'FAKE_FETCH_FAILURE': '1'
-    }, None), ({
-        'FAKE_DIRTY_PATH': 'tools/distrib/publish_distributions.sh'
-    }, None), ({
-        'FAKE_DIRTY_PATH': 'tools/distrib/verify_distribution_archive.py'
-    }, None), ({
-        'FAKE_HEAD_BLOB_MISMATCH': 'tools/distrib/publish_workflow_run.sh'
-    }, None), ({
-        'FAKE_HEAD_BLOB_MISMATCH':
-            'tools/distrib/verify_distribution_archive.py'
-    }, None), ({
-        'FAKE_HEAD_SHOW_MISMATCH_CALL': '4'
-    }, None), ({}, 'invalid'), ({}, RUN_SHA + '|0'), ({}, '8' * 40 + '|1'),)
+    cases = (({'FAKE_ORIGIN_URL': 'https://github.com/attacker/repo.git'}, None), ({'FAKE_HEAD_SHA': '8' * 40}, None), ({'FAKE_ORIGIN_SHA': '8' * 40}, None), ({'FAKE_FETCH_FAILURE': '1'}, None), ({'FAKE_DIRTY_PATH': 'tools/distrib/publish_distributions.sh'}, None), ({'FAKE_DIRTY_PATH': 'tools/distrib/verify_distribution_archive.py'}, None), ({'FAKE_DIRTY_PATH': 'tools/distrib/sources_jar.py'}, None), ({'FAKE_HEAD_BLOB_MISMATCH': 'tools/distrib/publish_workflow_run.sh'}, None), ({'FAKE_HEAD_BLOB_MISMATCH': 'tools/distrib/verify_distribution_archive.py'}, None), ({'FAKE_HEAD_BLOB_MISMATCH': 'tools/distrib/sources_jar.py'}, None), ({'FAKE_HEAD_SHOW_MISMATCH_CALL': '4'}, None), ({}, 'invalid'), ({}, RUN_SHA + '|0'), ({}, '8' * 40 + '|1'),)
     for environment_updates, run_output in cases:
       with self.subTest(
           environment_updates=environment_updates, run_output=run_output):
@@ -756,6 +1005,14 @@ class PublishWorkflowRunTest(unittest.TestCase):
         mutation(self.state)
         self.assert_rejected_before_publisher()
 
+  def test_java_sources_job_is_required_and_must_succeed(self):
+    mutations = (lambda state: state['jobs'].pop(0), lambda state: state['jobs'][0].update(name='Other sources'), lambda state: state['jobs'][0].update(conclusion='failure'),)
+    for mutation in mutations:
+      with self.subTest(mutation=mutation):
+        self.state = self.canonical_state()
+        mutation(self.state)
+        self.assert_rejected_before_publisher()
+
   def test_artifact_set_rejects_malicious_duplicate_expired_and_mismatched_metadata(
       self):
     mutations = (
@@ -774,6 +1031,22 @@ class PublishWorkflowRunTest(unittest.TestCase):
         lambda state: state['artifacts'][1].update(head_branch='other'),
         lambda state: state['artifacts'][1].update(head_sha='8' * 40),
     )
+    for mutation in mutations:
+      with self.subTest(mutation=mutation):
+        self.state = self.canonical_state()
+        mutation(self.state)
+        self.assert_rejected_before_publisher()
+
+  def test_sources_jar_artifact_is_exact_and_fail_closed(self):
+    mutations = (lambda state: state['artifacts'].pop(), lambda state: state['artifacts'][-1].update(name='sources.jar'), lambda state: state['artifacts'][-1].update(expired=True), lambda state: state['artifacts'][-1].update(digest='sha256:' + '8' * 64), lambda state: state['artifacts'][-1].update(head_sha='8' * 40),)
+    for mutation in mutations:
+      with self.subTest(mutation=mutation):
+        self.state = self.canonical_state()
+        mutation(self.state)
+        self.assert_rejected_before_publisher()
+
+  def test_binary_jar_artifact_is_exact_and_fail_closed(self):
+    mutations = (lambda state: state['artifacts'].pop(-2), lambda state: state['artifacts'][-2].update(name='jcef.jar'), lambda state: state['artifacts'][-2].update(expired=True), lambda state: state['artifacts'][-2].update(digest='sha256:' + '8' * 64), lambda state: state['artifacts'][-2].update(head_sha='8' * 40),)
     for mutation in mutations:
       with self.subTest(mutation=mutation):
         self.state = self.canonical_state()

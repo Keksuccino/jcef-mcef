@@ -13,6 +13,26 @@ permissions:
   contents: read
 
 jobs:
+  sources:
+    name: Java sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Set up Python 3.12.10
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12.10'
+          architecture: x64
+      - name: Build Java sources JAR
+        run: python3 tools/distrib/sources_jar.py build --repository-root . --output binary_distrib/jcef-mcef-sources.jar
+      - name: Publish Java sources workflow artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: binary_distrib/jcef-mcef-sources.jar
+          archive: false
+          if-no-files-found: error
+
   linux:
     name: Linux ${{ matrix.architecture }}
     timeout-minutes: 120
@@ -94,6 +114,11 @@ jobs:
           tools/make_distrib.sh '${{ matrix.target }}'
           cd binary_distrib
           sha256sum --check '${{ matrix.target }}.tar.gz.sha256'
+      - name: Stage canonical standalone Java binary JAR
+        if: matrix.target == 'linux_amd64'
+        run: |
+          cp -- binary_distrib/linux_amd64/jcef.jar binary_distrib/jcef-mcef.jar
+          python3 tools/distrib/verify_distribution_archive.py --target linux_amd64 --archive binary_distrib/linux_amd64.tar.gz --java-cef-commit '${{ github.sha }}' --standalone-jcef-jar binary_distrib/jcef-mcef.jar
       - name: Publish tar.gz workflow artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -104,6 +129,13 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           path: binary_distrib/${{ matrix.target }}.tar.gz.sha256
+          archive: false
+          if-no-files-found: error
+      - name: Publish standalone Java binary workflow artifact
+        if: matrix.target == 'linux_amd64'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: binary_distrib/jcef-mcef.jar
           archive: false
           if-no-files-found: error
 

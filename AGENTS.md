@@ -49,8 +49,3 @@
 - Report the exact commands and platform/architecture, plus the number of discovered suites/tests and the passed, failed, errored, and skipped totals.
 - You can add temporary testing code to the simple or detailed JCEF sample for feedback from a running CEF process. Make sure to remove that testing code after.
 - You always TRIPLE-CHECK EVERYTHING! When you are finishing a task, you triple-check everything for completeness, possible bad implementations, rushed implementations, performance, optimization, structurization, and so on. For native/JNI work, also check signature consistency, ownership, threading, platform guards, and accidental generated files.
-
-## Subagents
-- Always spawn ALL your subagents with the gpt-5.6 (Sol) model on "max" reasoning effort.
-- Always spawn ALL your subagents with a CLEAN context (do not give them your context), so they have a clean context for doing their task in the best possible way.
-- Since you spawn subagents without context, make sure to properly explain everything important to them, because they do not have your memories.

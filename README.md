@@ -2,11 +2,7 @@
 
 This is a modified version of JCEF for use with the "Rinku" Minecraft mod. It preserves Rinku's headless, externally driven off-screen rendering integration while tracking the upstream JCEF APIs and native implementation.
 
-This revision is pinned to CEF
-`151.2.3+g89cd581+chromium-151.0.7922.34` with stable API version `15100` and
-targets Java 17 exactly. Its supported publication targets are
-`linux_amd64`, `linux_arm64`, `macos_amd64`, `macos_arm64`,
-`windows_amd64`, and `windows_arm64`.
+This revision is pinned to CEF `151.2.3+g89cd581+chromium-151.0.7922.34` with stable API version `15100` and targets Java 17 exactly. Its supported publication targets are `linux_amd64`, `linux_arm64`, `macos_amd64`, `macos_arm64`, `windows_amd64`, and `windows_arm64`.
 
 The Java Chromium Embedded Framework (JCEF) is a simple framework for embedding Chromium-based browsers in other applications using the Java programming language.
 

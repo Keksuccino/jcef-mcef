@@ -1,8 +1,6 @@
-# MCEF java-cef
+# JCEF for Rinku
 
-This is a modified version of JCEF for use with MCEF. It preserves MCEF's
-headless, externally driven off-screen rendering integration while tracking the
-upstream JCEF APIs and native implementation.
+This is a modified version of JCEF for use with the "Rinku" Minecraft mod. It preserves Rinku's headless, externally driven off-screen rendering integration while tracking the upstream JCEF APIs and native implementation.
 
 This revision is pinned to CEF
 `151.2.3+g89cd581+chromium-151.0.7922.34` with stable API version `15100` and
@@ -14,7 +12,7 @@ The Java Chromium Embedded Framework (JCEF) is a simple framework for embedding 
 
 # Quick Links
 
-* [Building this MCEF JCEF fork](docs/branches_and_building.md)
+* [Building this Rinku JCEF fork](docs/branches_and_building.md)
 * Support Forum - http://magpcss.org/ceforum/viewforum.php?f=17
 * Issue Tracker - https://github.com/chromiumembedded/java-cef/issues
 * Downloads - https://github.com/jcefmaven/jcefbuild
@@ -36,9 +34,9 @@ This project provides a Java Wrapper for CEF (JCEF).
 
 # Building JCEF
 
-The JCEF project extends the [Chromium Embedded Framework](https://github.com/chromiumembedded/cef). This fork downloads and verifies the exact matching CEF 151 archive for the selected 64-bit target, builds with JDK 17, and creates a validated MCEF-compatible distribution. Keep the native build directory named `jcef_build`; repository launch, test, and packaging tools depend on that convention. See [Branches and building](docs/branches_and_building.md) for prerequisites and commands for all six targets.
+The JCEF project extends the [Chromium Embedded Framework](https://github.com/chromiumembedded/cef). This fork downloads and verifies the exact matching CEF 151 archive for the selected 64-bit target, builds with JDK 17, and creates a validated Rinku-compatible distribution. Keep the native build directory named `jcef_build`; repository launch, test, and packaging tools depend on that convention. See [Branches and building](docs/branches_and_building.md) for prerequisites and commands for all six targets.
 
-Every newly published `java-cef-<commit>` release also provides the matching IDE pair `jcef-mcef.jar` and `jcef-mcef-sources.jar`. The binary JAR is the platform-neutral Java API taken byte-for-byte from the verified `linux_amd64` distribution, while the sources JAR contains only the production sources under IDE-compatible `org/cef/...` paths. The binary JAR still requires the matching platform distribution at runtime, plus the included JogAmp dependencies when JOGL-backed APIs are used.
+Every newly published `java-cef-<commit>` release also provides the matching IDE pair `jcef-Rinku.jar` and `jcef-Rinku-sources.jar`. The binary JAR is the platform-neutral Java API taken byte-for-byte from the verified `linux_amd64` distribution, while the sources JAR contains only the production sources under IDE-compatible `org/cef/...` paths. The binary JAR still requires the matching platform distribution at runtime, plus the included JogAmp dependencies when JOGL-backed APIs are used.
 
 # Helping Out
 

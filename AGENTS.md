@@ -35,7 +35,6 @@
 - Always implement everything in the best way possible. Implement everything in the most optimized, performance-friendly, and professional way, following best practices for everything.
 - Never rush tasks. It doesn't matter how long a task will take, you always take the best possible route instead of the fastest.
 - Always clean up after yourself! When finishing a task, remove leftover code from testing, code from earlier unsuccessful implementation attempts, and dead code.
-- ALWAYS move most of the actual work to subagents. You just orchestrate your subagents as main agent. You keep and eye on them in case they do something stupid, so you can steer them back on the right path, or correct their mistakes, if needed. Make sure to move as much work as possible to subagents.
 
 ## Autonomous Testing
 - After making changes, always compile/build every affected Java and native target to identify and fix compile errors.
@@ -52,5 +51,6 @@
 - You always TRIPLE-CHECK EVERYTHING! When you are finishing a task, you triple-check everything for completeness, possible bad implementations, rushed implementations, performance, optimization, structurization, and so on. For native/JNI work, also check signature consistency, ownership, threading, platform guards, and accidental generated files.
 
 ## Subagents
-- Always spawn ALL your subagents with the gpt-5.6 model on "max" reasoning effort.
+- Always spawn ALL your subagents with the gpt-5.6 (Sol) model on "max" reasoning effort.
 - Always spawn ALL your subagents with a CLEAN context (do not give them your context), so they have a clean context for doing their task in the best possible way.
+- Since you spawn subagents without context, make sure to properly explain everything important to them, because they do not have your memories.

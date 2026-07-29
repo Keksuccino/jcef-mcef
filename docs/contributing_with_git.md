@@ -26,23 +26,23 @@ The JCEF project uses the Git source code management system hosted via GitHub. T
 
 Git can maintain your changes both locally and on a remote server. To work with Git efficiently the remote server locations must be configured properly.
 
-1\. Log into GitHub and create a forked version of the java-cef repository using the Fork button at <https://github.com/chromiumembedded/java-cef>.
+1\. Log into GitHub and create a forked version of the Rinku JCEF repository using the Fork button at <https://github.com/Keksuccino/jcef-rinku>.
 
 2\. Check out JCEF source code as described on the [Branches And Building](branches_and_building.md) page.
 
 3\. Change the remote origin of the JCEF checkout so that it points to your personal forked repository. This is the remote server location that the `git push` and `git pull` commands will operate on by default.
 
 ```sh
-cd /path/to/java-cef
+cd /path/to/jcef-rinku
 
 # Replace <UserName> with your GitHub user name.
-git remote set-url origin https://github.com/<UserName>/java-cef.git
+git remote set-url origin https://github.com/<UserName>/jcef-rinku.git
 ```
 
 4\. Set the remote upstream of the JCEF checkout so that you can merge changes from the main JCEF repository.
 
 ```sh
-git remote add upstream https://github.com/chromiumembedded/java-cef.git
+git remote add upstream https://github.com/Keksuccino/jcef-rinku.git
 ```
 
 5\. Verify that the remotes are configured correctly.
@@ -54,10 +54,10 @@ git remote -v
 You should see output like the following:
 
 ```
-origin    https://github.com/<UserName>/java-cef.git (fetch)
-origin    https://github.com/<UserName>/java-cef.git (push)
-upstream    https://github.com/chromiumembedded/java-cef.git (fetch)
-upstream    https://github.com/chromiumembedded/java-cef.git (push)
+origin    https://github.com/<UserName>/jcef-rinku.git (fetch)
+origin    https://github.com/<UserName>/jcef-rinku.git (push)
+upstream    https://github.com/Keksuccino/jcef-rinku.git (fetch)
+upstream    https://github.com/Keksuccino/jcef-rinku.git (push)
 ```
 
 6\. Configure your name and email address.
@@ -202,7 +202,7 @@ Once your personal changes are complete you can request that they be merged into
 
 * Rebase your changes on the upstream JCEF branch (see "Rebasing on Upstream Changes").
 * Fix any coding style issues (see "Coding Style").
-* Find or create an appropriate issue in the [JCEF issue tracker](https://github.com/chromiumembedded/java-cef/issues). Make sure the issue number is referenced in your commit description.
+* Find or create an appropriate issue in the [Rinku JCEF issue tracker](https://github.com/Keksuccino/jcef-rinku/issues). Make sure the issue number is referenced in your commit description.
 * Include new or modified unit tests as appropriate to the functionality.
 * Remove unnecessary or unrelated changes.
 
@@ -227,7 +227,7 @@ The contents of a pull request can also be downloaded as a patch file and applie
 
 ```sh
 # Download the patch file (replace {pull_no} with the PR number).
-curl -L https://github.com/chromiumembedded/java-cef/pull/{pull_no}.diff -o name.patch
+curl -L https://github.com/Keksuccino/jcef-rinku/pull/{pull_no}.diff -o name.patch
 
 # Apply the patch file to your local Git checkout.
 git apply name.patch

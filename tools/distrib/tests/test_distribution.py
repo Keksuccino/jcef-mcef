@@ -20,8 +20,8 @@ sys.path.insert(0, str(DISTRIB_ROOT))
 
 from distribution import CEF_ARCHIVE_SHA1, CEF_VERSION, DistributionError  # noqa: E402
 from distribution import JCEF_RUNTIME_FILES, TARGETS  # noqa: E402
-from distribution import MCEF_DEFAULT_MAX_ARCHIVE_BYTES  # noqa: E402
-from distribution import MCEF_DEFAULT_MAX_EXTRACTED_BYTES  # noqa: E402
+from distribution import RINKU_DEFAULT_MAX_ARCHIVE_BYTES  # noqa: E402
+from distribution import RINKU_DEFAULT_MAX_EXTRACTED_BYTES  # noqa: E402
 from distribution import cef_runtime_manifest, jogamp_jars  # noqa: E402
 from distribution import mac_runtime_requirements, resolve_target  # noqa: E402
 from distribution import validate_archive, validate_jar_class_version  # noqa: E402
@@ -145,7 +145,7 @@ class Cef151ManifestTest(unittest.TestCase):
         validate_runtime(
             runtime_root, self.cef_root, target, check_architecture=False)
 
-  def test_flat_macos_requirements_match_mcef_archive_layout(self):
+  def test_flat_macos_requirements_match_rinku_archive_layout(self):
     requirements = mac_runtime_requirements(TARGETS['macos_arm64'], 'flat')
     self.assertTrue(all('/Versions/' not in path for path in requirements))
     self.assertIn('jcef_app.app/Contents/Info.plist', requirements)
@@ -306,7 +306,7 @@ class ArchiveAndJavaTest(unittest.TestCase):
         archive.add(str(distribution), arcname=target.name)
       validate_archive(archive_path, target, ('libjcef.so',))
 
-  def test_archive_links_fail_for_mcef_compatibility(self):
+  def test_archive_links_fail_for_rinku_compatibility(self):
     target = TARGETS['macos_arm64']
     for link_type in (tarfile.SYMTYPE, tarfile.LNKTYPE):
       with self.subTest(link_type=link_type):
@@ -335,9 +335,9 @@ class ArchiveAndJavaTest(unittest.TestCase):
       with self.assertRaisesRegex(DistributionError, 'outside'):
         validate_archive(archive_path, target, ())
 
-  def test_archive_enforces_exact_mcef_default_size_limits(self):
-    self.assertEqual(750 * 1024 * 1024, MCEF_DEFAULT_MAX_ARCHIVE_BYTES)
-    self.assertEqual(2_000 * 1024 * 1024, MCEF_DEFAULT_MAX_EXTRACTED_BYTES)
+  def test_archive_enforces_exact_rinku_default_size_limits(self):
+    self.assertEqual(750 * 1024 * 1024, RINKU_DEFAULT_MAX_ARCHIVE_BYTES)
+    self.assertEqual(2_000 * 1024 * 1024, RINKU_DEFAULT_MAX_EXTRACTED_BYTES)
     target = TARGETS['linux_amd64']
     with tempfile.TemporaryDirectory() as temporary_directory:
       archive_path = Path(temporary_directory) / 'limits.tar.gz'

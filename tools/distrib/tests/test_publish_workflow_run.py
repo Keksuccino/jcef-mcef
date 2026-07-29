@@ -32,8 +32,8 @@ GITHUB_TOKEN = 'fallback-github-token'
 JOB_NAMES = ('Java sources', 'Linux x86_64', 'Linux arm64', 'macOS x86_64', 'macOS arm64', 'Windows x86_64', 'Windows arm64')
 TARGETS = ('linux_amd64', 'linux_arm64', 'macos_amd64', 'macos_arm64',
            'windows_amd64', 'windows_arm64')
-BINARY_JAR_NAME = 'jcef-mcef.jar'
-SOURCES_JAR_NAME = 'jcef-mcef-sources.jar'
+BINARY_JAR_NAME = 'jcef-rinku.jar'
+SOURCES_JAR_NAME = 'jcef-rinku-sources.jar'
 FAKE_VERIFIER = 'trusted-verifier-from-head\n'
 FAKE_SOURCES_JAR_HELPER = 'trusted-sources-jar-helper-from-head\n'
 
@@ -85,7 +85,7 @@ if arguments[:1] == ['-C']:
 if arguments == ['rev-parse', '--show-toplevel']:
   print(Path(os.environ['FAKE_ROOT']).resolve())
 elif arguments == ['remote', 'get-url', 'origin']:
-  print(os.environ.get('FAKE_ORIGIN_URL', 'https://github.com/Keksuccino/jcef-mcef.git'))
+  print(os.environ.get('FAKE_ORIGIN_URL', 'https://github.com/Keksuccino/jcef-rinku.git'))
 elif arguments[:2] == ['ls-files', '--error-unmatch']:
   raise SystemExit(0)
 elif arguments[:3] == ['diff', '--quiet', 'HEAD']:
@@ -188,11 +188,11 @@ record = {'arguments': arguments, 'endpoint': endpoint, 'github_token': os.envir
 with Path(os.environ['FAKE_GH_LOG']).open('a', encoding='utf-8') as stream:
   stream.write(json.dumps(record, sort_keys=True) + '\n')
 state = json.loads(Path(os.environ['FAKE_STATE']).read_text(encoding='utf-8'))
-if endpoint == 'repos/Keksuccino/jcef-mcef':
+if endpoint == 'repos/Keksuccino/jcef-rinku':
   print(state.get('repository_output', state['repository_id']))
-elif endpoint == 'repos/Keksuccino/jcef-mcef/actions/workflows/build-jcef.yml':
+elif endpoint == 'repos/Keksuccino/jcef-rinku/actions/workflows/build-jcef.yml':
   print(state.get('workflow_output', state['workflow_id']))
-elif endpoint == 'repos/Keksuccino/jcef-mcef/actions/runs/' + state['run_id']:
+elif endpoint == 'repos/Keksuccino/jcef-rinku/actions/runs/' + state['run_id']:
   outputs = state.get('run_outputs', [state['run_sha'] + '|' + state['run_attempt']])
   index = min(state.get('run_call_count', 0), len(outputs) - 1)
   print(outputs[index])
@@ -213,24 +213,24 @@ elif endpoint == 'repos/Keksuccino/jcef-mcef/actions/runs/' + state['run_id']:
     source = Path(os.environ['FAKE_ROOT']) / 'java' / 'org' / 'cef' / 'CefApp.java'
     source.write_bytes(base64.b64decode(state['replacement_source'].encode('ascii')))
   Path(os.environ['FAKE_STATE']).write_text(json.dumps(state), encoding='utf-8')
-elif endpoint == 'repos/Keksuccino/jcef-mcef/immutable-releases':
+elif endpoint == 'repos/Keksuccino/jcef-rinku/immutable-releases':
   print(state.get('immutable_output', 'boolean|true'))
 elif endpoint == 'user':
   print(state.get('login_output', 'Keksuccino'))
-elif endpoint == 'repos/Keksuccino/jcef-mcef/actions/runs/' + state['run_id'] + '/attempts/' + state['run_attempt'] + '/jobs?per_page=100':
+elif endpoint == 'repos/Keksuccino/jcef-rinku/actions/runs/' + state['run_id'] + '/attempts/' + state['run_attempt'] + '/jobs?per_page=100':
   print('meta|' + str(state.get('jobs_total', len(state['jobs']))))
   for job in state['jobs']:
     print('|'.join(('job', str(job['id']), job['name'], job['status'], job['conclusion'], str(job['attempt']), str(job['run_id']), job['head_sha'], job['head_branch'], job['workflow_name'])))
-elif endpoint == 'repos/Keksuccino/jcef-mcef/actions/runs/' + state['run_id'] + '/jobs?filter=all&per_page=100':
+elif endpoint == 'repos/Keksuccino/jcef-rinku/actions/runs/' + state['run_id'] + '/jobs?filter=all&per_page=100':
   all_jobs = state.get('prior_jobs', []) + state['jobs']
   print('meta|' + str(len(all_jobs)))
   for job in all_jobs:
     print('|'.join(('job', str(job['id']), job['name'], job['status'], job['conclusion'], str(job['attempt']), str(job['run_id']), job['head_sha'], job['head_branch'], job['workflow_name'])))
-elif endpoint == 'repos/Keksuccino/jcef-mcef/actions/runs/' + state['run_id'] + '/artifacts?per_page=100':
+elif endpoint == 'repos/Keksuccino/jcef-rinku/actions/runs/' + state['run_id'] + '/artifacts?per_page=100':
   print('meta|' + str(state.get('artifacts_total', len(state['artifacts']))))
   for artifact in state['artifacts']:
     print('|'.join(('artifact', str(artifact['id']), artifact['name'], str(artifact['size']), artifact['digest'], str(artifact['expired']).lower(), str(artifact['run_id']), str(artifact['repository_id']), str(artifact['head_repository_id']), artifact['head_branch'], artifact['head_sha'])))
-elif endpoint.startswith('repos/Keksuccino/jcef-mcef/actions/artifacts/') and endpoint.endswith('/zip'):
+elif endpoint.startswith('repos/Keksuccino/jcef-rinku/actions/artifacts/') and endpoint.endswith('/zip'):
   artifact_id = endpoint.split('/')[-2]
   contents = state['contents'][artifact_id]
   if state.get('corrupt_download_id') == artifact_id:
@@ -513,11 +513,11 @@ class PublishWorkflowRunTest(unittest.TestCase):
         })
         contents[str(artifact_id)] = base64.b64encode(data).decode('ascii')
         artifact_id += 1
-    binary_jar = b'canonical-jcef-mcef-binary-jar'
+    binary_jar = b'canonical-jcef-rinku-binary-jar'
     artifacts.append({'id': artifact_id, 'name': BINARY_JAR_NAME, 'size': len(binary_jar), 'digest': 'sha256:' + hashlib.sha256(binary_jar).hexdigest(), 'expired': False, 'run_id': int(RUN_ID), 'repository_id': int(REPOSITORY_ID), 'head_repository_id': int(REPOSITORY_ID), 'head_branch': 'master', 'head_sha': RUN_SHA})
     contents[str(artifact_id)] = base64.b64encode(binary_jar).decode('ascii')
     artifact_id += 1
-    sources_jar = b'canonical-jcef-mcef-sources-jar'
+    sources_jar = b'canonical-jcef-rinku-sources-jar'
     artifacts.append({'id': artifact_id, 'name': SOURCES_JAR_NAME, 'size': len(sources_jar), 'digest': 'sha256:' + hashlib.sha256(sources_jar).hexdigest(), 'expired': False, 'run_id': int(RUN_ID), 'repository_id': int(REPOSITORY_ID), 'head_repository_id': int(REPOSITORY_ID), 'head_branch': 'master', 'head_sha': RUN_SHA})
     contents[str(artifact_id)] = base64.b64encode(sources_jar).decode('ascii')
     return {
@@ -687,14 +687,14 @@ class PublishWorkflowRunTest(unittest.TestCase):
     self.assertTrue(
         all(record['github_token'] is None and record['gh_token'] is None and
             record['gh_host'] == 'github.com' for record in gh_records))
-    self.assertEqual(['repos/Keksuccino/jcef-mcef/actions/workflows/build-jcef.yml'], [record['endpoint'] for record in gh_records if '/actions/workflows/' in record['endpoint']])
+    self.assertEqual(['repos/Keksuccino/jcef-rinku/actions/workflows/build-jcef.yml'], [record['endpoint'] for record in gh_records if '/actions/workflows/' in record['endpoint']])
     self.assert_no_credentials_in_non_gh_subprocesses()
     download_endpoints = [
         record['endpoint'] for record in gh_records
         if '/actions/artifacts/' in record['endpoint']
     ]
     self.assertEqual([
-        'repos/Keksuccino/jcef-mcef/actions/artifacts/{}/zip'.format(
+        'repos/Keksuccino/jcef-rinku/actions/artifacts/{}/zip'.format(
             artifact['id']) for artifact in self.state['artifacts']
     ], download_endpoints)
     git_calls = [
@@ -802,7 +802,7 @@ class PublishWorkflowRunTest(unittest.TestCase):
         '/jobs?filter=' in record['endpoint']
     ]
     self.assertEqual([
-        'repos/Keksuccino/jcef-mcef/actions/runs/{}/attempts/2/jobs?per_page=100'
+        'repos/Keksuccino/jcef-rinku/actions/runs/{}/attempts/2/jobs?per_page=100'
         .format(RUN_ID)
     ], job_endpoints)
     self.assert_no_credentials_in_non_gh_subprocesses()

@@ -42,7 +42,7 @@ MAX_PATH_BYTES = 4_096
 MAX_PATH_DEPTH = 64
 MAX_TOTAL_PATH_BYTES = 16 * 1024 * 1024
 READ_CHUNK_BYTES = 1024 * 1024
-STANDALONE_JCEF_JAR_NAME = 'jcef-mcef.jar'
+STANDALONE_JCEF_JAR_NAME = 'jcef-rinku.jar'
 MAX_STANDALONE_JCEF_JAR_BYTES = 64 * 1024 * 1024
 
 _COMMIT_PATTERN = re.compile(r'^[0-9a-f]{40}$')
@@ -940,7 +940,7 @@ def main(argv=None):
   parser.add_argument('--target', required=True, choices=tuple(TARGET_RUNTIME_ENTRIES), help='Canonical distribution target')
   parser.add_argument('--archive', required=True, help='Path to the canonical target.tar.gz file')
   parser.add_argument('--java-cef-commit', required=True, help='Expected 40-lowercase-hex JCEF source commit')
-  parser.add_argument('--standalone-jcef-jar', help='Optional jcef-mcef.jar that must byte-match the packaged jcef.jar')
+  parser.add_argument('--standalone-jcef-jar', help='Optional jcef-rinku.jar that must byte-match the packaged jcef.jar')
   options = parser.parse_args(argv)
   try:
     verify_distribution_archive(options.archive, options.target, options.java_cef_commit, standalone_jcef_jar=options.standalone_jcef_jar)

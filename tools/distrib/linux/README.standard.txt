@@ -23,8 +23,8 @@ USAGE
 3. Optionally execute ./compile.sh to rebuild jcef-tests.jar.
 
 The launcher explicitly selects JCEF's generic internally scheduled message
-pump. MCEF integrations should set jcef.path themselves and continue driving
+pump. Rinku integrations should set jcef.path themselves and continue driving
 their configured external message pump.
 
-Additional JCEF information is available at:
-https://github.com/chromiumembedded/java-cef
+Additional Rinku JCEF information is available at:
+https://github.com/Keksuccino/jcef-rinku

@@ -292,7 +292,7 @@ class VerifyDistributionArchiveTest(unittest.TestCase):
   def test_standalone_jcef_jar_must_exactly_match_packaged_jar(self):
     target = 'linux_amd64'
     archive_path = self.verify_bytes(build_valid_archive(target), target)
-    standalone_path = self.root / 'jcef-mcef.jar'
+    standalone_path = self.root / 'jcef-rinku.jar'
     standalone_path.write_bytes(canonical_jar_files(target)['jcef.jar'])
     verify_distribution_archive(archive_path, target, TEST_COMMIT, standalone_jcef_jar=standalone_path)
 
@@ -313,7 +313,7 @@ class VerifyDistributionArchiveTest(unittest.TestCase):
     with self.assertRaisesRegex(VerificationError, 'filename'):
       verify_distribution_archive(archive_path, target, TEST_COMMIT, standalone_jcef_jar=wrong_name)
 
-    standalone_path = self.root / 'jcef-mcef.jar'
+    standalone_path = self.root / 'jcef-rinku.jar'
     standalone_path.symlink_to(wrong_name)
     with self.assertRaisesRegex(VerificationError, 'regular non-link'):
       verify_distribution_archive(archive_path, target, TEST_COMMIT, standalone_jcef_jar=standalone_path)
@@ -330,7 +330,7 @@ class VerifyDistributionArchiveTest(unittest.TestCase):
   def test_standalone_jcef_jar_fifo_is_rejected_without_opening(self):
     target = 'linux_amd64'
     archive_path = self.verify_bytes(build_valid_archive(target), target)
-    standalone_path = self.root / 'jcef-mcef.jar'
+    standalone_path = self.root / 'jcef-rinku.jar'
     os.mkfifo(str(standalone_path))
     with self.assertRaisesRegex(VerificationError, 'regular non-link'):
       verify_distribution_archive(archive_path, target, TEST_COMMIT, standalone_jcef_jar=standalone_path)

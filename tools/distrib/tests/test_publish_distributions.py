@@ -32,7 +32,7 @@ PUBLISHER = DISTRIB_ROOT / 'publish_distributions.sh'
 SOURCE_ROOT = Path(__file__).resolve().parents[3]
 COMMIT_SHA = '0123456789abcdef0123456789abcdef01234567'
 WRONG_SHA = '89abcdef0123456789abcdef0123456789abcdef'
-REPOSITORY = 'Keksuccino/jcef-mcef'
+REPOSITORY = 'Keksuccino/jcef-rinku'
 TAG_NAME = 'java-cef-{}'.format(COMMIT_SHA)
 RELEASE_TITLE = 'JCEF distributions {}'.format(COMMIT_SHA)
 RELEASE_BODY = 'Automated JCEF distributions for commit {};managed-by=tools/distrib/publish_distributions.sh;schema=2'.format(COMMIT_SHA)
@@ -40,8 +40,8 @@ TARGETS = ('linux_amd64', 'linux_arm64', 'macos_amd64', 'macos_arm64',
            'windows_amd64', 'windows_arm64')
 ARCHIVE_NAMES = tuple('{}.tar.gz'.format(target) for target in TARGETS)
 CHECKSUM_NAMES = tuple('{}.tar.gz.sha256'.format(target) for target in TARGETS)
-BINARY_JAR_NAME = 'jcef-mcef.jar'
-SOURCES_JAR_NAME = 'jcef-mcef-sources.jar'
+BINARY_JAR_NAME = 'jcef-rinku.jar'
+SOURCES_JAR_NAME = 'jcef-rinku-sources.jar'
 ASSET_NAMES = tuple(name for pair in zip(ARCHIVE_NAMES, CHECKSUM_NAMES) for name in pair) + (BINARY_JAR_NAME, SOURCES_JAR_NAME)
 TOKEN = 'github-actions-test-token'
 MODIFYING_OPERATIONS = frozenset(

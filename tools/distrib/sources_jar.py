@@ -13,7 +13,7 @@ import sys
 import tempfile
 import zipfile
 
-ARCHIVE_NAME = 'jcef-mcef-sources.jar'
+ARCHIVE_NAME = 'jcef-rinku-sources.jar'
 SOURCE_DIRECTORY = Path('java') / 'org' / 'cef'
 ARCHIVE_DIRECTORY = PurePosixPath('org') / 'cef'
 FIXED_TIMESTAMP = (2000, 1, 1, 0, 0, 0)

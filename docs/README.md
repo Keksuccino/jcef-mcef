@@ -1,4 +1,4 @@
-The Java Chromium Embedded Framework (JCEF) is a simple framework for embedding Chromium-based browsers in other applications using the Java programming language. Visit the [Project Overview page](https://github.com/chromiumembedded/java-cef) for more information.
+The Java Chromium Embedded Framework (JCEF) is a simple framework for embedding Chromium-based browsers in other applications using the Java programming language. Visit the [Rinku JCEF project page](https://github.com/Keksuccino/jcef-rinku) for more information.
 
 # Documentation
 

@@ -1,6 +1,6 @@
 # Branches and building
 
-This MCEF-focused JCEF fork builds one pinned browser runtime on six 64-bit
+This Rinku-focused JCEF fork builds one pinned browser runtime on six 64-bit
 targets:
 
 | Canonical target | Operating system | Architecture |
@@ -184,7 +184,7 @@ open jcef_build/native/Release/jcef_app.app
 Packaging requires a matching Release build in `jcef_build`. It validates the
 CEF version, CEF API version, target architecture, native binary architecture,
 runtime inventory, Java 17 class-file version, archive safety limits, and the
-MCEF-compatible link-free layout.
+Rinku-compatible link-free layout.
 
 ```sh
 tools/make_distrib.sh linux_amd64
@@ -204,8 +204,8 @@ creates:
 - `binary_distrib/<target>.tar.gz.sha256`, its SHA-256 checksum.
 
 The archive has exactly one canonical target root and is directly usable as
-MCEF's `jcef.path`. The generic sample launchers select JCEF's internal message
-pump; MCEF continues to select and drive its external message pump itself.
+Rinku's `jcef.path`. The generic sample launchers select JCEF's internal message
+pump; Rinku continues to select and drive its external message pump itself.
 
 ## Package Java IDE artifacts
 
@@ -214,7 +214,7 @@ under `java/org/cef`, rooted at `org/cef` inside the archive. Build it with the
 same command used by CI:
 
 ```sh
-python3 tools/distrib/sources_jar.py build --repository-root . --output binary_distrib/jcef-mcef-sources.jar
+python3 tools/distrib/sources_jar.py build --repository-root . --output binary_distrib/jcef-rinku-sources.jar
 ```
 
 The builder emits deterministic stored ZIP entries and verifies the completed
@@ -222,7 +222,7 @@ JAR before atomically replacing the output. To verify an existing artifact
 against the current checkout without rebuilding it, run:
 
 ```sh
-python3 tools/distrib/sources_jar.py verify --repository-root . --archive binary_distrib/jcef-mcef-sources.jar
+python3 tools/distrib/sources_jar.py verify --repository-root . --archive binary_distrib/jcef-rinku-sources.jar
 ```
 
 Verification requires the exact canonical source membership, ordering, paths,
@@ -234,7 +234,7 @@ The helper intentionally requires descriptor-relative, no-follow source-tree
 traversal on Linux, macOS, and other Python platforms that support it, and
 fails closed where that traversal is unavailable. CI builds the JAR on Ubuntu.
 
-The matching `jcef-mcef.jar` is not compiled through a separate, potentially
+The matching `jcef-rinku.jar` is not compiled through a separate, potentially
 divergent build path. After the `linux_amd64` job has compiled, tested, and
 packaged its distribution, CI copies that distribution's exact `jcef.jar`
 bytes under the standalone name and verifies the copy against the fully
@@ -249,7 +249,7 @@ dependencies.
 publishes workflow artifacts through seven independent jobs: six native target
 jobs and one `Java sources` job on Ubuntu. Those jobs produce exactly fourteen
 canonical raw artifacts: one archive and one checksum for each of the six
-targets, plus `jcef-mcef.jar` and `jcef-mcef-sources.jar`. The standalone JARs
+targets, plus `jcef-rinku.jar` and `jcef-rinku-sources.jar`. The standalone JARs
 have no checksum sidecars. The binary JAR is the renamed, byte-identical
 `jcef.jar` from the `linux_amd64` distribution; the sources JAR remains separate
 from every platform archive. The workflow has read-only repository permissions
@@ -273,7 +273,7 @@ exported shell functions from crossing the publication credential boundary.
 The publisher accepts only the exact seven successful build jobs and fourteen
 canonical, non-expired raw artifacts. It downloads every artifact by ID and
 verifies its GitHub-reported size and SHA-256 digest. It then checks each target
-archive against its checksum sidecar, verifies `jcef-mcef.jar` byte-for-byte
+archive against its checksum sidecar, verifies `jcef-rinku.jar` byte-for-byte
 against the packaged `linux_amd64/jcef.jar`, and verifies the source JAR
 byte-for-byte against a private, read-only snapshot of the production sources
 materialized from the exact validated commit's raw Git tree and blob objects

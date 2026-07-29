@@ -476,7 +476,7 @@ class PublicationWorkflowContractTest(unittest.TestCase):
     checkout_revision = 'de0fac2e4500dabe0009e67214ff5f5447ce83dd'
     setup_python_revision = 'a309ff8b426b58ec0e2a45f0f869d46889d02405'
     upload_revision = '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'
-    build_command = 'python3 tools/distrib/sources_jar.py build --repository-root . --output binary_distrib/jcef-mcef-sources.jar'
+    build_command = 'python3 tools/distrib/sources_jar.py build --repository-root . --output binary_distrib/jcef-rinku-sources.jar'
     expected_job = f"""    name: Java sources
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -492,7 +492,7 @@ class PublicationWorkflowContractTest(unittest.TestCase):
       - name: Publish Java sources workflow artifact
         uses: actions/upload-artifact@{upload_revision} # v7.0.1
         with:
-          path: binary_distrib/jcef-mcef-sources.jar
+          path: binary_distrib/jcef-rinku-sources.jar
           archive: false
           if-no-files-found: error"""
 
@@ -506,7 +506,7 @@ class PublicationWorkflowContractTest(unittest.TestCase):
     for build_job_name in ('linux', 'windows', 'macos'):
       build_job = self.job(build_job_name)
       self.assertNotIn('sources_jar.py', build_job)
-      self.assertNotIn('jcef-mcef-sources.jar', build_job)
+      self.assertNotIn('jcef-rinku-sources.jar', build_job)
       expected_raw_upload_count = 3 if build_job_name == 'linux' else 2
       expected_action_count = 3 if build_job_name in ('linux', 'windows') else 2
       self.assertEqual(expected_action_count, build_job.count('uses: actions/upload-artifact@{}'.format(upload_revision)))
@@ -516,7 +516,7 @@ class PublicationWorkflowContractTest(unittest.TestCase):
       self.assertEqual(expected_raw_upload_count, build_job.count('if-no-files-found: error'))
     sources_job = self.job('sources')
     self.assertEqual(1, sources_job.count('uses: actions/upload-artifact@{}'.format(upload_revision)))
-    self.assertEqual(1, sources_job.count('path: binary_distrib/jcef-mcef-sources.jar\n'))
+    self.assertEqual(1, sources_job.count('path: binary_distrib/jcef-rinku-sources.jar\n'))
     self.assertEqual(1, sources_job.count('archive: false'))
     self.assertEqual(1, sources_job.count('if-no-files-found: error'))
     self.assertNotIn('.sha256', sources_job)
@@ -528,11 +528,11 @@ class PublicationWorkflowContractTest(unittest.TestCase):
   def test_linux_amd64_exports_the_verified_standalone_binary_jar_once(self):
     linux_job = self.job('linux')
     self.assertEqual(2, linux_job.count("if: matrix.target == 'linux_amd64'"))
-    self.assertEqual(1, linux_job.count('cp -- binary_distrib/linux_amd64/jcef.jar binary_distrib/jcef-mcef.jar'))
-    self.assertEqual(1, linux_job.count('--standalone-jcef-jar binary_distrib/jcef-mcef.jar'))
-    self.assertEqual(1, linux_job.count('path: binary_distrib/jcef-mcef.jar\n'))
+    self.assertEqual(1, linux_job.count('cp -- binary_distrib/linux_amd64/jcef.jar binary_distrib/jcef-rinku.jar'))
+    self.assertEqual(1, linux_job.count('--standalone-jcef-jar binary_distrib/jcef-rinku.jar'))
+    self.assertEqual(1, linux_job.count('path: binary_distrib/jcef-rinku.jar\n'))
     for job_name in ('sources', 'windows', 'macos'):
-      self.assertNotIn('jcef-mcef.jar', self.job(job_name))
+      self.assertNotIn('jcef-rinku.jar', self.job(job_name))
 
 
 if __name__ == '__main__':

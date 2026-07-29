@@ -36,8 +36,8 @@ elif [ "${GITHUB_TOKEN+x}" = x ]; then
 fi
 unset GITHUB_TOKEN GH_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN GH_HOST GH_DEBUG GH_FORCE_TTY GH_PAGER PAGER GH_REPO
 
-readonly REPOSITORY='Keksuccino/jcef-mcef'
-readonly REPOSITORY_URL='https://github.com/Keksuccino/jcef-mcef.git'
+readonly REPOSITORY='Keksuccino/jcef-rinku'
+readonly REPOSITORY_URL='https://github.com/Keksuccino/jcef-rinku.git'
 readonly WORKFLOW_NAME='Build JCEF'
 readonly WORKFLOW_FILE='build-jcef.yml'
 readonly WORKFLOW_PATH='.github/workflows/build-jcef.yml'
@@ -46,8 +46,8 @@ readonly WRAPPER_PATH='tools/distrib/publish_workflow_run.sh'
 readonly PUBLISHER_PATH='tools/distrib/publish_distributions.sh'
 readonly VERIFIER_PATH='tools/distrib/verify_distribution_archive.py'
 readonly SOURCES_JAR_PATH='tools/distrib/sources_jar.py'
-readonly BINARY_JAR_NAME='jcef-mcef.jar'
-readonly SOURCES_JAR_NAME='jcef-mcef-sources.jar'
+readonly BINARY_JAR_NAME='jcef-rinku.jar'
+readonly SOURCES_JAR_NAME='jcef-rinku-sources.jar'
 readonly SOURCE_TREE_PATH='java/org/cef'
 readonly SOURCE_ARCHIVE_TREE_PATH='org/cef'
 readonly MAX_SOURCE_COUNT=4096
@@ -514,7 +514,7 @@ refresh_and_validate_master() {
 }
 
 load_repository_identity() {
-  if ! REPOSITORY_ID="$(gh_api "repos/${REPOSITORY}" --jq 'if ((.id | type) == "number" and .id > 0 and .full_name == "Keksuccino/jcef-mcef" and .default_branch == "master") then (.id | tostring) else "invalid" end')"; then
+  if ! REPOSITORY_ID="$(gh_api "repos/${REPOSITORY}" --jq 'if ((.id | type) == "number" and .id > 0 and .full_name == "Keksuccino/jcef-rinku" and .default_branch == "master") then (.id | tostring) else "invalid" end')"; then
     die "Unable to inspect repository ${REPOSITORY}"
   fi
   case "$REPOSITORY_ID" in

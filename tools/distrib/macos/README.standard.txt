@@ -13,7 +13,7 @@ compile.sh                  Recompiles samples inside the signed app.
 java17_check.sh             Enforces the exact Java 17 runtime contract.
 
 The distributed app intentionally uses CEF 151's flat framework layout. This
-preserves a link-free archive that MCEF's hardened extractor accepts. The CEF
+preserves a link-free archive that Rinku's hardened extractor accepts. The CEF
 framework and enclosing app are ad-hoc signed after this deterministic
 packaging transform and are verified with codesign --deep --strict.
 
@@ -25,5 +25,5 @@ USAGE
 3. Optionally set JAVA_HOME to a matching JDK 17 and execute ./compile.sh to
    rebuild the samples. The script re-signs the modified app bundle.
 
-Additional JCEF information is available at:
-https://github.com/chromiumembedded/java-cef
+Additional Rinku JCEF information is available at:
+https://github.com/Keksuccino/jcef-rinku

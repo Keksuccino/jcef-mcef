@@ -2,7 +2,7 @@
 # Copyright (c) 2026 The Chromium Embedded Framework Authors. All rights
 # reserved. Use of this source code is governed by a BSD-style license
 # that can be found in the LICENSE file.
-"""Create a validated JCEF/MCEF binary distribution and tar.gz archive."""
+"""Create a validated JCEF/Rinku binary distribution and tar.gz archive."""
 
 from __future__ import absolute_import
 from __future__ import print_function
@@ -597,7 +597,7 @@ def _copy_runtime(native_output, destination, cef_root, target):
     _copy_entry(native_output / 'jcef_app.app', app_path)
     framework = (app_path / 'Contents' / 'Frameworks' /
                  'Chromium Embedded Framework.framework')
-    # MCEF's hardened archive extractor intentionally rejects links. Replace the
+    # Rinku's hardened archive extractor intentionally rejects links. Replace the
     # developer build's versioned framework with CEF 151's canonical flat
     # framework, then re-sign the changed nested bundle and enclosing app.
     shutil.rmtree(str(framework))

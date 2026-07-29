@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-07-29: Rinku repository and standalone JAR names
+
+- Updated the release workflow and its fail-closed publication checks for the renamed
+  `Keksuccino/jcef-rinku` repository.
+- Renamed the standalone IDE artifacts to `jcef-rinku.jar` and `jcef-rinku-sources.jar`. Existing
+  immutable releases retain their historical asset names; releases from this revision use the
+  Rinku names.
+
 ## 2026-07-28: IDE binary and sources release artifacts
 
 - The release pipeline now adds a matching `jcef-mcef.jar` and `jcef-mcef-sources.jar` pair to every

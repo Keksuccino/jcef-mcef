@@ -16,7 +16,7 @@ fi
 unset BASH_ENV ENV CDPATH GLOBIGNORE
 
 readonly REPOSITORY_OWNER='Keksuccino'
-readonly REPOSITORY_NAME='jcef-mcef'
+readonly REPOSITORY_NAME='jcef-rinku'
 readonly REPOSITORY="${REPOSITORY_OWNER}/${REPOSITORY_NAME}"
 readonly RELEASE_MARKER='managed-by=tools/distrib/publish_distributions.sh;schema=2'
 readonly SYSTEM_ENV_PATH='/usr/bin/env'
@@ -27,9 +27,9 @@ readonly SYSTEM_ENV_PATH='/usr/bin/env'
 readonly RELEASE_UPLOAD_BASE_URL="https://uploads.github.com/repos/${REPOSITORY}"
 readonly LATEST_RELEASE_QUERY="query(\$owner:String!,\$name:String!){repository(owner:\$owner,name:\$name){latestRelease{tagName}}}"
 readonly RELEASE_VISIBILITY_MAX_ATTEMPTS=6
-readonly BINARY_JAR_NAME='jcef-mcef.jar'
+readonly BINARY_JAR_NAME='jcef-rinku.jar'
 readonly BINARY_JAR_SOURCE_TARGET='linux_amd64'
-readonly SOURCES_JAR_NAME='jcef-mcef-sources.jar'
+readonly SOURCES_JAR_NAME='jcef-rinku-sources.jar'
 readonly -a TARGETS=(
   linux_amd64
   linux_arm64

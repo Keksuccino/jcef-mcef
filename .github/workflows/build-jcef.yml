@@ -25,11 +25,11 @@ jobs:
           python-version: '3.12.10'
           architecture: x64
       - name: Build Java sources JAR
-        run: python3 tools/distrib/sources_jar.py build --repository-root . --output binary_distrib/jcef-mcef-sources.jar
+        run: python3 tools/distrib/sources_jar.py build --repository-root . --output binary_distrib/jcef-rinku-sources.jar
       - name: Publish Java sources workflow artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          path: binary_distrib/jcef-mcef-sources.jar
+          path: binary_distrib/jcef-rinku-sources.jar
           archive: false
           if-no-files-found: error
 
@@ -117,8 +117,8 @@ jobs:
       - name: Stage canonical standalone Java binary JAR
         if: matrix.target == 'linux_amd64'
         run: |
-          cp -- binary_distrib/linux_amd64/jcef.jar binary_distrib/jcef-mcef.jar
-          python3 tools/distrib/verify_distribution_archive.py --target linux_amd64 --archive binary_distrib/linux_amd64.tar.gz --java-cef-commit '${{ github.sha }}' --standalone-jcef-jar binary_distrib/jcef-mcef.jar
+          cp -- binary_distrib/linux_amd64/jcef.jar binary_distrib/jcef-rinku.jar
+          python3 tools/distrib/verify_distribution_archive.py --target linux_amd64 --archive binary_distrib/linux_amd64.tar.gz --java-cef-commit '${{ github.sha }}' --standalone-jcef-jar binary_distrib/jcef-rinku.jar
       - name: Publish tar.gz workflow artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -135,7 +135,7 @@ jobs:
         if: matrix.target == 'linux_amd64'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          path: binary_distrib/jcef-mcef.jar
+          path: binary_distrib/jcef-rinku.jar
           archive: false
           if-no-files-found: error
 
